@@ -1,0 +1,9 @@
+Package: com.gcbond.openhc-bridge-check
+Name: OpenHC Bridge Check
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Kotlin/Native static framework bridge validation tool
+Maintainer: OpenHC-iPad validation
+Author: OpenHC-iPad validation
+Section: Development
+Depends: firmware (>= 15.0)

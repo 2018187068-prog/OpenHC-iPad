@@ -1,0 +1,8 @@
+.gradle/
+**/build/
+artifacts/
+theos/.theos/
+theos/packages/
+*.deb
+openhc-identity.json
+**/openhc-identity.json

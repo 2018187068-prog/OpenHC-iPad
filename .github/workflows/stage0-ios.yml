@@ -1,0 +1,88 @@
+name: Stage 0 iOS bridge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bridge/**'
+      - 'theos/**'
+      - 'scripts/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - '.github/workflows/stage0-ios.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Build static iOS framework
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/logs
+          gradle :bridge:linkReleaseFrameworkIosArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/kotlin-native-build.log
+          mkdir -p artifacts/iosArm64
+          cp -R bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework artifacts/iosArm64/
+          bash scripts/verify-apple-artifact.sh artifacts/iosArm64/OpenHCBridge.framework 2>&1 | tee artifacts/logs/framework-inspection.log
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "kotlin=2.1.20"
+            echo "gradle=8.13"
+            xcodebuild -version
+            xcodebuild -showsdks
+            java -version 2>&1
+            gradle --version
+          } | tee artifacts/BUILD.txt
+      - name: Run shared JVM and Native simulator tests
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :bridge:jvmTest :bridge:iosSimulatorArm64Test --no-daemon --stacktrace 2>&1 | tee artifacts/logs/shared-tests.log
+      - name: Install Theos and ldid
+        shell: bash
+        run: |
+          brew install ldid
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+          git clone --depth 1 https://github.com/theos/sdks.git "$RUNNER_TEMP/theos/sdks"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+      - name: Build rootless Theos package
+        shell: bash
+        run: |
+          set -o pipefail
+          cd theos
+          make package FINALPACKAGE=1 THEOS="$THEOS" TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S 2>&1 | tee ../artifacts/logs/theos-package.log
+          mkdir -p ../artifacts/deb
+          cp packages/*.deb ../artifacts/deb/
+          dpkg-deb -c packages/*.deb | tee ../artifacts/logs/deb-layout.log
+          dpkg-deb -f packages/*.deb Package Version Architecture Depends | tee ../artifacts/logs/deb-control.log
+          mkdir ../artifacts/extracted-deb
+          dpkg-deb -x packages/*.deb ../artifacts/extracted-deb
+          binary=../artifacts/extracted-deb/var/jb/usr/bin/openhc-bridge-check
+          test -f "$binary"
+          file "$binary" | tee ../artifacts/logs/theos-binary.txt
+          lipo -verify_arch arm64 "$binary"
+          otool -L "$binary" | tee ../artifacts/logs/theos-link-dependencies.log
+          if grep -q 'OpenHCBridge' ../artifacts/logs/theos-link-dependencies.log; then
+            echo 'OpenHCBridge was dynamically linked instead of statically linked' >&2
+            exit 1
+          fi
+          otool -l "$binary" | tee ../artifacts/logs/theos-load-commands.log
+          codesign -d --verbose=4 "$binary" 2>&1 | tee ../artifacts/logs/codesign-inspection.log
+          ldid -e "$binary" > ../artifacts/logs/ldid-entitlements-check.txt
+          brew info ldid | tee ../artifacts/logs/ldid-version.txt
+          grep -q '/var/jb/usr/bin/openhc-bridge-check' ../artifacts/logs/deb-layout.log
+          grep -q 'iphoneos-arm' ../artifacts/logs/deb-control.log
+          bash ../scripts/verify-device-binary.sh "$binary"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openhc-ipad-stage0-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error

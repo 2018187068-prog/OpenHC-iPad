@@ -6,6 +6,8 @@ The independent device guard owns restoration, including on host/SSH failure.
 import argparse
 import datetime
 import getpass
+import importlib.util
+import json
 import pathlib
 import plistlib
 import shlex
@@ -23,8 +25,14 @@ except ModuleNotFoundError:
     import paramiko
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+_gate_spec = importlib.util.spec_from_file_location(
+    'btstack_session_gate', ROOT / 'scripts/btstack-session-gate.py')
+session_gate = importlib.util.module_from_spec(_gate_spec)
+_gate_spec.loader.exec_module(session_gate)
 REMOTE_BASE = '/var/root/Library/OpenHCStage0Power'
 LABEL = 'io.github.gcbond.openhc.stage0-power-recovery'
+INBOUND_RUN_SECONDS = 45
+GUARD_BUDGET_SECONDS = 240
 CTL = '/var/jb/usr/bin/launchctl'
 TIMER = '/var/jb/usr/bin/timeout'
 PS = '/bin/ps'
@@ -125,6 +133,7 @@ class PowerProtocol:
         if self.state(time.monotonic() + 4) != 0:
             raise RuntimeError('INITIAL_STATE_NOT_OFF')
         requested = False
+        lease_uncertain = False
         try:
             requested = True
             self.command(2, 1)
@@ -132,11 +141,18 @@ class PowerProtocol:
             self.emit('BTSTACK_POWER_WORKING')
             if on_working is not None:
                 on_working()
+        except LeaseUncertain:
+            lease_uncertain = True
+            raise
         finally:
-            if requested:
+            if requested and not lease_uncertain:
                 self.command(2, 0)
                 self.wait_state(0, 15)
                 self.emit('BTSTACK_POWER_OFF_OBSERVED')
+
+
+class LeaseUncertain(RuntimeError):
+    """Remote transport may still run; only the independent guard may recover."""
 
 
 class Trial:
@@ -149,6 +165,9 @@ class Trial:
         self.heartbeat_thread = None
         self.guard_loaded = False
         self.locked = False
+        self.heartbeat_failed = threading.Event()
+        self.guard_owns_recovery = False
+        self.session_evidence = None
 
     def emit(self, text):
         print(text, flush=True)
@@ -219,7 +238,59 @@ class Trial:
             while not self.stop_heartbeat.wait(2):
                 self.execute(DATE + ' +%s > ' + shlex.quote(self.state + '/heartbeat'), record=False)
         except Exception:
+            self.heartbeat_failed.set()
             self.emit('HEARTBEAT_CHANNEL_FAILED_GUARD_WILL_RESTORE')
+
+    def run_inbound_transport(self):
+        """Run only the fixed rootless inbound adapter in its own SSH channel."""
+        if self.heartbeat_failed.is_set():
+            raise LeaseUncertain('HEARTBEAT_FAILED_BEFORE_TRANSPORT')
+        command = shlex.join([TIMER, '-k', '2', str(INBOUND_RUN_SECONDS),
+                              '/var/jb/usr/bin/openhc-bridge-check',
+                              '--btstack-control-inbound', self.state])
+        channel = None
+        output = bytearray()
+        deadline = time.monotonic() + INBOUND_RUN_SECONDS + 5
+        try:
+            channel = self.client.get_transport().open_session(timeout=4)
+            channel.settimeout(1)
+            channel.set_combine_stderr(True)
+            channel.exec_command(command)
+            while True:
+                if channel.recv_ready():
+                    chunk = channel.recv(min(4096, 65537 - len(output)))
+                    output.extend(chunk)
+                    if len(output) > 65536:
+                        raise LeaseUncertain('INBOUND_OUTPUT_LIMIT_REMOTE_EXIT_UNKNOWN')
+                if channel.exit_status_ready():
+                    while channel.recv_ready():
+                        chunk = channel.recv(min(4096, 65537 - len(output)))
+                        output.extend(chunk)
+                        if len(output) > 65536:
+                            raise RuntimeError('INBOUND_OUTPUT_LIMIT')
+                    status = channel.recv_exit_status()
+                    text = output.decode('utf-8', errors='replace').strip()
+                    if text:
+                        self.emit('INBOUND_TRANSPORT_OUTPUT_BEGIN\n' + text + '\nINBOUND_TRANSPORT_OUTPUT_END')
+                    self.emit('TRANSPORT_EXIT_CONFIRMED=' + str(status))
+                    if self.heartbeat_failed.is_set():
+                        raise LeaseUncertain('HEARTBEAT_FAILED_GUARD_STATE_UNCERTAIN')
+                    if status != 0:
+                        raise RuntimeError('INBOUND_TRANSPORT_EXIT=' + str(status))
+                    return
+                if time.monotonic() >= deadline:
+                    raise LeaseUncertain('INBOUND_REMOTE_EXIT_UNCONFIRMED_TIMEOUT')
+                time.sleep(.05)
+        except LeaseUncertain:
+            raise
+        except BaseException as error:
+            raise LeaseUncertain('INBOUND_REMOTE_EXIT_UNCONFIRMED_' + type(error).__name__) from error
+        finally:
+            if channel is not None:
+                try:
+                    channel.close()
+                except Exception:
+                    pass
 
     def preflight(self):
         self.execute("test \"$(id -u)\" = 0 && test \"$(uname -m)\" = iPad5,1")
@@ -231,11 +302,52 @@ class Trial:
             if self.service(label) is None:
                 raise RuntimeError('BASELINE_JOB_MISSING=' + label)
         lines = self.processes()
-        for name in ('CarPlay Simulator', 'CarPlay Simulato', 'carplay_services'):
-            if self.named(lines, name):
-                # This executable also hosts a persistent BAA broker. Its name
-                # alone cannot establish an active session or BTstack client.
-                raise RuntimeError('SHARED_HELPER_ROLE_UNVERIFIED=' + name)
+        shared = []
+        for line in lines:
+            fields = line.split(None, 3)
+            if len(fields) == 4 and any(fields[3].rstrip().rsplit('/', 1)[-1] == name
+                    for name in ('CarPlay Simulator', 'CarPlay Simulato', 'carplay_services')):
+                try:
+                    shared.append(int(fields[0]))
+                except ValueError:
+                    raise RuntimeError('SESSION_METADATA_UNKNOWN=INVALID_PROCESS_PID')
+        if shared:
+            evidence = self.session_evidence
+            if not isinstance(evidence, dict):
+                raise RuntimeError('SESSION_METADATA_UNKNOWN=FRESH_EVIDENCE_REQUIRED')
+            try:
+                captured = evidence['captured_at_epoch']
+                if isinstance(captured, bool) or not isinstance(captured, (int, float)) or abs(time.time() - captured) > 60:
+                    raise ValueError('STALE')
+                if evidence['snapshot_complete'] is not True:
+                    raise ValueError('INCOMPLETE_SNAPSHOT')
+                if type(evidence['recovery_active']) is not bool:
+                    raise ValueError('INVALID_RECOVERY_STATE')
+                if evidence['ownership_marker'] not in (True, False, None):
+                    raise ValueError('INVALID_OWNERSHIP_MARKER')
+                for key in ('shared_helper_pids', 'active_session_pids'):
+                    values = evidence.get(key, [])
+                    if not isinstance(values, list) or any(type(pid) is not int or pid < 1 for pid in values):
+                        raise ValueError('INVALID_' + key.upper())
+                for key in ('broker_owner_pid', 'broker_comm_pid'):
+                    value = evidence.get(key)
+                    if value is not None and (type(value) is not int or value < 1):
+                        raise ValueError('INVALID_' + key.upper())
+                if sorted(set(evidence['shared_helper_pids'])) != sorted(set(shared)):
+                    raise ValueError('PROCESS_SET_MISMATCH')
+                verdict = session_gate.classify(
+                    snapshot_complete=evidence['snapshot_complete'],
+                    broker_owner_pid=evidence.get('broker_owner_pid'),
+                    broker_comm_pid=evidence.get('broker_comm_pid'),
+                    shared_helper_pids=tuple(shared),
+                    active_session_pids=tuple(evidence.get('active_session_pids', ())),
+                    recovery_active=evidence['recovery_active'],
+                    ownership_marker=evidence['ownership_marker'])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError('SESSION_METADATA_UNKNOWN=' + str(error)) from error
+            if verdict != 'BROKER':
+                raise RuntimeError('SESSION_METADATA_BLOCKED=' + verdict)
+            self.emit('SESSION_METADATA_CLASSIFICATION=BROKER')
         for name in ('CarDisplaySim', 'carplay_bt'):
             if self.named(lines, name):
                 raise RuntimeError('COMPETING_HELPER=' + name)
@@ -263,7 +375,7 @@ class Trial:
         self.execute('umask 077; mkdir ' + shlex.quote(self.state))
         guard_path = self.state + '/recovery.sh'
         self.upload(guard_path, (ROOT / 'scripts/btstack-power-recovery.sh').read_bytes().replace(b'\r\n', b'\n'))
-        self.execute('now=$(' + DATE + ' +%s); echo "$now" > ' + self.state + '/heartbeat; echo $((now + 120)) > ' + self.state + '/deadline')
+        self.execute('now=$(' + DATE + ' +%s); echo "$now" > ' + self.state + '/heartbeat; echo $((now + ' + str(GUARD_BUDGET_SECONDS) + ')) > ' + self.state + '/deadline')
         job = {'Label': LABEL, 'ProgramArguments': ['/var/jb/bin/sh', guard_path, self.state, CTL, TIMER, PS, DATE, SLEEP, BTSTACK, BLUETOOL, BLUETOOTHD],
                'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 5,
                'StandardOutPath': self.state + '/recovery.log', 'StandardErrorPath': self.state + '/recovery.log',
@@ -359,41 +471,71 @@ class Trial:
         self.emit('RESTORATION_VERIFIED_GUARD_DISARMED')
         return True
 
-    def run(self):
+    def run(self, mode='power-only', session_evidence=None):
+        if mode not in ('power-only', 'inbound'):
+            raise ValueError('INVALID_MODE')
+        self.session_evidence = session_evidence
         powered = False
         restored = False
+        transport = 'NOT_RUN'
         try:
             self.preflight()
             self.arm()
             self.takeover()
             channel = self.client.get_transport().open_channel('direct-streamlocal@openssh.com', timeout=4)
             try:
-                PowerProtocol(channel, self.emit).run()
+                callback = self.run_inbound_transport if mode == 'inbound' else None
+                try:
+                    PowerProtocol(channel, self.emit).run(on_working=callback)
+                    transport = 'PASSED' if mode == 'inbound' else 'NOT_APPLICABLE'
+                except LeaseUncertain:
+                    self.guard_owns_recovery = True
+                    transport = 'EXIT_UNCONFIRMED'
+                    raise
+                except Exception:
+                    transport = 'FAILED'
+                    raise
                 powered = True
             finally:
                 channel.close()
         except Exception as error:
             self.emit('POWER_TRIAL_FAILED=' + type(error).__name__ + ':' + str(error))
         finally:
-            try:
-                restored = self.restore()
-            except Exception as error:
-                self.emit('RESTORE_OBSERVATION_FAILED=' + type(error).__name__ + ':' + str(error))
             self.stop_heartbeat.set()
             if self.heartbeat_thread:
                 self.heartbeat_thread.join(timeout=3)
+            if self.guard_owns_recovery:
+                self.emit('RESTORATION_DELEGATED_TO_GUARD=1')
+            else:
+                try:
+                    restored = self.restore()
+                except Exception as error:
+                    self.emit('RESTORE_OBSERVATION_FAILED=' + type(error).__name__ + ':' + str(error))
             self.emit('REMOTE_RUN_DIRECTORY=' + self.state)
+        self.emit('TRANSPORT_RESULT=' + transport)
         self.emit('POWER_TRIAL_PASSED=' + str(int(powered)))
         self.emit('RESTORATION_PASSED=' + str(int(restored)))
+        restoration = 'DELEGATED_TO_GUARD' if self.guard_owns_recovery else ('VERIFIED' if restored else 'NOT_VERIFIED')
+        self.emit('RESTORATION_RESULT=' + restoration)
         return 0 if powered and restored else 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--execute', action='store_true', help='Perform exactly one guarded power-only device trial')
+    parser.add_argument('--execute', action='store_true', help='Perform exactly one guarded device trial')
+    parser.add_argument('--mode', choices=('power-only', 'inbound'), default='power-only')
+    parser.add_argument('--session-evidence', type=pathlib.Path,
+                        help='Fresh JSON metadata snapshot required when shared helpers are present')
     args = parser.parse_args()
     if not args.execute:
-        parser.error('--execute is required; no device action performed')
+        print('NO_DEVICE_ACTION: pass --execute explicitly')
+        return 2
+    evidence = None
+    if args.session_evidence:
+        evidence = json.loads(args.session_evidence.read_text(encoding='utf-8'))
+        captured = evidence.get('captured_at_epoch')
+        if not isinstance(captured, (int, float)) or abs(time.time() - captured) > 60:
+            parser.error('--session-evidence must be a complete metadata snapshot captured within 60 seconds')
     password = getpass.getpass('iPad SSH password: ') if sys.stdin.isatty() else sys.stdin.readline().rstrip('\r\n')
     if not password:
         raise SystemExit('No authentication input')
@@ -409,7 +551,7 @@ def main():
                        auth_timeout=30, banner_timeout=15, transport_factory=FixedStreamlocalTransport)
         password = None
         with logfile.open('w', encoding='utf-8') as log:
-            result = Trial(client, log).run()
+            result = Trial(client, log).run(mode=args.mode, session_evidence=evidence)
         print('LOG_PATH=' + str(logfile), flush=True)
         return result
     finally:

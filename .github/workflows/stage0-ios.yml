@@ -17,6 +17,11 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install host SSH client dependency for guarded driver tests
+        run: python -m pip install 'paramiko==5.1.0'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -34,6 +39,7 @@ jobs:
           python3 scripts/test-btstack-session-gate.py 2>&1 | tee artifacts/logs/btstack-session-gate-tests.log
           python3 scripts/test-btstack-transport-runner.py 2>&1 | tee artifacts/logs/btstack-transport-runner-tests.log
           python3 scripts/test-btstack-transport-metadata.py 2>&1 | tee artifacts/logs/btstack-transport-metadata-tests.log
+          python3 scripts/test-btstack-power.py 2>&1 | tee artifacts/logs/btstack-power-trial-tests.log
       - name: Build candidate static crypto backend
         shell: bash
         run: bash scripts/build-crypto-backend.sh

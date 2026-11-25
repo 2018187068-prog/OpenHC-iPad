@@ -2,17 +2,20 @@
 import importlib.util
 import io
 import pathlib
+import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('power_trial', ROOT / 'scripts/btstack-power-trial.py')
 trial = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trial)
-BASH = pathlib.Path('C:/Program Files/Git/bin/bash.exe')
+BASH = shutil.which('bash') or 'C:/Program Files/Git/bin/bash.exe'
 
 
 def event(state):
@@ -35,6 +38,9 @@ class Channel:
     def sendall(self, data):
         self.sent.append(data)
 
+    def close(self):
+        pass
+
 
 class ProtocolTests(unittest.TestCase):
     def test_power_and_release(self):
@@ -50,6 +56,151 @@ class ProtocolTests(unittest.TestCase):
             on_working=lambda: observed.append(len(c.sent)))
         self.assertEqual(observed, [2])
         self.assertEqual(len(c.sent), 3)
+
+
+class FakeTransport:
+    def __init__(self, channel):
+        self.channel = channel
+
+    def open_channel(self, *args, **kwargs):
+        return self.channel
+
+
+class FakeSSH:
+    def __init__(self, channel):
+        self.transport = FakeTransport(channel)
+
+    def get_transport(self):
+        return self.transport
+
+
+class FakeRemoteChannel:
+    def __init__(self, output=b'METADATA_ONLY\n', status=0, error=None, exit_ready=True):
+        self.output = output
+        self.status = status
+        self.error = error
+        self.exit_ready = exit_ready
+        self.command = None
+
+    def settimeout(self, _):
+        pass
+
+    def set_combine_stderr(self, _):
+        pass
+
+    def exec_command(self, command):
+        self.command = command
+        if self.error:
+            raise self.error
+
+    def recv_ready(self):
+        if self.error:
+            raise self.error
+        return bool(self.output)
+
+    def recv(self, size):
+        result, self.output = self.output[:size], self.output[size:]
+        return result
+
+    def exit_status_ready(self):
+        return self.exit_ready
+
+    def recv_exit_status(self):
+        return self.status
+
+    def close(self):
+        pass
+
+
+class FakeCommandTransport(FakeTransport):
+    def __init__(self, protocol_channel, remote_channel):
+        super().__init__(protocol_channel)
+        self.remote_channel = remote_channel
+
+    def open_session(self, **_):
+        return self.remote_channel
+
+
+class IntegratedModeTests(unittest.TestCase):
+    def make_trial(self, callback_result=None):
+        channel = Channel(event(0) + event(1) + event(2) + event(3) + event(0))
+        events = []
+        t = trial.Trial(FakeSSH(channel), io.StringIO())
+        t.preflight = lambda: events.append('PREFLIGHT')
+        t.arm = lambda: events.append('GUARD_READY')
+        t.takeover = lambda: events.append('TAKEOVER')
+        t.restore = lambda: (events.append('RESTORE') or True)
+        def run_transport():
+            events.append('TRANSPORT')
+            if callback_result:
+                raise callback_result
+            events.append('TRANSPORT_EXIT_CONFIRMED')
+        t.run_inbound_transport = run_transport
+        return t, channel, events
+
+    def test_inbound_order_is_working_transport_exit_off_restore(self):
+        t, channel, events = self.make_trial()
+        self.assertEqual(t.run(mode='inbound'), 0)
+        self.assertEqual(events, ['PREFLIGHT', 'GUARD_READY', 'TAKEOVER',
+                                  'TRANSPORT', 'TRANSPORT_EXIT_CONFIRMED', 'RESTORE'])
+        self.assertEqual(len(channel.sent), 3)
+        self.assertEqual(channel.sent[-1], bytes.fromhex('01000000040002f40100'))
+
+    def test_confirmed_transport_failures_release_then_restore_once(self):
+        for failure in (RuntimeError('ACCEPT_FAILED'), RuntimeError('CLOSE_FAILED')):
+            with self.subTest(failure=failure):
+                t, channel, events = self.make_trial(failure)
+                self.assertEqual(t.run(mode='inbound'), 1)
+                self.assertEqual(events.count('RESTORE'), 1)
+                self.assertEqual(channel.sent[-1], bytes.fromhex('01000000040002f40100'))
+
+    def test_timeout_or_ssh_loss_yields_recovery_to_guard(self):
+        for failure in (trial.LeaseUncertain('TIMEOUT'), trial.LeaseUncertain('SSH_LOSS')):
+            with self.subTest(failure=failure):
+                t, channel, events = self.make_trial(failure)
+                self.assertEqual(t.run(mode='inbound'), 1)
+                self.assertEqual(events.count('RESTORE'), 0)
+                self.assertEqual(len(channel.sent), 2)
+                self.assertTrue(t.guard_owns_recovery)
+
+    def test_host_invocation_is_noop_without_execute(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/btstack-power-trial.py')],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('NO_DEVICE_ACTION', result.stdout)
+
+    def test_real_inbound_command_uses_fixed_argv_and_bounded_metadata_output(self):
+        remote = FakeRemoteChannel(output=b'INCOMING=1\nACCEPTED=1\n')
+        t = trial.Trial(FakeSSH(Channel(b'')), io.StringIO())
+        t.client = FakeSSH(Channel(b''))
+        t.client.transport = FakeCommandTransport(Channel(b''), remote)
+        t.state = trial.REMOTE_BASE + '/generated-run-id'
+        t.run_inbound_transport()
+        import shlex
+        self.assertEqual(shlex.split(remote.command), [trial.TIMER, '-k', '2',
+            str(trial.INBOUND_RUN_SECONDS), '/var/jb/usr/bin/openhc-bridge-check',
+            '--btstack-control-inbound', t.state])
+        self.assertIn('INCOMING=1', t.log.getvalue())
+
+    def test_ssh_loss_timeout_and_cancel_are_unconfirmed(self):
+        lost = FakeRemoteChannel(error=OSError('SSH_LOST'))
+        t = trial.Trial(FakeSSH(Channel(b'')), io.StringIO())
+        t.client.transport = FakeCommandTransport(Channel(b''), lost)
+        with self.assertRaisesRegex(trial.LeaseUncertain, 'OSError'):
+            t.run_inbound_transport()
+
+        cancel = FakeRemoteChannel(error=KeyboardInterrupt())
+        t.client.transport = FakeCommandTransport(Channel(b''), cancel)
+        with self.assertRaisesRegex(trial.LeaseUncertain, 'KeyboardInterrupt'):
+            t.run_inbound_transport()
+
+        hung = FakeRemoteChannel(output=b'', exit_ready=False)
+        t.client.transport = FakeCommandTransport(Channel(b''), hung)
+        ticks = iter(range(100))
+        with mock.patch.object(trial.time, 'monotonic', side_effect=lambda: next(ticks)), \
+             mock.patch.object(trial.time, 'sleep'):
+            with self.assertRaisesRegex(trial.LeaseUncertain, 'TIMEOUT'):
+                t.run_inbound_transport()
 
     def test_working_callback_failure_still_releases_once(self):
         c = Channel(event(0) + event(1) + event(2) + event(3) + event(0))
@@ -187,15 +338,42 @@ class GuardTests(unittest.TestCase):
 
 
 class DriverTests(unittest.TestCase):
-    def test_shared_executable_is_unverified_role_not_proven_competition(self):
+    def test_shared_executable_without_current_evidence_is_blocked(self):
         for name in ('CarPlay Simulator', 'CarPlay Simulato', 'carplay_services'):
             with self.subTest(name=name):
                 t = trial.Trial(None, io.StringIO())
                 t.execute = lambda *a, **k: (0, '')
-                t.service = lambda label: None if label == trial.LABEL else 'registered'
+                t.service = lambda label: None if label in (trial.LABEL, 'com.reng.showcase.bluetooth-recovery') else 'registered'
                 t.processes = lambda: ['10 1 S /usr/sbin/bluetoothd', '27078 1 S ' + name]
-                with self.assertRaisesRegex(RuntimeError, '^SHARED_HELPER_ROLE_UNVERIFIED='):
+                with self.assertRaisesRegex(RuntimeError, '^SESSION_METADATA_UNKNOWN=FRESH_EVIDENCE_REQUIRED'):
                     t.preflight()
+
+    def test_shared_helper_requires_matching_fresh_broker_metadata(self):
+        evidence = {'captured_at_epoch': time.time(), 'snapshot_complete': True,
+                    'shared_helper_pids': [27078], 'broker_owner_pid': 27078,
+                    'broker_comm_pid': 27078, 'active_session_pids': [],
+                    'recovery_active': False, 'ownership_marker': False}
+        t = trial.Trial(FakeSSH(Channel(event(0))), io.StringIO())
+        t.session_evidence = evidence
+        t.execute = lambda *a, **k: (0, '')
+        t.service = lambda label: None if label in (trial.LABEL, 'com.reng.showcase.bluetooth-recovery') else 'registered'
+        t.processes = lambda: ['10 1 S /usr/sbin/bluetoothd',
+                               '27078 1 S CarPlay Simulator']
+        t.preflight()
+        self.assertIn('SESSION_METADATA_CLASSIFICATION=BROKER', t.log.getvalue())
+
+    def test_shared_helper_unknown_session_metadata_blocks(self):
+        evidence = {'captured_at_epoch': time.time(), 'snapshot_complete': True,
+                    'shared_helper_pids': [27078], 'active_session_pids': [],
+                    'recovery_active': False, 'ownership_marker': False}
+        t = trial.Trial(FakeSSH(Channel(event(0))), io.StringIO())
+        t.session_evidence = evidence
+        t.execute = lambda *a, **k: (0, '')
+        t.service = lambda label: None if label in (trial.LABEL, 'com.reng.showcase.bluetooth-recovery') else 'registered'
+        t.processes = lambda: ['10 1 S /usr/sbin/bluetoothd',
+                               '27078 1 S CarPlay Simulator']
+        with self.assertRaisesRegex(RuntimeError, '^SESSION_METADATA_BLOCKED=UNKNOWN'):
+            t.preflight()
 
     def test_bare_helper_with_spaces_and_absolute_path(self):
         for comm in ('CarPlay Simulator', '/var/jb/usr/bin/CarPlay Simulator'):

@@ -56,13 +56,36 @@ python scripts\test-btstack-transport-socket.py
 
 已新增 C `--btstack-control-inbound RUN_DIR` API：在本地 RFCOMM channel 16..23 中按 busy 状态选择 listener，注册 FE35 SDP record，白名单解析 `RFCOMM_EVENT_INCOMING_CONNECTION (0x82)` 的 channel/CID（读取并丢弃地址），发 `RFCOMM_ACCEPT_CONNECTION (OCF 0x44)`，校验 incoming `CHANNEL_OPENED` 后有界 disconnect。该 API 完全不读取 RFCOMM data packet，不执行 OpenHC 控制握手，不发送应用数据；accept/open/timeout/disconnect 异常时尝试移除本次拥有的 SDP/service，再关闭 daemon client 作为 pending CID 的清理兜底。它只证明 listener/accept/close 的 transport 层，不证明真实 HiCar 端到端可用。
 
-`PowerProtocol.run(on_working=...)` 已提供受限 callback，在观察到 WORKING 后、单一 finally release 前调用，callback 异常仍经过同一 OFF release；合成 power 测试覆盖调用时机与异常释放。`Trial.run()` 尚未把 inbound API 放进这个 callback，C adapter 也不再写 guard heartbeat；现存 power-driver heartbeat loop 独占刷新，但 transport 目前没有受控调用入口。当前没有可执行的真实手机命令或端到端 ready 声明，待 callback 接线并覆盖失联/deadline/恢复测试后再建立该入口。
+`scripts/btstack-power-trial.py` 的 host CLI 现在接受 `--execute --mode inbound`，并在 `Trial.run()` 的 WORKING callback 中通过独立 Paramiko SSH session 调用固定 `/var/jb/usr/bin/openhc-bridge-check --btstack-control-inbound <run-dir>`。路径和参数由代码常量及 Trial 生成的 run-dir 提供，不接受任意远端命令；timeout 包装为固定 45 秒并合并 stdout/stderr，最多保留 64 KiB。只有收到远端 exit status 才确认子命令退出，之后 PowerProtocol 才发送 OFF；远端非零退出也属于已确认退出，随后照常 OFF 并由同一 Trial 请求 guard restore。timeout、SSH loss、取消或输出超限等导致退出状态未知时，跳过 OFF 与 host restore-request，停止 heartbeat，让独立 guard 在 heartbeat age 超过 20 秒时恢复；输出 `TRANSPORT_RESULT=EXIT_UNCONFIRMED` 与 `RESTORATION_RESULT=DELEGATED_TO_GUARD`，不声称恢复已完成。常规路径下 Trial 是唯一 heartbeat writer 和 restore-request 发起者；PowerProtocol 是唯一 power lease client。Guard deadline 从 arm 开始计 240 秒，覆盖 takeover、最多约 45 秒 transport、15 秒 OFF 等待和最多 65 秒 host restore 观察时间，留有执行余量；不确定路径不等待 transport 来决定恢复 actor。
 
-后续如接入 transport，集成边界由一个 power driver 明确持有唯一 recovery job、deadline、heartbeat 和恢复请求；仅在 gate 通过且 state 为 WORKING 的受限 callback 内执行一次 bounded transport 子进程，待其关闭 socket 后由同一 driver 发 `restore-request` 并验证恢复。当前有 callback 生命周期测试，但还缺失 callback 内实际调用 transport，以及失联/deadline/恢复单一性集成测试；本轮未创建设备执行命令。
+执行前置 gate 对共享 helper 使用有限 metadata 输入，文件为 UTF-8 JSON，字段形状如下：
+
+```json
+{
+  "captured_at_epoch": 0,
+  "snapshot_complete": true,
+  "shared_helper_pids": [],
+  "broker_owner_pid": null,
+  "broker_comm_pid": null,
+  "active_session_pids": [],
+  "recovery_active": false,
+  "ownership_marker": null
+}
+```
+
+这些值必须来自同一次、距执行不超过 60 秒的当前 metadata 观察；示例 epoch 和空列表不是可用证据。`shared_helper_pids` 必须与 Trial 本次 `ps -axo pid,ppid,state,comm` 所见共享 helper PID 集完全相等；broker owner/comm PID 必须是该次 socket owner 与 comm metadata；活动 PID 必须来自正向 session-state metadata；marker/recovery state 也必须是该次观察。只有分类为 `BROKER` 才能在共享 helper 存在时继续；活动会话、UNKNOWN、过期/不完整/与当前进程 PID 集不匹配均阻断。字段缺失不会被补成“无竞争”。当前没有新鲜现场 metadata，因此共享 helper 仍会阻断实际执行；不得复用历史 PID 证据。
+
+主机命令（仅在用户明确安排设备窗口、独立恢复条件就绪且新鲜 metadata 已取得后使用）：
+
+```powershell
+python scripts\btstack-power-trial.py --execute --mode inbound --session-evidence <fresh-metadata.json>
+```
+
+不带 `--execute` 时 CLI 输出 `NO_DEVICE_ACTION` 并以状态码 2 退出；`--execute` 配合 `--mode power-only` 保留旧 power-only 行为。此命令不安装 package、不配对、不改热点、不发送应用数据。成功标志分别为 `TRANSPORT_RESULT=PASSED`、`BTSTACK_POWER_OFF_OBSERVED`、`RESTORATION_RESULT=VERIFIED`；可确认的 inbound accept/close 失败表现为 `TRANSPORT_RESULT=FAILED`，但仍应观察 OFF 和 guard restoration；SSH loss/timeout 表现为 `EXIT_UNCONFIRMED` / `DELEGATED_TO_GUARD`，这不是成功恢复证据，之后必须通过独立只读检查观察 guard `result`。Guard deadline 为从 arm 开始的绝对 240 秒，预算包含 takeover、最长 45 秒 C 命令、最多 15 秒 OFF wait、最多 65 秒 restore observation 与执行余量。本轮未运行该设备命令。
 
 ### B. 真实 HiCar 协议/metadata 模式
 
-真实 Honor/HiCar 是单独的协议/metadata 模式，不能运行 synthetic echo adapter，因为它会发送不属于 HiCar 的测试字节。FE35 inbound listener/SDP/accept/close transport 层现已实现，但尚无 OpenHC FE35 control parser、auth channel 协商或 power-driver callback 接线，因此没有真实 HiCar 专用执行命令。设备阶段还需要恢复 guard 与明确 lease owner、Honor 20 Pro/HarmonyOS 4.0/HiCar 可用并由用户正常发起连接的窗口；不得把 synthetic peer 的存在列为前置条件。真实手机不得接收任意 synthetic auth/control 数据；后续协议实现仅记录事件类型/长度、协商 channel/CID 和状态，不记录地址、raw payload 或认证 transcript。
+该 inbound 模式只验证 FE35 本机 listener/SDP、incoming accept 和 bounded close；不启动 discovery，不实现 HiCar control handshake 或 auth channel 协商。真实 Honor 测试须等待另行实现 OpenHC FE35 控制消息的 metadata-only 状态机、auth listener/connect 协商和用户正常发起 HiCar 连接的窗口。真实手机绝不运行 synthetic echo adapter，也不发送任意 synthetic auth/control 数据；后续实现只记录事件类型/长度、协商 channel/CID 和状态，不记录地址、raw payload 或认证 transcript。Synthetic peer 是可选工程路径，不是 HiCar 项目硬前置，目前没有证据用户具有该 peer。
 
 ### 失败判据与恢复
 

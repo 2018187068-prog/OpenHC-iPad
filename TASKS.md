@@ -16,8 +16,10 @@
 - [x] Physical `--wifi` synthetic parser self-check passed by user confirmation; package database version, exit status and installed hash not independently captured.
 - [x] Run bounded authentication primitive/SPEKE3072 synthetic math probes on JVM and Native simulator (CI 45649915495: 23/21 total tests, all passed).
 - [x] Build and inspect candidate OpenSSL static iosArm64/iosSimulatorArm64 archives; download signed rootless 0.3.0 DEB, logs and licenses.
-- [ ] Run 0.3.0 `--auth` on physical iPad; observe `AUTH_VECTORS_OK`.
-- [ ] Run 0.3.0 read-only `--platform` and assess actual iPad API/interface/BTstack inventory.
+- [x] User screenshot confirms physical `--auth` emitted `AUTH_VECTORS_OK` on 2026-11-26; synthetic vectors only, not a real handshake.
+- [x] User screenshot confirms read-only `--platform` completed on iPad5,1 / iOS 15.8.8: MIS/MobileWiFi symbols available, BTdaemon file present, known BTstack socket absent. Live services/AP remain unverified.
 - [ ] Validate real authentication transcript/state-machine behavior; primitive vectors alone do not pass this gate.
 - [ ] Validate BTstack FE35/FE36 SDP/channel numbers/no-forced-link-auth/I/O/close on device.
+- [x] User screenshot confirms BTstack listener and launchd running process (00:39, PID 35779, runs 1); protocol responsiveness remains pending.
+- [ ] CI-build and physically run the bounded 0.3.1 GET_VERSION/GET_STATE daemon query probe.
 - [ ] Validate actual hotspot/AP capability and true IP/SSID/BSSID/frequency; bridge MAC is not assumed to be BSSID.

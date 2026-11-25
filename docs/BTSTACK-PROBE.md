@@ -48,4 +48,6 @@ Install the 0.3.2 DEB and run:
 
 Expect version `OPENHC_STAGE0_VERSION=0.3.2`, local channel/handle metadata for both UUIDs, `BTSTACK_LOCAL_SERVICE_CYCLE_OK=1`, `=2`, then `BTSTACK_LOCAL_SERVICES_OK`. A failure prints `BTSTACK_SERVICES_FAILED=<stage> STATUS=<last_registration_status>`; the status is diagnostic and can refer to a preceding operation. Do not request a phone pairing attempt from this probe.
 
+The physical prerequisite was subsequently reported passed on 2026-11-26: FE35 channel 16 / handles 65537 and 65539, FE36 channel 17 / handles 65538 and 65540, with both cycle markers and `BTSTACK_LOCAL_SERVICES_OK`. Treat this as local daemon evidence only. The next probe must exercise actual peer-visible SDP and negotiated channels, then bounded two-channel I/O and close/reopen; it must not infer those results from local registration.
+
 The user identifies the intended real HiCar peer as Honor 20 Pro, HarmonyOS 4.0, HiCar supported. Record this as user-provided compatibility information, not a tested handshake result. The peer is not required for the local registration probe; actual role/direction/channel selection for later connection tests must follow OpenHC's negotiated flow, not assume both sides always listen.

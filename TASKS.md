@@ -21,7 +21,7 @@
 - [ ] Validate real authentication transcript/state-machine behavior; primitive vectors alone do not pass this gate.
 - [ ] Validate BTstack FE35/FE36 SDP/channel numbers/no-forced-link-auth/I/O/close on device.
 - [x] CI-build 0.3.2 local FE35/FE36 registration/cleanup probe (45661451771); 9 query + 8 service mock cases, 23 JVM / 21 Native tests and package checks passed; downloaded DEB independently inspected.
-- [ ] Physically run 0.3.2 local FE35/FE36 listener/SDP registration, cleanup and channel reuse prerequisite; this does not pass live dual-channel I/O.
+- [x] Physically run 0.3.2 local FE35/FE36 listener/SDP registration, cleanup and channel reuse prerequisite (user-reported two-cycle pass); this does not pass live dual-channel I/O.
 - [x] Record intended real peer from user: Honor 20 Pro / HarmonyOS 4.0 / HiCar supported; real compatibility/handshake untested.
 - [x] User screenshot confirms BTstack listener and launchd running process (00:39, PID 35779, runs 1); subsequent query responsiveness confirmed by user.
 - [x] CI-build bounded 0.3.1 GET_VERSION/GET_STATE query client (45657981526): 9 synthetic server cases, 23 JVM / 21 Native tests, package checks passed; DEB downloaded and independently inspected.

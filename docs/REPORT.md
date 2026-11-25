@@ -166,6 +166,12 @@ User supplied `btstack_version=1.1` followed by `reversion=3257,state=0.query_ok
 
 Source review for the next powered probe found Showcase's explicit precondition that Apple Bluetooth has already been unloaded before `btstack_set_power_mode(1)` (`source/carplay_bt.m` around 1517). The target's ownership/recovery path is not verified; no blind system daemon unload/kill commands were supplied or executed. Need compatible peer details for the real handshake phase; transport-only mocks or RFCOMM tests are insufficient.
 
+## Physical local FE35/FE36 service probe (2026-11-26)
+
+The user ran the 0.3.2 `--btstack-services` probe on the physical iPad and supplied two complete registration/cleanup cycles. The observed output reported FE35 on local RFCOMM channel 16 with SDP handles 65537 and 65539, FE36 on channel 17 with handles 65538 and 65540, followed by `BTSTACK_LOCAL_SERVICE_CYCLE_OK=1`, `BTSTACK_LOCAL_SERVICE_CYCLE_OK=2`, and `BTSTACK_LOCAL_SERVICES_OK`. This is user-reported physical evidence, not an agent-captured transcript.
+
+The result establishes that the installed BTstack daemon accepted local FE35/FE36 listener and SDP registration, cleanup, and channel reuse across two daemon connections while the probe's required state condition held. It does not establish wireless SDP visibility, peer discovery, negotiated remote channel numbers, link-authentication behavior, dual-channel open/send/receive/close, or a HiCar handshake. Those remain separate Stage 0 gates.
+
 At 00:31–00:32 the correctly spaced print output confirms `system/ch.ringwald.BTstack` is registered, program `/var/jb/usr/bin/BTdaemon`, `state = not running`, `runs = 0`, `last exit code = (never exited)`, and a passive stream listener `/tmp/BTstack`. This is a registered, not-yet-launched service; it is not evidence of a crash. Socket existence was launchd listener evidence, not daemon execution. Next bounded step is a single manual launch followed by state/PID/run/exit inspection; no successful transport operation is claimed.
 
 The user's next screenshot explicitly shows `AUTH_VECTORS_OK`: record the synthetic authentication-vector device run as passed from user-provided screenshot evidence. This does not validate a live authentication transcript or handshake. Installed package version/hash and exit status remain uncaptured.

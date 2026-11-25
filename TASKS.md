@@ -20,7 +20,7 @@
 - [x] User screenshot confirms read-only `--platform` completed on iPad5,1 / iOS 15.8.8: MIS/MobileWiFi symbols available, BTdaemon file present, known BTstack socket absent. Live services/AP remain unverified.
 - [ ] Validate real authentication transcript/state-machine behavior; primitive vectors alone do not pass this gate.
 - [ ] Validate BTstack FE35/FE36 SDP/channel numbers/no-forced-link-auth/I/O/close on device.
-- [x] User screenshot confirms BTstack listener and launchd running process (00:39, PID 35779, runs 1); protocol responsiveness remains pending.
+- [x] User screenshot confirms BTstack listener and launchd running process (00:39, PID 35779, runs 1); subsequent query responsiveness confirmed by user.
 - [x] CI-build bounded 0.3.1 GET_VERSION/GET_STATE query client (45657981526): 9 synthetic server cases, 23 JVM / 21 Native tests, package checks passed; DEB downloaded and independently inspected.
-- [ ] Physically run 0.3.1 `--btstack` and capture version/state plus `BTSTACK_QUERY_OK` or explicit failure stage.
+- [x] User reports physical `--btstack` version 1.1, revision 3257, state 0, query OK (2026-11-26). Daemon query passes; radio/dual-channel gates remain pending.
 - [ ] Validate actual hotspot/AP capability and true IP/SSID/BSSID/frequency; bridge MAC is not assumed to be BSSID.

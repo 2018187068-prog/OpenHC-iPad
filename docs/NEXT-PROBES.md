@@ -30,4 +30,6 @@ The user confirmed `/var/jb/usr/bin/openhc-bridge-check --wifi` returned OK. Exp
 
 ## Next device handoff
 
+Update 2026-11-26: user reports 0.3.1 daemon query success, version 1.1 / revision 3257 / state 0. Do not repeat the query as a required gate. Next work is bounded FE35/FE36 daemon-side registration/SDP probing plus controller ownership/recovery review before any radio power request, then actual peer channel tests. State 0 is BTstack OFF per the fixed reference, not evidence of an initialization failure or Apple's Bluetooth switch position. A compatible HiCar peer is required for the later real handshake.
+
 The user has supplied physical `AUTH_VECTORS_OK` and platform inventory; the subsequent manual service load/start produced `/tmp/BTstack` and a running BTdaemon process. Version 0.3.1 is downloaded under `artifacts/device-ready/` (CI 45657981526), with nine synthetic query-client cases passed. Install through Sileo, then run canonical `/var/jb/usr/bin/openhc-bridge-check --version` and `--btstack` outside active CarPlay/HiCar sessions. Capture daemon version/state and `BTSTACK_QUERY_OK` or failure stage. See `docs/BTSTACK-PROBE.md`: client disconnect triggers daemon cleanup, and a query pass does not pass FE35/FE36 or AP gates. Available MIS/MobileWiFi symbols do not establish a functioning hotspot on this Wi-Fi-only target.

@@ -150,6 +150,12 @@ Downloaded framework, DEB, test reports, licenses and build logs under `artifact
 
 Next manual action is Sileo installation followed by `--version` (expect 0.3.1) and `--btstack` (expect version/revision/state and `BTSTACK_QUERY_OK`, or explicit failure stage). See `docs/BTSTACK-PROBE.md` for daemon cleanup effects and remaining live gate boundaries. Existing auth/parser device passes are preserved. No additional paid runner/quota was enabled.
 
+## Physical daemon query result (2026-11-26)
+
+User supplied `btstack_version=1.1` followed by `reversion=3257,state=0.query_ok`. Record version 1.1, revision 3257, state 0 and query success as user-transcribed physical evidence, not an agent-captured transcript. This passes the bounded local daemon GET_VERSION/GET_STATE prerequisite. Exact stdout casing, exit status, installed package version/hash remain uncaptured. Both queries must validate before this implementation prints version/state. The fixed reference maps state 0 to HCI_STATE_OFF; it is expected to be possible because the query sends no power request. System Bluetooth switch state/controller ownership is not inferred from it. Real FE35/FE36 radio/SDP/channel/I/O/close and HiCar/AP evidence remain pending.
+
+Source review for the next powered probe found Showcase's explicit precondition that Apple Bluetooth has already been unloaded before `btstack_set_power_mode(1)` (`source/carplay_bt.m` around 1517). The target's ownership/recovery path is not verified; no blind system daemon unload/kill commands were supplied or executed. Need compatible peer details for the real handshake phase; transport-only mocks or RFCOMM tests are insufficient.
+
 At 00:31–00:32 the correctly spaced print output confirms `system/ch.ringwald.BTstack` is registered, program `/var/jb/usr/bin/BTdaemon`, `state = not running`, `runs = 0`, `last exit code = (never exited)`, and a passive stream listener `/tmp/BTstack`. This is a registered, not-yet-launched service; it is not evidence of a crash. Socket existence was launchd listener evidence, not daemon execution. Next bounded step is a single manual launch followed by state/PID/run/exit inspection; no successful transport operation is claimed.
 
 The user's next screenshot explicitly shows `AUTH_VECTORS_OK`: record the synthetic authentication-vector device run as passed from user-provided screenshot evidence. This does not validate a live authentication transcript or handshake. Installed package version/hash and exit status remain uncaptured.

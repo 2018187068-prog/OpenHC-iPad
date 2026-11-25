@@ -51,7 +51,6 @@ jobs:
         run: |
           brew install ldid
           git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
-          git clone --depth 1 https://github.com/theos/sdks.git "$RUNNER_TEMP/theos/sdks"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
       - name: Build rootless Theos package
         shell: bash

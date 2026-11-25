@@ -33,6 +33,7 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 - Physical iPad mini 4: not run; no configured device SSH connection was found.
 - WifiChannels JVM/Native shared test: implemented against the fixed source; the JVM task was attempted but could not start because the machine exposes only Java 8 JRE (no compiler). A temporary JDK download stalled and was stopped. Native simulator tests need macOS CI.
 - First macOS CI run compiled and linked the `iosArm64` framework successfully in 1m 6s; a local inspection script then failed because it passed the archive path to `lipo` in the wrong argument position. Corrected the architecture inspection and added a static-archive minimum-iOS check before rerun.
+- Second macOS CI run passed static-framework build/inspection and both shared JVM and Native simulator test tasks. Theos bootstrap then failed because its recursive clone already populated the `sdks` submodule and the workflow tried to clone that directory a second time. Removed the redundant clone; Theos package/signing checks remain pending.
 
 ## WifiConnectionInfo dependency assessment (source review only)
 

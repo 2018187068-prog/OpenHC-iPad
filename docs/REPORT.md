@@ -172,6 +172,10 @@ The user ran the 0.3.2 `--btstack-services` probe on the physical iPad and suppl
 
 The result establishes that the installed BTstack daemon accepted local FE35/FE36 listener and SDP registration, cleanup, and channel reuse across two daemon connections while the probe's required state condition held. It does not establish wireless SDP visibility, peer discovery, negotiated remote channel numbers, link-authentication behavior, dual-channel open/send/receive/close, or a HiCar handshake. Those remain separate Stage 0 gates.
 
+## Read-only ownership probe build (2026-11-26)
+
+The USB SSH path was established through Windows `iproxy` (`localhost:2222` to iPad SSH); the device reported `USB_SSH_OK` and `iPad5,1`. A new read-only `--btstack-ownership` entry point was added to the Theos binary. CI run `45670248895` passed all existing query/service tests, framework/package checks, and produced the updated rootless DEB. The probe reports machine/OS, BTstack socket, daemon file and plist presence, then emits an explicit ownership snapshot completion marker; it does not unload or kill Apple Bluetooth, power the controller, pair, or connect to a peer. The binary is awaiting installation after the USB forwarding session is re-established.
+
 At 00:31–00:32 the correctly spaced print output confirms `system/ch.ringwald.BTstack` is registered, program `/var/jb/usr/bin/BTdaemon`, `state = not running`, `runs = 0`, `last exit code = (never exited)`, and a passive stream listener `/tmp/BTstack`. This is a registered, not-yet-launched service; it is not evidence of a crash. Socket existence was launchd listener evidence, not daemon execution. Next bounded step is a single manual launch followed by state/PID/run/exit inspection; no successful transport operation is claimed.
 
 The user's next screenshot explicitly shows `AUTH_VECTORS_OK`: record the synthetic authentication-vector device run as passed from user-provided screenshot evidence. This does not validate a live authentication transcript or handshake. Installed package version/hash and exit status remain uncaptured.

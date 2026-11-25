@@ -26,10 +26,10 @@ jobs:
           # fixup variant is a diagnostic candidate, not a proven SIGKILL fix.
           for variant in baseline legacy-fixups; do
             output=artifacts/helper-role/showcase-role-probe-$variant
-            options=()
+            options=(-std=c11 -Wall -Wextra -Werror)
             if [ "$variant" = legacy-fixups ]; then options+=(-Wl,-no_fixup_chains); fi
             xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
-              -std=c11 -Wall -Wextra -Werror "${options[@]}" scripts/showcase-role-probe.c -o "$output"
+              "${options[@]}" scripts/showcase-role-probe.c -o "$output"
             ldid -S "$output"
             bash scripts/verify-device-binary.sh "$output" | tee "$output.compatibility.log"
             otool -l "$output" > "$output.load-commands.log"

@@ -120,11 +120,13 @@ def run_case(executable, case):
         assert not thread.is_alive(), case
         assert not errors, (case, errors, proc.stdout, proc.stderr)
         success = case in ('strict_event', 'reference_event', 'delayed_echo')
+        opened = case in ('strict_event', 'reference_event', 'delayed_echo',
+                          'echo_mismatch', 'close_timeout', 'echo_timeout')
         assert proc.returncode == (0 if success else 1), (case, proc.returncode, proc.stdout, proc.stderr)
         assert ('BTSTACK_SYNTHETIC_CONTROL_ECHO_OK' in proc.stdout) == success, (case, proc.stdout)
         assert ('BTSTACK_RFCOMM_CLOSE_CONFIRMED' in proc.stdout) == success, (case, proc.stdout)
-        assert ('BTSTACK_OPENED_PROFILE=' in proc.stdout) == success, (case, proc.stdout)
-        if success:
+        assert ('BTSTACK_OPENED_PROFILE=' in proc.stdout) == opened, (case, proc.stdout)
+        if opened:
             expected_profile = 'reference-17-len16' if case == 'reference_event' else 'strict-17'
             assert 'BTSTACK_OPENED_PROFILE=' + expected_profile in proc.stdout, (case, proc.stdout)
         if case == 'echo_timeout':

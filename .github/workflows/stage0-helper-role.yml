@@ -17,6 +17,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/helper-role
           python3 scripts/test-role-binary-audit.py 2>&1 | tee artifacts/helper-role/audit-tests.log
+          python3 scripts/test-btstack-transport-metadata.py 2>&1 | tee artifacts/helper-role/transport-metadata-tests.log
           python3 scripts/test-showcase-role.py 2>&1 | tee artifacts/helper-role/tests.log
       - name: Build standalone iOS 15 arm64 metadata tool
         run: |
@@ -43,7 +44,7 @@ jobs:
             xcodebuild -version
             xcrun --sdk iphoneos clang --version
             xcrun --sdk iphoneos --show-sdk-version
-            ldid -v 2>&1 || true
+            brew list --versions ldid
           } > artifacts/helper-role/BUILD.txt
       - uses: actions/upload-artifact@v4
         if: always()

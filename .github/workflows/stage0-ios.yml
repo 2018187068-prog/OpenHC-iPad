@@ -77,7 +77,7 @@ jobs:
           codesign -d --verbose=4 "$binary" 2>&1 | tee ../artifacts/logs/codesign-inspection.log
           grep -q 'CodeDirectory' ../artifacts/logs/codesign-inspection.log
           brew info ldid | tee ../artifacts/logs/ldid-version.txt
-          grep -q '/var/jb/usr/bin/openhc-bridge-check' ../artifacts/logs/deb-layout.log
+          grep -q 'var/jb/usr/bin/openhc-bridge-check' ../artifacts/logs/deb-layout.log
           grep -q 'iphoneos-arm64' ../artifacts/logs/deb-control.log
           bash ../scripts/verify-device-binary.sh "$binary"
       - uses: actions/upload-artifact@v4

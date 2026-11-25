@@ -28,23 +28,23 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 ## Validation status
 
 - Source/configuration review: completed for the items above.
-- Kotlin/Native framework build: passed on GitHub macOS 15 arm64 runner, GitHub Actions run `45619037486`, commit `20671c19e4a6405aa83db90478adcaf74706fcd0`.
+- Kotlin/Native framework build: passed on GitHub macOS 15 arm64 runner, latest successful GitHub Actions run `45620285649`, commit `bd0168441fb8362cd0466acd0227242ebd77f8d5`.
 - Shared `jvmTest` and `iosSimulatorArm64Test`: both passed on that run (`BUILD SUCCESSFUL`). This confirms the test suites run on JVM and simulator, not an installed app on the physical iPad.
 - Objective-C link, static-link dependency inspection, arm64, package layout/metadata, system-library inspection, and iOS minimum checks: passed in CI. Framework archive members report minimum iOS 12.0; the Theos executable reports minimum iOS 15.0.
-- Theos reported the `ldid` signing stage and the executable contains CodeDirectory metadata. The current workflow now asks `ldid -h` to inspect it directly; the downloaded passing run predates this more precise log check. This is an ad-hoc/fakesign build with no certificate identity, not a trusted developer signature.
+- Theos reported its signing stage; `ldid -h` found an embedded CodeDirectory and CDHash. This is a local ad-hoc/fakesign result with no developer certificate identity, not proof of trusted signing or device acceptance.
 - Native simulator test task: passed. A GUI simulator app launch and physical device run have not been done.
 - Physical iPad mini 4: not run; no configured device SSH connection was found.
 - WifiChannels JVM/Native shared test: passed in the macOS CI run above on both JVM and iOS simulator.
 
 ## Successful CI artifacts
 
-Downloaded to `D:\OpenHC-iPad\artifacts\ci-run-45619037486\openhc-ipad-stage0-20671c19e4a6405aa83db90478adcaf74706fcd0\` (ignored by Git):
+Downloaded to `D:\OpenHC-iPad\artifacts\ci-run-45620285649\openhc-ipad-stage0-bd0168441fb8362cd0466acd0227242ebd77f8d5\` (ignored by Git):
 
 - `iosArm64/OpenHCBridge.framework/` (static arm64 framework and Objective-C header).
 - `deb/com.gcbond.openhc-bridge-check_0.1.0_iphoneos-arm64.deb` (rootless package).
 - `logs/` and `BUILD.txt` (Kotlin/Native, test, Theos, linker, package, SDK and inspection output).
 
-SHA-256: framework archive `DD0E93506ADBD650B8C313DFD4235EDF1E7458C6DA9C67B0A69C78254FA94149`; DEB `FFA3CFEDB760ADE5CE0426F1A8659AB5735FB6AE907A3DFA917D4291D0F8AE87`.
+SHA-256: framework archive `1B33DA2067763D1DE5166F7B8C7E783E9686B98102E6B73584C2A6104D3A4F52`; DEB `45FC16BC3F94C938BDB2AFA6BC355631B936A2E30610B09B0DF93BD4F6CD9FD8`.
 - First macOS CI run compiled and linked the `iosArm64` framework successfully in 1m 6s; a local inspection script then failed because it passed the archive path to `lipo` in the wrong argument position. Corrected the architecture inspection and added a static-archive minimum-iOS check before rerun.
 - Second macOS CI run passed static-framework build/inspection and both shared JVM and Native simulator test tasks. Theos bootstrap then failed because its recursive clone already populated the `sdks` submodule and the workflow tried to clone that directory a second time. Removed the redundant clone; Theos package/signing checks remain pending.
 - Third macOS CI run again passed the framework and shared tests, then compiled the Theos Objective-C source far enough to show the framework header search path was not being passed to Clang. Switched to Theos' documented per-target compiler/linker flags for `-F`; also corrected the device-binary `lipo` argument order.

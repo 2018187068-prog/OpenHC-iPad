@@ -49,7 +49,7 @@ jobs:
       - name: Install Theos and ldid
         shell: bash
         run: |
-          brew install ldid
+          brew install ldid dpkg
           git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
       - name: Build rootless Theos package
@@ -78,7 +78,7 @@ jobs:
           ldid -e "$binary" > ../artifacts/logs/ldid-entitlements-check.txt
           brew info ldid | tee ../artifacts/logs/ldid-version.txt
           grep -q '/var/jb/usr/bin/openhc-bridge-check' ../artifacts/logs/deb-layout.log
-          grep -q 'iphoneos-arm' ../artifacts/logs/deb-control.log
+          grep -q 'iphoneos-arm64' ../artifacts/logs/deb-control.log
           bash ../scripts/verify-device-binary.sh "$binary"
       - uses: actions/upload-artifact@v4
         with:

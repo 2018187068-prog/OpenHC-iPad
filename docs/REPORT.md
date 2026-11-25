@@ -36,6 +36,7 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 - Second macOS CI run passed static-framework build/inspection and both shared JVM and Native simulator test tasks. Theos bootstrap then failed because its recursive clone already populated the `sdks` submodule and the workflow tried to clone that directory a second time. Removed the redundant clone; Theos package/signing checks remain pending.
 - Third macOS CI run again passed the framework and shared tests, then compiled the Theos Objective-C source far enough to show the framework header search path was not being passed to Clang. Switched to Theos' documented per-target compiler/linker flags for `-F`; also corrected the device-binary `lipo` argument order.
 - Fourth macOS CI run passed framework and shared tests and compiled through header inclusion; Kotlin's generated Objective-C class name carries the module prefix `OHCB`. Updated the Theos client to call the generated `OHCBBridgeSelfCheck` class; package/link/signing checks remain pending.
+- Fifth macOS CI run passed framework inspection, both shared test targets, Theos compile/link, rootless staging, and Theos signing; it produced an `iphoneos-arm64` DEB. Post-build inspection stopped because macOS lacks `dpkg-deb` by default. Added Homebrew `dpkg` and corrected the expected package architecture field from `iphoneos-arm` to `iphoneos-arm64`.
 
 ## WifiConnectionInfo dependency assessment (source review only)
 

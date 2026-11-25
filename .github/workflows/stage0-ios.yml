@@ -67,7 +67,7 @@ jobs:
           binary=../artifacts/extracted-deb/var/jb/usr/bin/openhc-bridge-check
           test -f "$binary"
           file "$binary" | tee ../artifacts/logs/theos-binary.txt
-          lipo -verify_arch arm64 "$binary"
+          lipo "$binary" -verify_arch arm64
           otool -L "$binary" | tee ../artifacts/logs/theos-link-dependencies.log
           if grep -q 'OpenHCBridge' ../artifacts/logs/theos-link-dependencies.log; then
             echo 'OpenHCBridge was dynamically linked instead of statically linked' >&2

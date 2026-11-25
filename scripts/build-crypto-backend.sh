@@ -32,7 +32,7 @@ for target in iosArm64 iosSimulatorArm64; do
         export CROSS_SDK="$(basename "$SDKROOT")"
         export IPHONEOS_DEPLOYMENT_TARGET=15.0
         perl "$work/source/Configure" "$config" no-shared no-tests no-apps no-module no-dso no-asm \
-            -arch arm64 "$minimum" --prefix="$work/install-$target"
+            "$minimum" --prefix="$work/install-$target"
         make -j3 build_libs
         cp libcrypto.a "$dest/"
         xcrun --sdk "$sdk" clang -arch arm64 -isysroot "$SDKROOT" "$minimum" -O2 \

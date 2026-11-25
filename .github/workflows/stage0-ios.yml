@@ -68,6 +68,8 @@ jobs:
         run: |
           set -o pipefail
           cd theos
+          mkdir -p layout/usr/share/doc/com.gcbond.openhc-bridge-check
+          cp ../artifacts/licenses/OpenSSL-LICENSE.txt layout/usr/share/doc/com.gcbond.openhc-bridge-check/
           make package FINALPACKAGE=1 THEOS="$THEOS" TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S 2>&1 | tee ../artifacts/logs/theos-package.log
           mkdir -p ../artifacts/deb
           cp packages/*.deb ../artifacts/deb/
@@ -88,6 +90,7 @@ jobs:
             echo 'Crypto backend must be statically linked' >&2
             exit 1
           fi
+          nm "$binary" | grep '_oh_crypto' > ../artifacts/logs/crypto-linked-symbol.log
           otool -l "$binary" | tee ../artifacts/logs/theos-load-commands.log
           ldid -h "$binary" 2>&1 | tee ../artifacts/logs/ldid-signature-inspection.log
           grep -q 'CodeDirectory' ../artifacts/logs/ldid-signature-inspection.log

@@ -8,7 +8,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class Fe35ControlNegotiatorTest {
-    private val authRequest = hex("838d86938968696361724175746881")
+    private val authRequest = hex("838d86938968696361724175746880")
     private val fe36 = hex("0000fe3600001000800000805f9b34fb")
 
     @Test
@@ -45,7 +45,7 @@ class Fe35ControlNegotiatorTest {
             machine.onMessageLayerPayload(wrongBusiness).single()).payload
         assertTrue(rejected.contentEquals(hex("848f818086928968696361724175746880")))
 
-        val invalidUuid = hex("83918693896869636172417574688183010203")
+        val invalidUuid = hex("83918693896869636172417574688083010203")
         assertIs<Fe35ControlNegotiator.Action.SendControl>(machine.onMessageLayerPayload(invalidUuid).single())
         val malformed = machine.onMessageLayerPayload(hex("838d8693896869"))
         assertIs<Fe35ControlNegotiator.Action.AbortControl>(malformed.single())
@@ -61,7 +61,7 @@ class Fe35ControlNegotiatorTest {
     @Test
     fun suppliedSixteenByteUuidIsUsedAndOutOfRangeListenerChannelIsRejected() {
         val supplied = hex("101112131415161718191a1b1c1d1e1f")
-        val request = hex("839e8693896869636172417574688190") + supplied
+        val request = hex("839e8693896869636172417574688090") + supplied
         val machine = Fe35ControlNegotiator(Fe35ControlNegotiator.Mode.PASSIVE)
         val listener = assertIs<Fe35ControlNegotiator.Action.OpenAuthListener>(
             machine.onMessageLayerPayload(request).single())

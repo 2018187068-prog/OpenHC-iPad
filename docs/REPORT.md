@@ -32,6 +32,7 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 - Simulator: not run; simulator success would not establish device success.
 - Physical iPad mini 4: not run; no configured device SSH connection was found.
 - WifiChannels JVM/Native shared test: implemented against the fixed source; the JVM task was attempted but could not start because the machine exposes only Java 8 JRE (no compiler). A temporary JDK download stalled and was stopped. Native simulator tests need macOS CI.
+- First macOS CI run compiled and linked the `iosArm64` framework successfully in 1m 6s; a local inspection script then failed because it passed the archive path to `lipo` in the wrong argument position. Corrected the architecture inspection and added a static-archive minimum-iOS check before rerun.
 
 ## WifiConnectionInfo dependency assessment (source review only)
 

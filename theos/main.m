@@ -3,6 +3,7 @@
 #include <string.h>
 int openhc_platform_probe(void);
 int openhc_btstack_probe(void);
+int openhc_btstack_services_probe(void);
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -21,10 +22,12 @@ int main(int argc, const char *argv[]) {
             return openhc_platform_probe();
         } else if (argc == 2 && strcmp(argv[1], "--btstack") == 0) {
             return openhc_btstack_probe();
+        } else if (argc == 2 && strcmp(argv[1], "--btstack-services") == 0) {
+            return openhc_btstack_services_probe();
         } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-            puts("OPENHC_STAGE0_VERSION=0.3.1");
+            puts("OPENHC_STAGE0_VERSION=0.3.2");
         } else {
-            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--version]\n", stderr);
+            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--version]\n", stderr);
             return 2;
         }
     }

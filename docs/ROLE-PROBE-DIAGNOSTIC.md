@@ -178,12 +178,12 @@ shape it supplies can only be learned during the first bounded controlled
 connection. The adapter's `auto` profile observes that event on that same
 first connection, accepts only the two source-supported shapes, and sends no
 application bytes on unknown shape/status/timeout; cleanup is bounded. This
-runtime observation is not a prerequisite to implementing the adapter. The
-local AF_UNIX test source is wired into the macOS CI workflow, but no CI result
-for this revision is yet available. The current Windows host has no clang, so
-the local socket test cannot compile its C fixture here. No on-device SDP,
-synthetic peer I/O, exclusive controller ownership, or real HiCar handshake
-has passed.
+runtime observation is not a prerequisite to implementing the adapter. CI
+`45698383060` compiled and executed the local AF_UNIX fixture and then compiled
+the Theos arm64 package. The Windows host still has no clang, so local C
+compilation was unavailable; the CI's C process markers are the verification
+evidence. No on-device SDP, synthetic peer I/O, exclusive controller
+ownership, or real HiCar handshake has passed.
 
 The reference daemon consumes `DAEMON_EVENT_RFCOMM_CREDITS` internally and
 retries parked socket sends; the client sends normal `RFCOMM_DATA_PACKET`

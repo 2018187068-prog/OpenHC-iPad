@@ -209,3 +209,33 @@ helper-disappearance gate above are withdrawn. Current driver conservatively
 reports `SHARED_HELPER_ROLE_UNVERIFIED`; the next gate is metadata-only role
 verification. No helper was stopped, no radio operation was repeated, and no
 broker authentication request, argv/credential/log or key access was made.
+
+## Synthetic FE35 adapter CI build (2026-11-26)
+
+Commit `ff256413a2241ef08a0b007316b41712a148387c`, published to the existing
+private `main` branch with a normal fast-forward push, passed GitHub-hosted
+`macos-15` workflow run `45698383060` (3m40s). The workflow compiled the C test
+executable with clang and ran it against a local AF_UNIX BTstack mock. The
+downloaded C log reports `BTSTACK_TRANSPORT_SOCKET_TESTS_OK=10` and
+`BTSTACK_TRANSPORT_SOCKET_REOPEN_OK=2`, covering strict/reference opened-event
+shapes, delayed echo with heartbeat refresh, malformed event, failed create,
+open timeout, echo mismatch, close timeout, echo timeout, security-event
+rejection, successful close, and two separate close/reopen runs. The same
+workflow passed session gate (5), runner (7), metadata (9), existing power and
+recovery synthetic tests (14), JVM/Native simulator tests, iOS framework
+inspection, and Theos arm64 package build.
+
+The package was versioned `0.3.3` in commit
+`ff256413a2241ef08a0b007316b41712a148387c` so it is distinct from the existing
+0.3.2 release. Downloaded artifact directory:
+`artifacts/ci-run-45698383060/openhc-ipad-stage0-ff256413a2241ef08a0b007316b41712a148387c/`.
+DEB: `deb/com.gcbond.openhc-bridge-check_0.3.3_iphoneos-arm64.deb`, 1,300,190
+bytes, SHA-256
+`E9CFD3C18301E5FE5146AFF48D3C686F4D110B16DE5B87304CB70D85A74F209C`.
+The package and logs were downloaded and inspected locally; the DEB was not
+installed, and no device or Bluetooth operation was performed. These results
+prove build and local socket-mock behavior only. There is no power-driver
+WORKING callback/lease integration, FE35 incoming/listen/accept path, real
+HiCar protocol parser or auth channel, installed-daemon event observation, or
+physical Honor connection evidence. A controlled synthetic echo peer remains
+an optional engineering test and is not a prerequisite for HiCar work.

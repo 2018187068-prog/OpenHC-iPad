@@ -8,10 +8,10 @@
 - 目标设备为 iPad mini 4 Wi-Fi (`iPad5,1`)，iPadOS 15.8.8，Dopamine rootless。既有 USB SSH 可用记录不等同于 lockdown 配对恢复。
 - 已有物理证据：Kotlin bridge、Wi-Fi parser、认证向量、平台 inventory、BTstack 版本/状态查询、FE35/FE36 本地服务注册/清理两轮，以及 2026-11-26 一次 BTstack power on/off 与 Apple/BTstack 服务恢复闭环。不得重复这些检查。
 - 未通过：有限会话 gate 的当前真机观测、无线 SDP、双通道 RFCOMM I/O、installed BTdaemon 事件格式兼容、exclusive controller ownership、no-forced-link-auth 运行时证据和 HiCar 握手。上次 power 闭环中无竞争前提不充分，因此不记 ownership PASS。
-- 实现入口：`scripts/btstack-session-gate.py` 是有限、点时证据分类器；`theos/btstack-probe.c` 已实现一个仅用于受控 synthetic peer 的 FE35 outbound socket adapter，并由 `--btstack-control-synthetic` 接入 Theos CLI；`scripts/btstack-transport-runner.py` 仍是显式计划驱动的离线双通道核心。C adapter 有 AF_UNIX 合成服务器测试，但本 Windows 环境没有 clang，新增 C 代码尚未本地编译；不能称为可安装/真机验证的二进制。
+- 实现入口：`scripts/btstack-session-gate.py` 是有限、点时证据分类器；`theos/btstack-probe.c` 实现仅供受控 synthetic peer 的 FE35 outbound socket adapter，`--btstack-control-synthetic` 接入 Theos CLI；`scripts/btstack-transport-runner.py` 是显式计划驱动的离线双通道核心。Mac CI 已编译并运行 C AF_UNIX mock，且 Theos 构建 `0.3.3` arm64 DEB；该包未安装、未进行无线/真机验收。
 - 当前会话结论：broker endpoint owner PID 曾与 comm-only `CarPlay Simulator` PID 27078 匹配，且 broker 源码分支在网络会话初始化前进入 broker loop，属已证实 broker 证据；这不代表没有并发活动会话。另有已知活动 helper 的正向观测才分类为活动会话；信息缺失、未解释 shared helper、残留 marker 或恢复活动均为 UNKNOWN。marker、进程名和进程不存在单独不构成放行条件。`CLEAR_SNAPSHOT` 仅表示这组限定指标在该次快照未见，不声称绝对无并发或没有未来竞争。
 - 本轮限制：仅本地代码、合成测试及文档；未连接设备、未上电/卸载/配对/改热点/kill、未读取身份或认证材料、未作新签名信任操作，也未启用收费 runner。
-- 本轮此前实测：session gate 5/5、transport runner 7/7、metadata reader 9/9、power/recovery synthetic 14/14 通过。C socket test 编译/运行和 Theos CI 结果将在本次发布后更新；Python-only tests 不作为 C adapter 通过证据。
+- CI 验收：commit `ff256413a2241ef08a0b007316b41712a148387c`，GitHub-hosted `macos-15` run `45698383060` success。该 workflow 用 clang 编译 C test executable 并实际启动 10 个 AF_UNIX case：strict/reference opened profile、delayed echo/heartbeat、bad event length、failed create、open timeout、echo mismatch、close timeout、echo timeout、security event rejection；随后又成功 close/reopen 两次。Session gate 5/5、runner 7/7、metadata reader 9/9、power/recovery synthetic 14/14、iOS framework、shared JVM/Native tests 与 Theos arm64 package 均通过。DEB 与逐案日志位于 `artifacts/ci-run-45698383060/openhc-ipad-stage0-ff256413a2241ef08a0b007316b41712a148387c/`；版本 `0.3.3`，SHA-256 `E9CFD3C18301E5FE5146AFF48D3C686F4D110B16DE5B87304CB70D85A74F209C`。未安装此包、未连接或操作设备；上述结果是编译/合成测试证据，不是无线链路证据。
 
 ## 下一步路径
 
@@ -27,5 +27,5 @@
 
 - 本地 ownership 外部快照、恢复闭环和命令记录：`artifacts/device-validation-20261126/`；详细来源与限制见 `docs/BTSTACK-OWNERSHIP.md`。
 - 工具启动路径、SHA-256、SIGKILL 137 和 rootless 路径成功证据：`docs/ROLE-PROBE-DIAGNOSTIC.md`。启动位置差异已解决；终止原因仍未知，不追查 SIGKILL 内核原因。
-- 最新先前组合 CI `45683689513` / `dddd437` 的 22 项测试是历史证据；本轮新增 Python 与 C socket 测试的实际执行情况以本次 worker 报告为准。新增 C socket test 已接入 CI workflow，尚无本轮 CI 结果。
+- 更早 CI `45683689513` / `dddd437` 的 22 项测试是历史证据；本轮 C/adapter 与 package 验收以 `45698383060` 和本节结果为准。
 - 更早的 PID、plist/job 状态、工具启动待验证结论均为历史快照，不可当作当前状态或重复执行指令。lockdown 无需修复。

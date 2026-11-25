@@ -11,8 +11,10 @@ runner core, and a bounded FE35 outbound C socket adapter/CLI for a controlled
 synthetic peer. Installed BTdaemon RFCOMM opened-event routing/length remains
 unknown until the adapter's first controlled connection observes it. The C
 socket mock is wired into CI but has not run in this Windows environment
-because clang is unavailable. No wireless SDP/I/O or real HiCar handshake has
-passed. The synthetic loopback is an optional engineering test; there is no
+because clang is unavailable. GitHub-hosted macOS run `45698383060` passed the
+actual C mock and Theos package build; the candidate DEB is version 0.3.3 and
+was not installed. No wireless SDP/I/O or real HiCar handshake has passed. The
+synthetic loopback is an optional engineering test; there is no
 evidence the user has a suitable peer, and it is not a HiCar project
 prerequisite. No device command is ready because the adapter is not integrated
 with the existing power driver's guarded WORKING lifetime. The shortest real

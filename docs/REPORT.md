@@ -142,6 +142,14 @@ Only the known `/tmp/BTstack` socket was checked. Its absence does not determine
 
 The 00:39 screenshot confirms `state = running`, `runs = 1`, `pid = 35779`, and `last exit code = (never exited)` after the manual kickstart instruction. User screenshot evidence establishes launchd registration, listener creation and a running process at that instant. It does not establish BTstack request/response, radio readiness or FE35/FE36 services.
 
+## Bounded BTstack query CI evidence (2026-11-26)
+
+Run `45657981526`, commit `1d0233fc290886291a786a4dc030e7d2db98e5c9`: success. The new standalone C client's nine macOS synthetic-server cases passed, including fragmentation, unrelated events, EOF, oversized frames, invalid event length, wrong channel, timeout, event flood and missing endpoint. Downloaded JUnit XML confirms 23 JVM / 21 iosSimulatorArm64 tests, zero failures/errors. Theos arm64, minimum iOS 15, static-link/system-dependency, ldid CodeDirectory and rootless layout checks passed. This is build/mock evidence only for the new client; no physical `--btstack` response has yet been supplied.
+
+Downloaded framework, DEB, test reports, licenses and build logs under `artifacts/ci-run-45657981526/`; full log `artifacts/ci-run-45657981526.log`. Independently read the DEB ar/tar archives: version 0.3.1, architecture iphoneos-arm64, executable `/var/jb/usr/bin/openhc-bridge-check`, bytes equal the CI extracted executable and both new query/version markers present. Convenience copy: `artifacts/device-ready/com.gcbond.openhc-bridge-check_0.3.1_iphoneos-arm64.deb`. SHA-256: `ee119bac546bcc1c628ea6fbc3fd7742d655ad183f1c385d94ce6e6889c3d50f`. Summary: `artifacts/btstack-query-validation-summary.json`.
+
+Next manual action is Sileo installation followed by `--version` (expect 0.3.1) and `--btstack` (expect version/revision/state and `BTSTACK_QUERY_OK`, or explicit failure stage). See `docs/BTSTACK-PROBE.md` for daemon cleanup effects and remaining live gate boundaries. Existing auth/parser device passes are preserved. No additional paid runner/quota was enabled.
+
 At 00:31–00:32 the correctly spaced print output confirms `system/ch.ringwald.BTstack` is registered, program `/var/jb/usr/bin/BTdaemon`, `state = not running`, `runs = 0`, `last exit code = (never exited)`, and a passive stream listener `/tmp/BTstack`. This is a registered, not-yet-launched service; it is not evidence of a crash. Socket existence was launchd listener evidence, not daemon execution. Next bounded step is a single manual launch followed by state/PID/run/exit inspection; no successful transport operation is claimed.
 
 The user's next screenshot explicitly shows `AUTH_VECTORS_OK`: record the synthetic authentication-vector device run as passed from user-provided screenshot evidence. This does not validate a live authentication transcript or handshake. Installed package version/hash and exit status remain uncaptured.

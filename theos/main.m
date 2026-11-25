@@ -1,9 +1,12 @@
 #import <Foundation/Foundation.h>
 #import <OpenHCBridge/OpenHCBridge.h>
+#include <stdlib.h>
 #include <string.h>
 int openhc_platform_probe(void);
 int openhc_btstack_probe(void);
 int openhc_btstack_services_probe(void);
+int openhc_btstack_control_synthetic(const char *address, unsigned channel,
+                                     const char *profile, const char *run_dir);
 int openhc_btstack_ownership_probe(void);
 
 int main(int argc, const char *argv[]) {
@@ -27,10 +30,15 @@ int main(int argc, const char *argv[]) {
             return openhc_btstack_services_probe();
         } else if (argc == 2 && strcmp(argv[1], "--btstack-ownership") == 0) {
             return openhc_btstack_ownership_probe();
+        } else if (argc == 6 && strcmp(argv[1], "--btstack-control-synthetic") == 0) {
+            char *end = NULL;
+            unsigned long channel = strtoul(argv[3], &end, 10);
+            if (!end || *end || channel < 1 || channel > 30) return 2;
+            return openhc_btstack_control_synthetic(argv[2], (unsigned)channel, argv[4], argv[5]);
         } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
             puts("OPENHC_STAGE0_VERSION=0.3.2");
         } else {
-            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--version]\n", stderr);
+            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--version]\n", stderr);
             return 2;
         }
     }

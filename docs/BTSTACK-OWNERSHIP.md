@@ -1,163 +1,80 @@
-# Controller ownership and recovery audit — 2026-11-26
+# BTstack ownership, session gate, and transport validation
 
-Latest continuation: USB SSH subsequently resumed. Identical baseline probe
-bytes fail zero-socket startup under `/var/root` but pass from the rootless
-`/var/jb/usr/bin/openhc-role-probe-dacf5f82` path. One metadata-only query from
-that copy established broker endpoint owner PID 27078, matching the current
-CarPlay Simulator comm; zero broker application bytes were sent/read. The
-kernel termination reason and complete no-competing-session gate remain
-unverified. Showcase main PID 37681 is also present; presence is not an active
-session assertion. The power-driver gate has not been relaxed. See
-`ROLE-PROBE-DIAGNOSTIC.md` for exact evidence and the rootless packaging fix.
-No more trust reset, helper stop, unload or power action is requested. The
-power trial below is historical and is not authorization to repeat it.
+更新时间：2026-11-26。适用设备 iPad5,1 / iPadOS 15.8.8 / Dopamine rootless。下列设备记录是有时间戳的历史证据，不是当前设备状态；当前交接见 `HANDOFF-CURRENT.md`。
 
-The external root-shell capture is complete. The initial audit below was read-only; a subsequent bounded power/restoration trial is recorded in the latest-result section. **The uncontested ownership gate remains incomplete because a shared helper's role was not verified in the initial preflight. Its process name alone does not establish competition.** Existing USB SSH through iproxy PID 39484 / port 2222 was reused. Lockdown pairing was not retried.
+## 证据状态
 
-## Device evidence
+### 已完成的历史真机工作
 
-Captured as UID 0, using `/var/jb/usr/bin/launchctl` and `/bin/ps`. Raw local evidence:
+- BTstack 查询返回版本 1.1、revision 3257、state 0；FE35/FE36 本地注册、SDP record 创建、清理和重注册两轮成功。历史本地 RFCOMM channel 16/17 不是无线协商结果。
+- 2026-11-26 root 快照曾见 BTdaemon、Apple `bluetoothd`、`BTLEServer` 同时存在；BlueTool job 已注册但当时 idle。日志在 `artifacts/device-validation-20261126/root-ownership-snapshot-20261126-022903.log` 和 `root-ownership-detail-20261126-023012.log`。
+- 后续一次有界 power-only 真机闭环观测到 BTstack `OFF → INITIALIZING → WORKING → HALTING → OFF`，恢复守护按 BlueTool、bluetoothd、基线 BTstack 顺序恢复并经独立快照验收。日志 `power-trial-20261126-024343.log`、`post-power-helper-audit.log`。SSH loss/deadline 恢复路径只有合成测试证据。
+- 该次 preflight 漏过共享 helper，故 power 状态和恢复状态观测有效，但它不是“无竞争”或 exclusive ownership PASS；不得重复 power cycle。
+- 已完成的 owner 查询一次得到 socket peer PID 27078，零 broker 应用字节读写；comm-only 快照将其识别为 `CarPlay Simulator`。参考源码 `Showcase.m` 表明共享 executable 可运行常驻 BAA broker，broker 分支在网络 session 初始化前进入 loop。PID/socket/source 三项支持分类为 broker。不能据此排除另一个同时存在的活动 session，也不能推断安装二进制必与参考源码一致。没有读取 argv、broker payload、认证日志或密钥材料。
+- 主机工具相同字节在 `/var/root` 启动 SIGKILL/137，在 `/var/jb/usr/bin` 自检成功；终止 namespace/code 未知。路径差异已有验证，不追查 SIGKILL 内核原因。详情见 `ROLE-PROBE-DIAGNOSTIC.md`。
 
-- `artifacts/device-validation-20261126/root-ownership-snapshot-20261126-022903.log`
-- `artifacts/device-validation-20261126/root-ownership-detail-20261126-023012.log`
+### 当前有限会话判据
 
-| Service/process | Observed state | Interpretation |
+实现：`scripts/btstack-session-gate.py`。只有 socket owner PID 是当前 comm 中已识别 broker 且 shared-helper 集合恰好只有该 PID 时才可 `BROKER`；额外 shared helper 一律为 `UNKNOWN`。每次只依据一组有界 metadata 快照，分类如下：
+
+| 分类 | 必要观测 | 处理 |
 | --- | --- | --- |
-| `ch.ringwald.BTstack` | running, PID 35779, `/var/jb/usr/bin/BTdaemon`; launchd owns `/tmp/BTstack` listener | Local daemon availability, not HCI ownership |
-| `com.apple.bluetoothd` | running, PID 30370, `/usr/sbin/bluetoothd` | Apple Bluetooth has not been relinquished for a BTstack trial |
-| `com.apple.BlueTool` | registered, not running; last idle jetsam exit / list status 9 | An on-demand service remains loaded; absence of its process is not an unload |
-| `com.apple.BTServer.le` | running, PID 485, `/usr/sbin/BTLEServer` | Apple LE service is still active |
-| `com.apple.BTServer.avrcp`, `.map`, `.pbap` | registered, not running | Not evidence of exclusive BTstack ownership |
-| `com.apple.BTServer` | no such service, exit 113 | This OS uses subservice labels; do not interpret the missing umbrella label as absence of Apple Bluetooth |
-| Showcase | main process PID 27255 present; no `CarDisplaySim` in the process capture | No Bluetooth helper observed; app presence alone does not establish its UI/session state |
-| `com.reng.showcase.bluetooth-recovery` | absent, exit 113 | No existing Showcase crash-recovery job can be relied on |
+| `BROKER` | 固定 broker socket owner PID 与当前 comm PID 匹配；owner 角色由限定源码/平台 metadata 交叉识别；完整快照中没有已知活动 helper；无恢复 job；marker 为 absent | 仅将该 owner 解释为 broker，不作为全局无线 ownership 放行；若本轮还需改变 controller 状态，仍需单独授权和 gate |
+| `ACTIVE_SESSION` | 与已识别 PID 绑定的正向 session-state metadata 表明已知 helper（如 `CarDisplaySim`、`carplay_bt`）处于活动会话 | 阻断；不停止、不 kill |
+| `CLEAR_SNAPSHOT` | 固定检查集完整、已知 helper 的活动状态 metadata 未报活动、shared helper 均未出现、无恢复 job、marker 明确 absent、无未解释 broker owner | 只表示该时点的限定检查集未见竞争；进程名不单独证明活动或空闲，不声称绝对不存在并发或消除后续竞态 |
+| `UNKNOWN` | 快照不全、shared helper 角色未明、socket owner 与 comm 不匹配、恢复 job 活跃、marker 残留/无法读取或 owner/marker 元数据缺失 | 阻断；只补造成 UNKNOWN 的最小 metadata，不追加泛化探针 |
 
-`/var/root/Library/ShowcaseBluetooth/recovery.plist` exists but its ready file does not. `/tmp/showcase_bt_owned` is absent. `/tmp/showcase_bt_ready` exists despite the absent guard/helper: treat it as a stale/unverified marker, not a successful takeover.
+Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。下一次真机目标为一次受控 synthetic FE35 回环验收，包含有限 session preflight 和首次连接 profile 观察。socket owner PID/comm 已查过，不重复查询；如 session-state metadata 无法获取，即 `UNKNOWN` 并停止。无需在实现 adapter 前另做 RFCOMM metadata-only 连接：格式由 adapter 在首次受控连接中有界检测，识别失败则不发应用字节并清理。不复测工具启动、不执行无关上电探针。
 
-`dpkg-query -S` attributes BTdaemon to `com.rostane.showcase`, installed version `1.0~beta5-3`. This is package provenance only, not proof that its executable matches the reference source commit. The earlier version/revision query and local FE35/FE36 service cycles remain passed and were not repeated.
+## 离线实现与明确阻塞
 
-The 0.3.2 binary's `OWNERSHIP_SERVICE_PRINT=UNAVAILABLE_IN_SANDBOX` and `OWNERSHIP_PROCESS_SNAPSHOT=UNAVAILABLE_IN_SANDBOX` are explicit limitations. Its `OWNERSHIP_SNAPSHOT_DONE` only means that limited snapshot completed. The external logs above supply the previously missing service/process evidence; neither output is an ownership PASS.
+`scripts/btstack-transport-runner.py` 现在只消费显式 session plan，不解析 SDP 也不从 SDP 虚构 direction：`WirelessReceiverSession.start()` 是 FE35 本机 listen；`startReconnect()` 才是 FE35 本机 connect。正常 `SocketRequested` 事件触发本机开 auth listener，监听完成后再将本地 channel/UUID 回报；`AuthChannelReady` 是 reconnect flow 的 peer channel/UUID，才触发本机 auth connect。证据来自只读参考 `WirelessReceiverSession.kt` 的 `start/startReconnect`、`onSocketRequest/onAuthListening/onAuthChannelReady` 及 `NearbySession.acceptRfcommSocket`。同一个数字只有在两条本机 listener 同时占用时才冲突；peer connect 的 channel 与本机 listener channel 不在同一 namespace。
 
-## Reference implementation and applicability
+新增 iOS C CLI `--btstack-control-synthetic` 连接固定 `/tmp/BTstack`，只在现有 BTstack state 已为 WORKING 且调用方 run-dir 存在 READY/未过期 deadline 时，按显式 peer 地址与 RFCOMM channel 建立 FE35 类控制连接。该命令只交换固定 `OPENHC-SYNTHETIC-CONTROL-v1` 测试字节，不发 power command，不执行 SDP、配对或 HiCar 握手；它只能用于另一个受控 synthetic peer，不能对 Honor/真实手机运行。它在首次受控连接内按指定 profile 或 `auto` 识别 `strict-17` / `reference-17-len16`；未知 shape/事件立即拒绝应用字节，若 CID 可解析则尝试 disconnect，否则关闭 client socket 触发 daemon 按 client ownership 清理。每次连接有 deadline，清理等待有界，并更新已存在恢复守护 heartbeat。主机侧须在调用前确认对应 recovery launchd job 已注册；run-dir marker 本身不证明 job 活着。源码已接入 Theos CLI，当前工作树尚未产出包含新代码的已构建二进制。
 
-Read-only Showcase checkout: `ce9d1d50758f67307deb3f00c901a8e82894930c`.
+兼容证据分两类：静态可离线确认的是 socket packet header、RFCOMM create/disconnect opcode、event 字段 offsets、`rfcomm.c` 成功 callback 的 17-byte 实际长度/16 声明，以及 daemon 读取 byte 13 routing 的源码事实；只读参考文件分别是 `platform/daemon/src/socket_connection.c`、`platform/daemon/src/daemon.c`、`src/classic/rfcomm.c` 与 `src/btstack_event.h`。reference daemon 在 `DAEMON_EVENT_RFCOMM_CREDITS` 中调用 `daemon_retry_parked()` 并消费内部 credits event，不把该事件转给 socket client；adapter 因而发送标准 `RFCOMM_DATA_PACKET`，不自行发放 credits，合成对端 echo 和 deadline 是该单次发送的应用层确认。若 installed daemon 将未识别事件路由到 client，adapter 立即拒绝并关闭连接。installed BTdaemon 是否同源、opened event 是否真的送达本 client、运行时采用 strict 还是 reference 格式，只能在首个受控连接读取 bounded metadata 时得知，不是 adapter 实现前置条件。新 CLI 的 `auto` 在首次受控连接内检测 `strict-17` 或 `reference-17-len16`；未知 shape、异常状态或超时均不发应用字节，若成功 CID 可解析则尝试有界 disconnect，否则关闭 client 清理。若 daemon 不路由该事件，现有静态源码不能证明装机行为；当前最小观测就是这次可选 synthetic 连接的 profile/timeout 结果，不要求独立 metadata-only 探针。
 
-- `source/Showcase.m:357–398`: arm a launchd-owned recovery shell **before** removing Apple services; require its ready handshake. The reference watches the app PID, so it is not a ready-made lifetime guard for an independent OpenHC probe.
-- `source/Showcase.m:401–413`: restore **BlueTool first, then bluetoothd**; remove the ownership marker and disarm the guard only after initiating restoration. OpenHC's next probe must additionally verify restored service/process state rather than equate load requests with success.
-- `source/Showcase.m:4431–4485`: the non-Taurine rootless path unloads bluetoothd and BlueTool, waits for process exit, then cycles the BTstack launchd job/socket before starting its client. The reference's fixed wait is not proof that the processes exited; the OpenHC gate must check and abort if they remain.
-- `source/Showcase.m:4511–4550`: the reference allows one complete daemon/client retry when no controller events arrive, including a wait before restarting. This is not permission for unbounded retries or escalation to force-kill.
-- `source/Showcase.m:4588–4617`: the force-kill sequence belongs to a `SHOWCASE_TAURINE` block. This device is Dopamine / iPadOS 15.8.8. Do not copy that branch into this runbook.
-- `source/Showcase.m:4776–4787`: stop the session helper, unload BTstack, remove its socket, then return control to Apple.
-- `btstack-rootless/port/ios/src/btstack_control_iphone.m:462–471`: rootless `iphone_on` relies on the caller having unloaded Apple's services; `iphone_off` is a no-op. A BTstack OFF event alone cannot prove Apple restoration.
-- `btstack-rootless/platform/daemon/src/daemon.c:915–934, 1772–1825`: power requests belong to connected clients; absent requests can trigger a delayed power-off. Retain one client for the entire bounded trial and observe cleanup rather than disconnecting immediately after sending power-on.
-- `tests/test_bluetooth_recovery.py` models the reference guard ordering with mocked commands. It is source evidence, not a recovery test on this iPad; no crash/recovery test has been executed here.
+## 真机 transport 验收卡（后续任务，不是本轮授权）
 
-The reference's CarPlay helper, full app Start flow and skywalk test scripts have wider effects (including helpers, network state and raw event logging). Do not run them as a HiCar power probe or copy raw HCI/event logging into OpenHC. No pairing database, credentials, real authentication bytes or controller link keys are to be read or logged.
+### A. 可选的受控 synthetic peer 工程回环
 
-## Next trial: prerequisites and execution order
+- 这是可选的 adapter 工程验证，不是 HiCar 项目完成或真实手机验收的前置条件；目前没有证据表明用户具备相应 synthetic Bluetooth peer。
+- 本地 AF_UNIX mock 只验证 socket framing 和 C 进程的状态/清理行为，不能代替 over-air peer，也不能证明 HiCar 协议正确。
+- 不要把真实 Honor 手机用于 synthetic echo。不得为执行此可选测试而先改变设备 Bluetooth/power 状态。
 
-These are scheduled steps, not device actions already performed. The ownership audit is complete; exclusive ownership, power-on and restored-state gates are still pending.
+### 精确命令与成功标志
 
-1. Prepare a separate bounded power-only probe and recovery guard. Current 0.3.2 exposes no powered or live peer option. Use a launchd job with its own OpenHC label, a ready handshake and an absolute deadline that survives SSH loss/probe crash. Include a manual USB recovery path. Verify the guard and cleanup ordering with mocked platform commands before touching the device. Do not rely on Showcase's currently absent guard, existing ready files, or an SSH-shell trap alone.
-2. Immediately before a trial, confirm no active Showcase/CarPlay/HiCar session or helper is competing. Keep the Showcase UI idle; do not kill the app or reuse its Start flow. Capture the trial baseline once, including loaded services and daemon PID. If state changed since this audit, resolve that before takeover.
-3. Arm the independent guard and positively observe its ready handshake. If readiness is not proved, leave Apple Bluetooth unchanged and stop.
-4. In this observed Dopamine configuration, request unload of **only** `/System/Library/LaunchDaemons/com.apple.bluetoothd.plist` and `/System/Library/LaunchDaemons/com.apple.BlueTool.plist` using the discovered launchctl. Check command results, launchd state and process exit with a short bounded wait. Do not unload BTServer subservices merely because they exist. If either required Apple service remains registered/running or the result is ambiguous, restore and fail; do not add kill commands.
-5. Under the armed guard, cycle only `/var/jb/Library/LaunchDaemons/ch.ringwald.BTstack.plist` as in the applicable reference branch. Remove the known `/tmp/BTstack` socket only after the old daemon has exited. Verify the new launchd job, socket and daemon PID. Do not reuse the previous client connection across the restart.
-6. Open a dedicated probe client and issue one bounded power request. Initial budget: 25 seconds to reach a validated `HCI_STATE_WORKING=2` event, with bounded framing/I/O and numeric metadata only. For this first controlled trial, do not automatically retry; preserve failure state metadata and restore. No discoverability, SDP advertisement, peer pairing, link authentication or AP change in this power-only trial.
-7. Whether success, timeout, malformed event, SSH loss or interruption: stop the probe's own work, release its power request and close its channels/client; bound the OFF/close wait. Unload the trial BTstack job and confirm process exit before socket removal. Load **BlueTool, then bluetoothd**. Verify both jobs are registered, bluetoothd is running/healthy, and BlueTool is available on demand; it need not remain running after idle exit. Confirm Apple's pre-existing BTServer LE registration remains available. A load return code or residual ready file is insufficient.
-8. Restore the pre-trial BTstack registration as an on-demand, unpowered daemon service after Apple restoration, because it was loaded in the baseline. Do not power it during restoration. Verify the resulting launchd/socket state and no unexpected helper. Only after restored state is observed may the recovery guard be disarmed. Report restoration independently from the power result; a failed restore blocks all further trials and requires the prepared USB recovery procedure.
+本地合成验收命令（可在设备任务前执行）：
 
-The future guard must implement the same restoration ordering on abnormal exit and deadline expiry. No guard has been installed or armed by this audit. The above recovery path is reviewed against source but remains untested on this device.
+```powershell
+python scripts\test-btstack-session-gate.py
+python scripts\test-btstack-transport-runner.py
+python scripts\test-btstack-transport-metadata.py
+python scripts\test-btstack-power.py
+python scripts\test-btstack-transport-socket.py
+```
 
-## Latest physical power/restoration result
+此 C CLI 的接口已接入源码，但没有形成可执行的设备流程，因此本交接不提供设备调用命令。CLI 只检查 run-dir `READY`、deadline 和 `result`，在传输中刷新 `heartbeat`；它不注册或查询 launchd job、不创建 power lease，也不触发 power 状态转换。现有 `scripts/btstack-power-trial.py` 的 `Trial.run()` 通过 `PowerProtocol.run()` 完成 OFF→WORKING→OFF 后立即发 `restore-request` 并验证恢复，未暴露 WORKING 窗口回调供 transport 调用；让两个独立流程共用目录也不能阻止 power driver 主动恢复/卸载 guard。因此 guard/lease 与 transport 的驱动集成明确未完成，不能声称 CLI 端到端 ready。
 
-One trial ran on 2026-11-26 after twelve offline tests passed. Evidence:
-`artifacts/device-validation-20261126/power-trial-20261126-024343.log` and
-`post-power-helper-audit.log`. The independent launchd guard acknowledged ready.
-Apple bluetoothd and BlueTool jobs/processes were observed absent before the
-BTstack restart. One client observed `OFF=0`, `INITIALIZING=1`, `WORKING=2`,
-`HALTING=3`, then `OFF=0`, within its bounded power/release window.
+后续如做可选 synthetic loopback，集成边界应由一个 power driver 明确持有唯一 recovery job、deadline、heartbeat 和恢复请求；仅在 gate 通过且 state 为 WORKING 的受限 callback 内执行一次 bounded transport 子进程，待其关闭 socket 后由同一 driver 发 `restore-request` 并验证恢复。需要在本地增加 callback 生命周期测试和超时/异常恢复测试，再在有用户明确设备窗口时评估设备执行；本轮未实现该 hook、未创建该命令流程。
 
-The guard restored BlueTool before bluetoothd, then the original BTstack
-registration, all load requests returning 0. The host verified Apple/LE jobs,
-bluetoothd process, BTstack registration/socket and a fresh OFF state before
-disarming. A separate post-trial read-only capture confirmed bluetoothd PID
-37358, BlueTool 37365, BTLEServer 485, BTdaemon 37392, recovery-job absence
-(113), the cleared active lock and per-run `RESTORED` result. There was no phone
-connection or peer/security payload logging. This tests normal requested
-restoration on device; SSH-loss/deadline failure paths have only mock evidence.
+### B. 真实 HiCar 协议/metadata 模式
 
-**Qualification:** baseline and restored snapshots both contain
-`27078 1 S CarPlay Simulator`. The source identifies this as the rootless
-`SVC_HELPER_NAME` (`Showcase.m:242`). Initial `named()` matched only `/name`,
-so it failed to reject this bare comm. The power and restored-state observations
-remain valid, but the initial `POWER_PREFLIGHT_OK` and overall numeric pass are
-insufficient evidence of an uncontested session. Name parsing now accepts bare
-or absolute comm values with spaces and rejects the known truncated alias too.
-Regression tests cover this case. No helper was killed.
+真实 Honor/HiCar 是单独的协议/metadata 模式，不能运行 synthetic echo adapter，因为它会发送不属于 HiCar 的测试字节。当前要推进真实连接，最短的代码路径是先把 FE35 改为 incoming/listen/accept socket 流程，再只实现 OpenHC state machine 必需的 FE35 control message 解析；收到协议请求后按协商方向建立 auth listener/connect，并逐步接入认证状态机。当前 C CLI 仅为 outbound synthetic peer；缺 FE35 incoming/listen/accept、FE35 协议处理、auth channel 与上述 power-driver callback，因此尚无真实手机命令或可验收二进制。设备阶段还需要下一次受限 session metadata 快照、恢复 guard 与明确 lease owner、Honor 20 Pro/HarmonyOS 4.0/HiCar 可用并由用户正常发起连接的窗口；不得把 synthetic peer 的存在列为前置条件。真实手机不得接收任意 synthetic auth/control 数据；未来协议实现仅记录事件类型/长度、协商 channel/CID 和状态，不记录地址、raw payload 或认证 transcript。
 
-User correction: the user did not start Showcase. The request to stop an
-assumed active session was premature and is withdrawn. New read-only captures
-find only PID 27078 (device start time 2026-11-25 10:43:00); the earlier Showcase
-PID 27255 and Bluetooth helpers are absent. The known BAA broker socket exists,
-and the ownership marker is absent. Source `Showcase.m:3500–3516,3613` launches
-and preserves a BAA broker using the same executable. `carplay_services.m:6369–6372`
-returns into the broker loop before network-session initialization. These facts
-are consistent with a persistent broker and do not establish an active CarPlay
-session. They do not yet associate the socket's owner with PID 27078: available
-tools did not include lsof/Python, and launchctl procinfo returned 45. No process
-argv, broker authentication data, certificate/key material or broker logs were
-read. No broker requests were sent. Logs: `showcase-process-role-audit*.log` in
-the same artifact directory.
+### 失败判据与恢复
 
-The driver now reports `SHARED_HELPER_ROLE_UNVERIFIED` for these shared names,
-keeping an explicit role-verification gate rather than declaring competition.
-Next use process/socket ownership metadata or a narrow PID/role-only platform
-probe; do not kill the broker, ask the user to open Showcase to stop it, or
-whitelist the process from socket existence alone.
-
-## Guarded power driver and USB recovery
-
-`scripts/btstack-power-trial.py --execute` uses the existing USB SSH port 2222
-and an already trusted SSH host key. Authentication is read from interactive
-input/stdin and is not saved. It uploads a root-only, per-run recovery shell and
-launchd job under `/var/root/Library/OpenHCStage0Power/<run-id>/`.
-`scripts/test-btstack-power.py` exercises synthetic framing and mocked launchctl,
-process, heartbeat and deadline behavior without a device.
-
-The independent job `io.github.gcbond.openhc.stage0-power-recovery` starts before
-takeover, acknowledges readiness, watches a two-second heartbeat (20-second
-expiry), and has a 120-second absolute deadline. It is the sole recovery actor.
-The driver refuses takeover with less than 65 seconds remaining. The first
-power window permits 25 seconds to WORKING and 15 seconds for OFF, including
-the daemon's source-defined ten-second delayed power-off. No raw events are
-logged. Apple restoration and power success are reported independently.
-
-If SSH drops, allow the guard to recover before reconnecting over USB. Inspect
-only the known per-run `result` and `recovery.log`, plus launchctl/comm snapshots.
-If the job is still running, request its existing restoration with:
+任一未知 gate、opened event 格式异常、连接 timeout、synthetic bytes 不匹配、close 未确认、guard heartbeat 丢失或 SSH 断开，均为 `TRANSPORT_FAIL`，不可自动重试。每次先等待独立 guard 完成恢复；复用它原有 run directory 的 `result` 与 `recovery.log`，不启动第二个恢复者：
 
 ```sh
 touch /var/root/Library/OpenHCStage0Power/<run-id>/restore-request
 /var/jb/usr/bin/launchctl print system/io.github.gcbond.openhc.stage0-power-recovery
 ```
 
-If that job is absent, first confirm its process has exited and no other
-recovery actor is running, then run the same uploaded shell with the same fixed
-arguments from its `recovery.plist` (no second independent restoration actor).
-Do not append kill commands. A failed/unknown BTdaemon-exit or launchd-absence
-check stops restoration before returning the controller to Apple; inspect the
-failure and resolve that condition before retrying the same ordered guard.
-Keep the guard and active lock until restored services, bluetoothd process,
-BTstack socket/registration and an OFF state have been independently observed.
+只有 guard 报 `RESTORED`，且独立确认 Apple BlueTool/bluetoothd/BTServer.le、bluetoothd 进程、基线 BTstack registration/socket、BTstack OFF 状态后才结束；任何恢复不明/失败都停止后续无线试验，按既有 USB recovery 流程处理。绝不添加 kill 命令或并行手工 unload/load。记录 transport 结果与 restoration 结果为两个独立状态。
 
-## Later phone trial (after the powered gate)
+## 后续任务：热点能力最小验证方案（本轮不执行）
 
-After the power-and-recovery loop passes, arrange a separate bounded session with the user-reported Honor 20 Pro / HarmonyOS 4.0 / HiCar phone, with the user performing the intended phone action. Record the phone's presence/readiness before opening a radio-visible window.
-
-- Implement a live transport probe first; `--btstack-services` currently registers and removes local services while OFF and cannot serve a wireless session. Keep one power lease for the full trial and use the independent recovery guard.
-- Validate actual over-air SDP for FE35 and the auth subchannel's UUID. Capture assigned/negotiated RFCOMM channels; the prior local candidates 16/17 are not fixed HiCar channel numbers.
-- Follow OpenHC's control/auth role and direction. `NearbySession.kt:501–504` defines FE35 and default FE36 UUIDs; `NearbyAction.kt:157` and `WirelessReceiverSession.kt` allow the peer to provide an auth UUID/channel and change connection direction. Do not assume both channels always listen on the iPad or that generic Bluetooth settings pairing starts HiCar.
-- Distinguish a synthetic transport client from a real HiCar session. For transport, exchange only known synthetic data in both directions on both channels, count bytes without dumping payloads, then close/reopen. For the real phone, do not transmit arbitrary synthetic frames into its authentication protocol; do not record real authentication payloads or keys.
-- Verify the no-forced-link-authentication requirement using installed runtime evidence. Reference RFCOMM `LEVEL_0` alone does not establish the installed binary's behavior. A phone pairing or an encrypted RFCOMM connection alone is not a HiCar handshake PASS.
-- Restore Apple and the baseline service registrations after every session and record that restoration independently. AP/hotspot and full HiCar authentication remain separate gates.
+1. 先只做本地/API 可用性审计，确认目标硬件/系统暴露的 hotspot 控制 API 与所需权限；不存在可支持的接口即记录不可用，不绕过系统安全边界。
+2. 用户另行明确窗口与手机后，在独立恢复方案下由用户手动开启热点；设备侧只读采集 hotspot enabled、接口/IP、频段/信道等非凭据元数据，并做一次受限客户端连通性检查。
+3. 不读取/输出 SSID 密码文件、密钥、认证 payload；如 SSID 本身被定义为敏感则只记录长度/是否存在。验证后由用户关闭热点，确认设备服务恢复。与 HiCar RFCOMM/握手验收分开报告。

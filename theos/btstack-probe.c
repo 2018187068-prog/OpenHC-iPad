@@ -9,11 +9,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned size);
+static int connect_daemon(const char *path);
 
 static int64_t now_ms(void) {
     struct timespec t;
@@ -78,6 +82,213 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
         return 0;
     }
     return -1;
+}
+
+static int refresh_heartbeat(const char *run_dir) {
+    char path[512];
+    if (!run_dir || snprintf(path, sizeof(path), "%s/heartbeat", run_dir) >= (int)sizeof(path)) return -1;
+    FILE *file = fopen(path, "w");
+    if (!file) return -1;
+    int64_t now = now_ms();
+    int ok = now >= 0 && fprintf(file, "%lld\n", (long long)(time(NULL))) > 0 && fflush(file) == 0;
+    if (fclose(file) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
+static int guard_ready(const char *run_dir) {
+    char path[512], value[64];
+    if (!run_dir || snprintf(path, sizeof(path), "%s/ready", run_dir) >= (int)sizeof(path)) return -1;
+    FILE *file = fopen(path, "r");
+    if (!file) return -1;
+    int ok = fgets(value, sizeof(value), file) && strcmp(value, "READY\n") == 0;
+    fclose(file);
+    if (!ok) return -1;
+    if (snprintf(path, sizeof(path), "%s/result", run_dir) >= (int)sizeof(path)) return -1;
+    if (access(path, F_OK) == 0) return -1;
+    if (snprintf(path, sizeof(path), "%s/deadline", run_dir) >= (int)sizeof(path)) return -1;
+    file = fopen(path, "r");
+    if (!file) return -1;
+    long long deadline = 0;
+    ok = fscanf(file, "%lld", &deadline) == 1 && deadline > (long long)time(NULL) + 30;
+    fclose(file);
+    if (!ok) return -1;
+    return refresh_heartbeat(run_dir);
+}
+
+static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
+                            int64_t deadline, const char *run_dir) {
+    while (size) {
+        int64_t now = now_ms();
+        if (now < 0 || now >= deadline) return -1;
+        int64_t slice = now + 2000;
+        if (slice > deadline) slice = deadline;
+        struct pollfd p = {fd, sending ? POLLOUT : POLLIN, 0};
+        int r = poll(&p, 1, (int)(slice - now));
+        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) {
+            if (refresh_heartbeat(run_dir)) return -1;
+            continue;
+        }
+        if (r < 0 || !(p.revents & (sending ? POLLOUT : POLLIN))) return -1;
+        ssize_t n = sending ? send(fd, buf, size, 0) : recv(fd, buf, size, 0);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (n <= 0) return -1;
+        buf += n;
+        size -= (size_t)n;
+    }
+    return refresh_heartbeat(run_dir);
+}
+
+static int send_btstack_packet(int fd, uint16_t type, uint16_t channel,
+                               const uint8_t *body, size_t size, int64_t deadline,
+                               const char *run_dir) {
+    if (size > 1024) return -1;
+    uint8_t header[6] = {(uint8_t)type, (uint8_t)(type >> 8),
+                         (uint8_t)channel, (uint8_t)(channel >> 8),
+                         (uint8_t)size, (uint8_t)(size >> 8)};
+    if (transfer_guarded(fd, header, sizeof(header), 1, deadline, run_dir)) return -1;
+    return transfer_guarded(fd, (uint8_t *)body, size, 1, deadline, run_dir);
+}
+
+/* Returns 0 for an allowlisted event/data frame, -2 for a rejected frame. */
+static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *type,
+                                    uint16_t *channel, uint8_t *body, size_t *size,
+                                    int64_t deadline, const char *run_dir) {
+    uint8_t header[6];
+    if (transfer_guarded(fd, header, sizeof(header), 0, deadline, run_dir)) return -1;
+    *type = (uint16_t)le16(header);
+    *channel = (uint16_t)le16(header + 2);
+    *size = le16(header + 4);
+    if (*size > 1024) return -2;
+    if (*type == 7) {
+        if (*channel != expected_cid || *size > 512) return -2;
+    } else if (*type == 4 && *channel == 0 && *size >= 2) {
+        uint8_t event_header[2];
+        if (transfer_guarded(fd, event_header, 2, 0, deadline, run_dir)) return -1;
+        if (event_header[0] != 0x60 && event_header[0] != 0x80 && event_header[0] != 0x81) return -2;
+        body[0] = event_header[0];
+        body[1] = event_header[1];
+        if (event_header[1] != *size - 2 &&
+            !(event_header[0] == 0x80 && *size == 17 && event_header[1] == 16)) return -2;
+        if ((event_header[0] == 0x60 && *size != 3) ||
+            (event_header[0] == 0x80 && *size != 16 && *size != 17) ||
+            (event_header[0] == 0x81 && *size != 4)) return -2;
+        if (event_header[0] == 0x80) {
+            uint8_t discard[6];
+            if (transfer_guarded(fd, body + 2, 1, 0, deadline, run_dir) ||
+                transfer_guarded(fd, discard, sizeof(discard), 0, deadline, run_dir) ||
+                transfer_guarded(fd, body + 9, *size - 9, 0, deadline, run_dir)) return -1;
+        } else if (transfer_guarded(fd, body + 2, *size - 2, 0, deadline, run_dir)) {
+            return -1;
+        }
+        return 0;
+    } else {
+        return -2;
+    }
+    return transfer_guarded(fd, body, *size, 0, deadline, run_dir);
+}
+
+static int addr_from_text(const char *text, uint8_t reversed[6]) {
+    unsigned values[6];
+    char tail;
+    if (sscanf(text, "%2x:%2x:%2x:%2x:%2x:%2x%c", &values[0], &values[1], &values[2],
+               &values[3], &values[4], &values[5], &tail) != 6) return -1;
+    for (unsigned i = 0; i < 6; ++i) {
+        if (values[i] > 255) return -1;
+        reversed[5 - i] = (uint8_t)values[i];
+    }
+    return 0;
+}
+
+static int transport_synthetic(const char *path, const char *address, unsigned server_channel,
+                               const char *profile, const char *run_dir) {
+    static const uint8_t payload[] = "OPENHC-SYNTHETIC-CONTROL-v1";
+    uint8_t address_wire[6], state[3], params[7];
+    uint8_t body[1024];
+    uint16_t packet_type, channel, cid = 0;
+    size_t size;
+    int fd = -1, result = 1, opened = 0, disconnected = 0;
+    const char *stage = "GUARD";
+    if (guard_ready(run_dir) || addr_from_text(address, address_wire) ||
+        server_channel < 1 || server_channel > 30 ||
+        (strcmp(profile, "auto") && strcmp(profile, "strict") && strcmp(profile, "reference"))) goto done;
+    fd = connect_daemon(path);
+    if (fd < 0) { stage = "CONNECT"; goto done; }
+    stage = "STATE";
+    if (query(fd, 1, 0x60, state, sizeof(state)) || state[2] != 2) goto done;
+    memcpy(params, address_wire, 6);
+    params[6] = (uint8_t)server_channel;
+    stage = "CREATE";
+    if (command(fd, 0x40, params, sizeof(params), now_ms() + 4000)) goto done;
+    stage = "OPEN_EVENT";
+    {
+        int64_t deadline = now_ms() + 25000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+        deadline = now_ms() + 150;
+#endif
+        for (unsigned n = 0; n < 256; ++n) {
+            if (receive_transport_packet(fd, 0, &packet_type, &channel, body, &size, deadline, run_dir)) goto done;
+            if (packet_type != 4 || body[0] != 0x80) continue;
+            if (size >= 14 && body[2] == 0) cid = (uint16_t)le16(body + 12);
+            int strict = size == 17 && body[1] == 15;
+            int reference = size == 17 && body[1] == 16;
+            int failed = size == 16 && body[1] == 14 && body[2] != 0;
+            if (failed) { stage = "CREATE_FAILED"; goto done; }
+            if (!cid || body[2] || body[11] != server_channel || (!strict && !reference) ||
+                (!strcmp(profile, "strict") && !strict) ||
+                (!strcmp(profile, "reference") && !reference)) { stage = "OPEN_PROFILE"; goto done; }
+            opened = 1;
+            printf("BTSTACK_OPENED_PROFILE=%s\n", strict ? "strict-17" : "reference-17-len16");
+            break;
+        }
+        if (!opened) { stage = "OPEN_TIMEOUT"; goto done; }
+    }
+    stage = "SYNTHETIC_SEND";
+    if (send_btstack_packet(fd, 7, cid, payload, sizeof(payload) - 1, now_ms() + 4000, run_dir)) goto done;
+    stage = "SYNTHETIC_ECHO";
+    {
+        int64_t deadline = now_ms() + 10000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+        deadline = now_ms() + 150;
+#endif
+        int echoed = 0;
+        for (unsigned n = 0; n < 256; ++n) {
+            if (receive_transport_packet(fd, cid, &packet_type, &channel, body, &size, deadline, run_dir)) goto done;
+            if (packet_type == 4) {
+                if (body[0] == 0x81 && le16(body + 2) == cid) { stage = "CLOSED_EARLY"; goto done; }
+                continue;
+            }
+            if (size != sizeof(payload) - 1 || memcmp(body, payload, size)) { stage = "ECHO_MISMATCH"; goto done; }
+            echoed = 1;
+            break;
+        }
+        if (!echoed) { stage = "ECHO_TIMEOUT"; goto done; }
+    }
+    puts("BTSTACK_SYNTHETIC_CONTROL_ECHO_OK");
+    result = 0;
+    stage = "CLOSE";
+done:
+    if (fd >= 0 && cid) {
+        uint8_t disconnect[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
+        if (command(fd, 0x41, disconnect, sizeof(disconnect), now_ms() + 3000) == 0) {
+            int64_t deadline = now_ms() + 5000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+            deadline = now_ms() + 150;
+#endif
+            for (unsigned n = 0; n < 128; ++n) {
+                if (receive_transport_packet(fd, cid, &packet_type, &channel, body, &size, deadline, run_dir)) break;
+                if (packet_type == 4 && body[0] == 0x81 && le16(body + 2) == cid) {
+                    disconnected = 1;
+                    break;
+                }
+            }
+        }
+        if (!disconnected) { result = 1; stage = "CLOSE_UNCONFIRMED"; }
+    }
+    if (fd >= 0) close(fd); /* Daemon client teardown is the fallback owner cleanup. */
+    if (result) printf("BTSTACK_SYNTHETIC_CONTROL_FAILED=%s\n", stage);
+    else if (disconnected) puts("BTSTACK_RFCOMM_CLOSE_CONFIRMED");
+    return result;
 }
 
 static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned size) {
@@ -255,6 +466,17 @@ done:
 int main(int argc, char **argv) {
     if (argc == 2) return probe(argv[1]);
     if (argc == 3 && strcmp(argv[2], "--services") == 0) return services_probe(argv[1]);
+    if (argc == 7 && strcmp(argv[2], "--transport") == 0) {
+        char *end = NULL;
+        unsigned long channel = strtoul(argv[4], &end, 10);
+        if (!end || *end) return 2;
+        return transport_synthetic(argv[1], argv[3], (unsigned)channel, argv[5], argv[6]);
+    }
     return 2;
+}
+#else
+int openhc_btstack_control_synthetic(const char *address, unsigned channel,
+                                     const char *profile, const char *run_dir) {
+    return transport_synthetic("/tmp/BTstack", address, channel, profile, run_dir);
 }
 #endif

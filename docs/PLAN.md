@@ -1,16 +1,24 @@
 # OpenHC-iPad Stage 0 Plan
 
-Latest continuation (2026-11-26): USB SSH resumed. The baseline tool's identical
-bytes pass zero-socket startup from `/var/jb/usr/bin` after failing under
-`/var/root`; a rootless layout is now generated to preserve this validated
-deployment fix. Its metadata-only owner query returned PID 27078, matching
-CarPlay Simulator, with zero application bytes sent/read. Exact kernel
-termination reason and no-competing-session/controller ownership remain
-unverified. Power remains prohibited. The offline transport metadata slice and
-reference RFCOMM discrepancies are recorded in `ROLE-PROBE-DIAGNOSTIC.md`.
-Next independent work is the guarded live runner/session gate; owner lookup
-and startup checks are complete and should not be repeated. No wireless I/O
-or HiCar handshake has passed.
+Current status (2026-11-26): prior startup and broker-owner checks are complete
+and must not be repeated. The fixed broker endpoint owner was observed as PID
+27078 and matched its comm; this confirms a broker role, not absence of a
+parallel active session or exclusive controller ownership. One earlier
+power/restoration cycle passed its state and restore observations, but its
+preflight missed a shared helper, so it is not an uncontested ownership PASS.
+This turn adds a finite metadata classifier, explicit synthetic two-channel
+runner core, and a bounded FE35 outbound C socket adapter/CLI for a controlled
+synthetic peer. Installed BTdaemon RFCOMM opened-event routing/length remains
+unknown until the adapter's first controlled connection observes it. The C
+socket mock is wired into CI but has not run in this Windows environment
+because clang is unavailable. No wireless SDP/I/O or real HiCar handshake has
+passed. The synthetic loopback is an optional engineering test; there is no
+evidence the user has a suitable peer, and it is not a HiCar project
+prerequisite. No device command is ready because the adapter is not integrated
+with the existing power driver's guarded WORKING lifetime. The shortest real
+Honor path is FE35 incoming/listen/accept plus its control state machine, then
+protocol-directed auth transport, followed by a single-driver lease callback.
+See `HANDOFF-CURRENT.md` and `BTSTACK-OWNERSHIP.md` for this boundary.
 
 Target: iPad mini 4 Wi-Fi (A8, 2 GB), iPadOS 15.8.8, Dopamine rootless, Sileo DEB. Development is Windows + WSL2/Theos; no local Mac is available.
 

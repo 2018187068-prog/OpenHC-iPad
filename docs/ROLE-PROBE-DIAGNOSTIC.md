@@ -1,6 +1,6 @@
 # Metadata tool termination and transport preparation — 2026-11-26
 
-## Latest physical result after SSH resumed
+## Historical physical result after SSH resumed
 
 The user subsequently reported SSH connected. Port 2222 returned OpenSSH 9.7;
 an existing authenticated native SSH console supplied UID 0, iPad5,1 and
@@ -108,7 +108,7 @@ provenance records Xcode 16.4, clang 17, SDK 18.5 and ldid 2.1.5_2. The host
 channel observation is recorded in
 `artifacts/device-validation-20261126/continuation-local-audit.log`.
 
-## USB blocker and future read-only diagnostic order
+## Superseded USB blocker record
 
 The user confirmed successful administrator restart of Apple Mobile Device
 Service during this session. The one subsequent host check returned
@@ -118,8 +118,8 @@ was started, no process was killed, and no further trust reset or driver
 operation was requested. At this earlier point transport was unavailable;
 it later resumed as recorded above. No further administrator command is needed.
 
-The following was the diagnostic plan before SSH returned. Startup and owner
-steps are now completed as recorded above; do not repeat them:
+This was the diagnostic plan before SSH returned. Startup and owner steps are
+completed as recorded above; do not repeat them or follow the obsolete sequence:
 
 1. Confirm only the tool's path/type/owner/mode/hash and OS architecture; do
    not enumerate credential files or dump process arguments/environment.
@@ -137,11 +137,10 @@ steps are now completed as recorded above; do not repeat them:
 5. Consider the separately hashed legacy variant only as a targeted follow-up
    to the observed failure phase. Neither outcome authorizes power/unload.
 
-## Independent live transport code work
+## Current offline transport implementation
 
-`scripts/btstack-transport-metadata.py` is a new bounded metadata reader with
-synthetic tests, not a live executable or a complete transport probe. It has
-no connect, command, power, SDP mutation, peer accept or data-send operation.
+`scripts/btstack-transport-metadata.py` is a bounded metadata reader. It has
+no live endpoint or SDP query and intentionally refuses RFCOMM payload data.
 RFCOMM data frames are refused after the six-byte outer header, before payload
 read. Non-allowlisted HCI event parameters, including security events, are
 refused after only the event code/length; no security parameters are read.
@@ -161,10 +160,45 @@ identified two independently modeled incompatibilities:
   immediate create-failure event is a distinct 16-byte shape, without incoming
   direction; the reader accepts it only as a failure and reports unknown direction.
 
-Further local/CI work can implement a synthetic two-channel state machine,
-negotiated SDP/direction handling and bounded cleanup without a device. A live
-runner still needs verified helper role, installed event-format/routing evidence,
-no-forced-link-auth evidence, explicit synthetic peer readiness and integration
-with the recovery guard. Actual powered execution is forbidden in this session.
-The current metadata slice does not prove SDP, I/O, close/reopen lifecycle,
-ownership or a HiCar handshake, even when its synthetic tests pass.
+Offline work includes `scripts/btstack-session-gate.py`, the explicit
+session-plan core in `scripts/btstack-transport-runner.py`, and a bounded C
+FE35 outbound adapter in `theos/btstack-probe.c` wired to
+`--btstack-control-synthetic`. Channel direction comes from OpenHC session
+actions/events, not SDP: SDP reports service/channel data, while
+`start`/`startReconnect`, `SocketRequested` and `AuthChannelReady` determine
+which endpoint listens or connects. The C path only supports one outbound
+control connection to a controlled synthetic peer; it does not implement the
+incoming real HiCar flow or authentication channel.
+
+Static reference source proves the daemon socket framing and relevant opcodes;
+`rfcomm.c` writes CID at byte 12 and emits a callback sized 17 bytes while the
+event advertises 16 parameter bytes, whereas daemon routing reads byte 13.
+Whether the installed daemon routes an opened event to this client and which
+shape it supplies can only be learned during the first bounded controlled
+connection. The adapter's `auto` profile observes that event on that same
+first connection, accepts only the two source-supported shapes, and sends no
+application bytes on unknown shape/status/timeout; cleanup is bounded. This
+runtime observation is not a prerequisite to implementing the adapter. The
+local AF_UNIX test source is wired into the macOS CI workflow, but no CI result
+for this revision is yet available. The current Windows host has no clang, so
+the local socket test cannot compile its C fixture here. No on-device SDP,
+synthetic peer I/O, exclusive controller ownership, or real HiCar handshake
+has passed.
+
+The reference daemon consumes `DAEMON_EVENT_RFCOMM_CREDITS` internally and
+retries parked socket sends; the client sends normal `RFCOMM_DATA_PACKET`
+frames and does not grant credits itself. Socket mocks exercise command opcode
+and parameter lengths, strict/reference opened-event shapes, success echo and
+close, bounded open/echo/close timeouts, bad event/security rejection, and
+channel reuse. A delayed synthetic echo also checks that long I/O refreshes
+the existing numeric heartbeat. These checks still require the C executable
+to be compiled and actually run by CI.
+
+The current power driver has no transport callback: `Trial.run()` runs its
+power-only OFF/WORKING/OFF protocol, then explicitly requests restoration and
+verifies the result. The C adapter only checks run-directory files and writes
+heartbeat; it neither establishes the recovery job nor owns/extends a power
+lease. Power-driver integration, incoming FE35 listen/accept, FE35 protocol
+handling, and auth transport are unimplemented. Therefore there is no device
+command or end-to-end-ready path in this revision; synthetic echo remains an
+optional lab check, not a prerequisite for real Honor/HiCar work.

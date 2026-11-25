@@ -29,7 +29,11 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/logs
-          python3 scripts/test-btstack-probe.py | tee artifacts/logs/btstack-mock-tests.log
+          python3 scripts/test-btstack-probe.py 2>&1 | tee artifacts/logs/btstack-mock-tests.log
+          python3 scripts/test-btstack-transport-socket.py 2>&1 | tee artifacts/logs/btstack-transport-socket-tests.log
+          python3 scripts/test-btstack-session-gate.py 2>&1 | tee artifacts/logs/btstack-session-gate-tests.log
+          python3 scripts/test-btstack-transport-runner.py 2>&1 | tee artifacts/logs/btstack-transport-runner-tests.log
+          python3 scripts/test-btstack-transport-metadata.py 2>&1 | tee artifacts/logs/btstack-transport-metadata-tests.log
       - name: Build candidate static crypto backend
         shell: bash
         run: bash scripts/build-crypto-backend.sh

@@ -181,3 +181,31 @@ At 00:31–00:32 the correctly spaced print output confirms `system/ch.ringwald.
 The user's next screenshot explicitly shows `AUTH_VECTORS_OK`: record the synthetic authentication-vector device run as passed from user-provided screenshot evidence. This does not validate a live authentication transcript or handshake. Installed package version/hash and exit status remain uncaptured.
 
 Further screenshots show `/var/jb/Library/LaunchDaemons/ch.ringwald.BTstack.plist` exists and its contents specify `/var/jb/usr/bin/BTdaemon` and `/tmp/BTstack`. Initial service/process filters showed Apple BTServer entries and grep itself, with no BTdaemon process visible. After the bootstrap instruction, the 00:29 screenshot shows a socket entry (`srw-rw-rw-`, owner root, group daemon) at `/tmp/BTstack`, timestamp 00:26. Bootstrap stdout/exit status was not shown; socket existence is confirmed, daemon health and protocol responsiveness are not. The print attempt shown is malformed (`printsystem/...`, missing a space), so its usage output does not establish service absence. Ask for the correctly spaced read-only `launchctl print system/ch.ringwald.BTstack` result before diagnosing service health. No successful client connection, FE35/FE36 registration or radio I/O is evidenced yet.
+
+## Latest USB install and external ownership audit (2026-11-26)
+
+This section supersedes earlier pending-install and historical next-action notes above. Existing iproxy PID 39484 / port 2222 was reused for root SSH. CI 45670248895's DEB passed remote SHA-256 verification, installed as 0.3.2, and completed the binary `--btstack-ownership` command with exit 0. Its service/process fields explicitly reported `UNAVAILABLE_IN_SANDBOX`; completion is not an ownership PASS. Log: `artifacts/device-validation-20261126/ownership-20261126-022442.log`.
+
+External UID-0 `launchctl print/list` and filtered `ps` captures then established BTdaemon PID 35779 and Apple bluetoothd PID 30370 were simultaneously running. BlueTool was registered but idle; BTLEServer PID 485 was running. Apple BTServer AVRCP/MAP/PBAP subservices were registered but idle; the umbrella `com.apple.BTServer` label was absent. Showcase PID 27255 was present without an observed CarDisplaySim helper. Its recovery guard job and ready handshake were absent, although recovery.plist and `/tmp/showcase_bt_ready` existed; the latter is not fresh readiness evidence. BTdaemon belongs to installed `com.rostane.showcase` 1.0~beta5-3, not a cryptographically pinned source revision.
+
+Raw logs: `artifacts/device-validation-20261126/root-ownership-snapshot-20261126-022903.log` and `root-ownership-detail-20261126-023012.log`. No service/radio/network mutation, signal, phone connection, or repeated query/local-registration/vector probe occurred. Lockdown pairing remains unresolved separately from working USB SSH.
+
+Read-only reference review at Showcase ce9d1d50758f67307deb3f00c901a8e82894930c establishes the applicable rootless handoff and BlueTool-before-bluetoothd restoration ordering; the Taurine force-kill branch is inapplicable. The shell ownership collector now checks root/tool availability, includes Apple/guard jobs and process names without argument lists, records query exits, and no longer depends on missing awk.
+
+## Bounded power/restoration trial and preflight correction (2026-11-26)
+
+After twelve offline mock tests passed, the new host power-only client and launchd recovery guard performed one physical trial via the original USB SSH forwarder. The guard was positively ready before Apple jobs were unloaded. BTstack state progressed 0/1/2/3/0, yielding WORKING and OFF observations. Requested restoration unloaded BTstack, loaded BlueTool then bluetoothd, restored BTstack registration, and was independently checked before guard disarm and active-lock cleanup. No discoverability/SDP/peer commands, phone connection or authentication payload logging occurred. Evidence: `artifacts/device-validation-20261126/power-trial-20261126-024343.log`, `post-power-helper-audit.log`.
+
+The baseline and restored snapshots also showed `CarPlay Simulator` PID 27078, the source-defined rootless Showcase service helper. A path-only name matcher missed this bare comm. This qualifies the trial: direct power/OFF and restored-state evidence stands, but numeric `POWER_TRIAL_PASSED=1` is not a complete uncontested ownership PASS. The matcher and guard process parsing now handle bare names; regression cases include whitespace and failed process queries. The user has been asked to stop the Showcase session normally and report Honor phone readiness. No helper was killed; no second power trial was run. Further radio testing waits for the helper to disappear and a fresh service baseline after Stop. Phone FE35/FE36 transport/security/HiCar and AP gates remain open. Normal restoration was exercised on device; heartbeat/deadline failure restoration has only simulated evidence.
+
+Correction following the user's clarification that Showcase was not started:
+the same executable hosts the persistent BAA broker (`Showcase.m:3500–3516,3613`;
+`carplay_services.m:6369–6372`). Its name cannot establish an active session.
+Latest read-only capture finds PID 27078, started 2026-11-25 10:43:00 by device
+time, with the BAA socket present, but no Showcase main process or Bluetooth
+helper. This is consistent with a retained broker; socket-to-PID ownership is
+not yet established with available device tools. The Stop request and required
+helper-disappearance gate above are withdrawn. Current driver conservatively
+reports `SHARED_HELPER_ROLE_UNVERIFIED`; the next gate is metadata-only role
+verification. No helper was stopped, no radio operation was repeated, and no
+broker authentication request, argv/credential/log or key access was made.

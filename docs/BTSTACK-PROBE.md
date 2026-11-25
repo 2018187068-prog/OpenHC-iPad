@@ -25,6 +25,15 @@ Remaining gate: actual FE35/FE36 SDP records, assigned/negotiated RFCOMM channel
 
 ## Physical result (2026-11-26)
 
+Latest powered-gate evidence is in `BTSTACK-OWNERSHIP.md`: a single guarded
+trial reached WORKING then OFF and verified Apple/baseline restoration. It also
+exposed a missed bare `CarPlay Simulator` process; name matching is fixed and
+13 offline tests pass. This executable also hosts a persistent BAA broker,
+so its name does not prove an active session. The user did not start Showcase;
+uncontested ownership awaits PID/socket role evidence, not a requested Stop.
+This does not change the local
+0.3.2 probe boundaries below or establish any wireless/HiCar result.
+
 User reports `btstack_version=1.1`, then `reversion=3257,state=0.query_ok`. Accept the latter as the user's transcription of revision/state/query-success fields. The C client emits version/state only after validating both responses, so record a user-reported physical GET_VERSION/GET_STATE pass. Do not invent exact raw stdout, exit status, package version or binary hash. Fixed-reference `src/hci_cmd.h` defines HCI_STATE_OFF=0 and HCI_STATE_WORKING=2; state 0 is compatible with this probe never requesting power. It does not mean Apple's system Bluetooth switch is off, nor that controller initialization failed. The daemon version/revision is protocol metadata, not provenance for the installed binary.
 
 Before a powered test, audit controller ownership/recovery: Showcase `source/carplay_bt.m` around 1517 explicitly assumes Apple Bluetooth was already unloaded by Showcase before requesting BTstack power. That assumption has not been established on this target. Do not copy its launchd unload/kill sequence blindly. A dual-channel probe must separate daemon-side registration/SDP evidence from actual radio/channel I/O, retain a client power lease for its bounded session, and cleanly restore any altered platform state. Real HiCar handshake evidence additionally requires a compatible peer phone; a generic RFCOMM client can only test transport.
@@ -52,6 +61,8 @@ The physical prerequisite was subsequently reported passed on 2026-11-26: FE35 c
 
 ## Read-only controller ownership snapshot
 
-Before any powered or peer-visible experiment, run `scripts/run-on-device.sh <configured-ssh-alias> --btstack-ownership`. It reports the rootless BTstack plist, executable and socket, the known BTstack launchd service print, and a filtered process snapshot for `BTdaemon`, `BTServer` and `bluetoothd`. It performs no unload, kill, bootstrap, power, pairing, RFCOMM or peer operation.
+Before any powered or peer-visible experiment, collect external root-shell evidence with `scripts/run-on-device.sh <configured-root-ssh-alias> --btstack-ownership`. The shell route is distinct from the installed binary's limited snapshot: it reports BTstack and Apple launchd jobs, the recovery guard, process executable names without argument lists, and presence of readiness/ownership markers. It requires root and available launchctl/ps, records service query exit codes (113 can mean an absent job), and avoids an awk dependency. It performs no unload, kill, bootstrap, power, pairing, RFCOMM or peer operation. Its completion marker records capture completion, not exclusive ownership.
+
+External root captures were completed on 2026-11-26 through existing USB SSH. BTdaemon PID 35779 and Apple bluetoothd PID 30370 were both running; BlueTool was registered but idle, BTLEServer PID 485 was running, and Showcase's recovery guard was absent. A residual `/tmp/showcase_bt_ready` did not prove readiness. Exclusive ownership and recovery are **not passed**. See `docs/BTSTACK-OWNERSHIP.md` for logs, source applicability, bounded takeover/recovery order and later phone-test schedule. Do not repeat completed query/local-service checks or use the binary's `UNAVAILABLE_IN_SANDBOX` fields as a service/process pass.
 
 The user identifies the intended real HiCar peer as Honor 20 Pro, HarmonyOS 4.0, HiCar supported. Record this as user-provided compatibility information, not a tested handshake result. The peer is not required for the local registration probe; actual role/direction/channel selection for later connection tests must follow OpenHC's negotiated flow, not assume both sides always listen.

@@ -1,0 +1,39 @@
+name: Stage 0 helper role metadata
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-tool:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test synthetic endpoints and zero application bytes
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/helper-role
+          python3 scripts/test-showcase-role.py 2>&1 | tee artifacts/helper-role/tests.log
+      - name: Build standalone iOS 15 arm64 metadata tool
+        run: |
+          set -euo pipefail
+          output=artifacts/helper-role/showcase-role-probe
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
+            -std=c11 -Wall -Wextra -Werror scripts/showcase-role-probe.c -o "$output"
+          brew install ldid
+          ldid -S "$output"
+          bash scripts/verify-device-binary.sh "$output"
+          otool -L "$output" | tee artifacts/helper-role/dependencies.log
+          ldid -h "$output" 2>&1 | tee artifacts/helper-role/signature.log
+          grep -q CodeDirectory artifacts/helper-role/signature.log
+          shasum -a 256 "$output" | tee artifacts/helper-role/sha256.txt
+          echo "source_commit=$GITHUB_SHA" > artifacts/helper-role/BUILD.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: helper-role-${{ github.sha }}
+          path: artifacts/helper-role/
+          if-no-files-found: error

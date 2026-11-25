@@ -1,4 +1,5 @@
 .gradle/
+**/__pycache__/
 **/build/
 artifacts/
 theos/.theos/

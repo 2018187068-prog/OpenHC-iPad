@@ -72,6 +72,23 @@ class EndpointOwnerTests(unittest.TestCase):
         p = subprocess.run([str(self.release), '/tmp/other'], timeout=5)
         self.assertEqual(p.returncode, 2)
 
+    def test_self_check_without_endpoint(self):
+        # Synthetic fixture supplies no endpoint. Run as the CI user's UID;
+        # self-check must precede root checks and all socket operations.
+        p = subprocess.run([str(self.release), '--self-check'], capture_output=True,
+                           text=True, timeout=5)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.splitlines(), ['ROLE_PROBE_MAIN_ENTERED',
+                                                'ROLE_PROBE_SELF_CHECK_OK'])
+
+    def test_no_protocol_io_apis(self):
+        source = (ROOT / 'scripts/showcase-role-probe.c').read_text()
+        import re
+        source = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
+        for api in ('send', 'sendto', 'sendmsg', 'recv', 'recvfrom', 'recvmsg',
+                    'read', 'write', 'open', 'fopen', 'system', 'execve'):
+            self.assertNotRegex(source, r'\b' + api + r'\s*\(')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

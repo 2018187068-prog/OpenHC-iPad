@@ -59,6 +59,15 @@ static int owner_pid(const char *path, pid_t *owner) {
 }
 
 int main(int argc, char **argv) {
+    /* Flush before any endpoint work: a missing marker is not proof of a
+     * loader failure, but separates that hypothesis from successful startup.
+     * This mode never connects to the fixed broker or requires root. */
+    puts("ROLE_PROBE_MAIN_ENTERED");
+    fflush(stdout);
+    if (argc == 2 && strcmp(argv[1], "--self-check") == 0) {
+        puts("ROLE_PROBE_SELF_CHECK_OK");
+        return 0;
+    }
     const char *path = "/tmp/showcase_baa.sock";
 #ifdef OPENHC_ROLE_TEST
     if (argc != 2) return 2;

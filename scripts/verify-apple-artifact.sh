@@ -11,7 +11,7 @@ file "$binary"
 lipo "$binary" -verify_arch arm64
 grep -q 'BridgeSelfCheck' "$header"
 grep -q 'selfCheck' "$header"
-nm -gU "$binary" | grep -q 'BridgeSelfCheck'
+nm -gU "$binary" | grep 'BridgeSelfCheck' > /dev/null
 otool -l "$binary" | awk '
     /cmd LC_BUILD_VERSION/ { mode=1; next }
     mode == 1 && /minos/ { version=$2; mode=0; found=1 }

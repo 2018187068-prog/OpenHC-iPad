@@ -33,6 +33,7 @@ jobs:
           set -o pipefail
           mkdir -p artifacts/logs
           shasum -a 256 -c scripts/source-slices.sha256 | tee artifacts/logs/source-slices.log
+          python3 scripts/verify-speke-oracle.py | tee artifacts/logs/speke-oracle.log
           gradle :bridge:linkReleaseFrameworkIosArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/kotlin-native-build.log
           mkdir -p artifacts/iosArm64
           cp -R bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework artifacts/iosArm64/
@@ -70,6 +71,7 @@ jobs:
           cd theos
           mkdir -p layout/usr/share/doc/com.gcbond.openhc-bridge-check
           cp ../artifacts/licenses/OpenSSL-LICENSE.txt layout/usr/share/doc/com.gcbond.openhc-bridge-check/
+          cp ../docs/OpenHC-LICENSE.txt layout/usr/share/doc/com.gcbond.openhc-bridge-check/
           make package FINALPACKAGE=1 THEOS="$THEOS" TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S 2>&1 | tee ../artifacts/logs/theos-package.log
           mkdir -p ../artifacts/deb
           cp packages/*.deb ../artifacts/deb/

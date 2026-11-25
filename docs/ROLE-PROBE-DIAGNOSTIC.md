@@ -53,6 +53,14 @@ macOS Bash 3 with nounset rejects expansion of an empty array. That CI-only
 bug was corrected by keeping common flags in the array. It is unrelated to
 the old physical SIGKILL. No revised artifact has been uploaded or run on iPad.
 
+Final combined CI `45683689513` / `dddd437` passed all 22 tests (6 signature,
+7 endpoint/startup, 9 new transport metadata cases). Artifacts were downloaded
+to `artifacts/ci-run-45683689513/`; the two binary hashes match those above and
+both downloaded binaries also pass the local structural auditor. Final build
+provenance records Xcode 16.4, clang 17, SDK 18.5 and ldid 2.1.5_2. The host
+channel observation is recorded in
+`artifacts/device-validation-20261126/continuation-local-audit.log`.
+
 ## USB blocker and future read-only diagnostic order
 
 The user confirmed successful administrator restart of Apple Mobile Device

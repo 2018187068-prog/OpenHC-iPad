@@ -1,5 +1,14 @@
 # OpenHC-iPad Stage 0 Plan
 
+Latest continuation (2026-11-26): USB SSH remains unavailable after the confirmed
+administrator Apple Mobile Device Service restart. Continue local/CI work only.
+The helper SIGKILL has no established termination reason; original artifact
+hash/signature/arm64/minimum-OS audits pass. A zero-socket startup self-check,
+separately hashed compatibility candidate and bounded transport metadata reader
+with synthetic tests are implemented. See `ROLE-PROBE-DIAGNOSTIC.md` for evidence
+and reference RFCOMM format/routing discrepancies. No revised tool has run on
+device, no owner PID is known, and no live transport or ownership gate passes.
+
 Target: iPad mini 4 Wi-Fi (A8, 2 GB), iPadOS 15.8.8, Dopamine rootless, Sileo DEB. Development is Windows + WSL2/Theos; no local Mac is available.
 
 The Kotlin/Native protocol library plus Objective-C/C platform layer is a hypothesis under test, not a selected architecture. JVM/JAR execution on iPad is out of scope. Kotlin 2.1.20 and Gradle 8.13 mirror the read-only reference project's pins. The initial bridge deliberately contains no protocol behavior.

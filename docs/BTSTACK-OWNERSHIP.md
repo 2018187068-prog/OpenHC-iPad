@@ -19,7 +19,7 @@
 
 | 分类 | 必要观测 | 处理 |
 | --- | --- | --- |
-| `BROKER` | 固定 broker socket owner PID 与当前 comm PID 匹配；owner 角色由限定源码/平台 metadata 交叉识别；完整快照中没有已知活动 helper；无恢复 job；marker 为 absent | 仅将该 owner 解释为 broker，不作为全局无线 ownership 放行；若本轮还需改变 controller 状态，仍需单独授权和 gate |
+| `BROKER` | 固定 broker socket 的本次 peer PID 与同一快照 comm 匹配，限定源码/平台 metadata 支持 broker 角色；shared-helper 集合恰为该 owner；无已观测正向活动 PID、无恢复 job、marker absent | 只确认这个 endpoint owner 的 broker 角色，不代表已证明独占会话或没有并发；不能单独当作 controller ownership 放行 |
 | `ACTIVE_SESSION` | 与已识别 PID 绑定的正向 session-state metadata 表明已知 helper（如 `CarDisplaySim`、`carplay_bt`）处于活动会话 | 阻断；不停止、不 kill |
 | `CLEAR_SNAPSHOT` | 固定检查集完整、已知 helper 的活动状态 metadata 未报活动、shared helper 均未出现、无恢复 job、marker 明确 absent、无未解释 broker owner | 只表示该时点的限定检查集未见竞争；进程名不单独证明活动或空闲，不声称绝对不存在并发或消除后续竞态 |
 | `UNKNOWN` | 快照不全、shared helper 角色未明、socket owner 与 comm 不匹配、恢复 job 活跃、marker 残留/无法读取或 owner/marker 元数据缺失 | 阻断；只补造成 UNKNOWN 的最小 metadata，不追加泛化探针 |
@@ -27,6 +27,10 @@
 Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。下一次真机目标为一次受控 synthetic FE35 回环验收，包含有限 session preflight 和首次连接 profile 观察。socket owner PID/comm 已查过，不重复查询；如 session-state metadata 无法获取，即 `UNKNOWN` 并停止。无需在实现 adapter 前另做 RFCOMM metadata-only 连接：格式由 adapter 在首次受控连接中有界检测，识别失败则不发应用字节并清理。不复测工具启动、不执行无关上电探针。
 
 ## 离线实现与明确阻塞
+
+FE35 控制协商核心位于 `bridge/src/commonMain/.../Fe35ControlNegotiator.kt`，固定只读来源 revision `8132399bea6aa86d68da6d3e1d9e3e001c0a7643`。它接收已经解密的 Nearby message-layer payload，不解析 Nearby frame/CRC/加密、不读写 RFCOMM payload，也不记 raw bytes。passive command 3 只接受 business 19 且 protocol TCP capability bit 0 未置位的 RFCOMM 请求（与上游 `protocol and PROTOCOL_TCP == 0` 一致）；请求 UUID 缺省 FE36，存在时必须 16 bytes；同一 listener opening 的重复请求最多排队 4 条，监听完成仅对 channel `1..30` 回 command 4（channel 0 按上游规范映射为蓝牙控制 channel 2），多余请求/不支持业务回拒绝。reconnect 方向发 command 3（channel 2、business 19、tag、protocol 0、无 UUID），只关联匹配 tag/business 的 command 4；status 非 0 或 port 不在 `1..30` 拒绝，响应 UUID 缺失或长度不为 16 时采用 FE36，输出本机 connect action。来源为 Nearby `SocketMessages.kt`、`NearbySession.kt`、`NearbyAction.kt`、`WirelessReceiverSession.kt` 及 `WirelessSessionTest.kt`；对应上游固定向量 `PAYLOAD_AUTH_REQ=838d86938968696361724175746881`，被测响应与上游 `WirelessSessionTest.authSubchannelIsAnsweredWithRfcommChannelAndUuid` 向量一致。
+
+这只是纯 Kotlin common state machine，还未连接到 C daemon transport：当前 `--btstack-control-inbound` 收到 Accept 后不读取任何 RFCOMM 数据，也没有 FE35 Nearby frame decoder/crypto/seed handshake 来产生上述解码 payload。真实手机仍不得使用 synthetic payload；要进入 real HiCar control test，下一步最小代码范围是实现有限的 FE35 Nearby frame reader/handshake，然后把 decoded event 与这个状态机和 C listener callback 接通；HiCar auth 握手仍在其后。
 
 `scripts/btstack-transport-runner.py` 现在只消费显式 session plan，不解析 SDP 也不从 SDP 虚构 direction：`WirelessReceiverSession.start()` 是 FE35 本机 listen；`startReconnect()` 才是 FE35 本机 connect。正常 `SocketRequested` 事件触发本机开 auth listener，监听完成后再将本地 channel/UUID 回报；`AuthChannelReady` 是 reconnect flow 的 peer channel/UUID，才触发本机 auth connect。证据来自只读参考 `WirelessReceiverSession.kt` 的 `start/startReconnect`、`onSocketRequest/onAuthListening/onAuthChannelReady` 及 `NearbySession.acceptRfcommSocket`。同一个数字只有在两条本机 listener 同时占用时才冲突；peer connect 的 channel 与本机 listener channel 不在同一 namespace。
 
@@ -58,7 +62,15 @@ python scripts\test-btstack-transport-socket.py
 
 `scripts/btstack-power-trial.py` 的 host CLI 现在接受 `--execute --mode inbound`，并在 `Trial.run()` 的 WORKING callback 中通过独立 Paramiko SSH session 调用固定 `/var/jb/usr/bin/openhc-bridge-check --btstack-control-inbound <run-dir>`。路径和参数由代码常量及 Trial 生成的 run-dir 提供，不接受任意远端命令；timeout 包装为固定 45 秒并合并 stdout/stderr，最多保留 64 KiB。只有收到远端 exit status 才确认子命令退出，之后 PowerProtocol 才发送 OFF；远端非零退出也属于已确认退出，随后照常 OFF 并由同一 Trial 请求 guard restore。timeout、SSH loss、取消或输出超限等导致退出状态未知时，跳过 OFF 与 host restore-request，停止 heartbeat，让独立 guard 在 heartbeat age 超过 20 秒时恢复；输出 `TRANSPORT_RESULT=EXIT_UNCONFIRMED` 与 `RESTORATION_RESULT=DELEGATED_TO_GUARD`，不声称恢复已完成。常规路径下 Trial 是唯一 heartbeat writer 和 restore-request 发起者；PowerProtocol 是唯一 power lease client。Guard deadline 从 arm 开始计 240 秒，覆盖 takeover、最多约 45 秒 transport、15 秒 OFF 等待和最多 65 秒 host restore 观察时间，留有执行余量；不确定路径不等待 transport 来决定恢复 actor。
 
-执行前置 gate 对共享 helper 使用有限 metadata 输入，文件为 UTF-8 JSON，字段形状如下：
+当前 metadata 由可执行只读 collector 生成，不手工编 JSON、不使用历史 PID。执行环境须是用户自行准备好的 USB SSH tunnel，且先安装包含 `--session-owner` 的 0.3.5+ 工具包；本轮没有安装或运行该命令。collector 以一次 SSH command 顺序采集 start/end epoch、一次 `ps -axo pid,ppid,state,comm`、recovery job status、marker 和安装版本的 `--session-owner` 结果，要求窗口不超过 5 秒；peer PID 查询是固定本机 Unix socket 的 `LOCAL_PEERPID`、有界 connect/getsockopt、零应用字节读写，并在前后核对 socket inode。命令无 `--capture` 时只打印 `NO_DEVICE_ACTION`：
+
+```powershell
+python scripts\capture-btstack-session-evidence.py --capture --output artifacts\session-evidence.json
+```
+
+`--capture` 仅读取 metadata 并输出 JSON；采集异常、owner 不在同一进程快照、输出字段缺失或时间跨度过大都会得到 `snapshot_complete=false`，不能用于放行。该 collector 不存在可读的正向 HiCar active-session-state 来源，`active_session_pids: []` 仅代表本次没有取到正向 PID 绑定事件，不能解释成无活动。额外 shared helper、恢复活动、残留 marker 或任何不完整输入继续为 UNKNOWN 并阻断。新鲜 capture 也不能证明不存在未观测的并发或后续竞态。
+
+结果 JSON 的字段形状如下；这个例子只描述 schema，不能复制作为真实证据：
 
 ```json
 {
@@ -73,19 +85,20 @@ python scripts\test-btstack-transport-socket.py
 }
 ```
 
-这些值必须来自同一次、距执行不超过 60 秒的当前 metadata 观察；示例 epoch 和空列表不是可用证据。`shared_helper_pids` 必须与 Trial 本次 `ps -axo pid,ppid,state,comm` 所见共享 helper PID 集完全相等；broker owner/comm PID 必须是该次 socket owner 与 comm metadata；活动 PID 必须来自正向 session-state metadata；marker/recovery state 也必须是该次观察。只有分类为 `BROKER` 才能在共享 helper 存在时继续；活动会话、UNKNOWN、过期/不完整/与当前进程 PID 集不匹配均阻断。字段缺失不会被补成“无竞争”。当前没有新鲜现场 metadata，因此共享 helper 仍会阻断实际执行；不得复用历史 PID 证据。
+结果距 guarded trial 不超过 60 秒；`shared_helper_pids` 必须与 Trial 再次采集的当前 helper PID 集完全相等。`broker_owner_pid` 只取 collector 本次 `LOCAL_PEERPID`，`broker_comm_pid` 只在相同快照进程名属于已源码确认的 broker 进程时赋值。`active_session_pids` 只有正向 session-state 来源才可填入，本轮 collector 不会猜测填充。只有符合现行有限 classifier 的明确证据才可能分类为 BROKER；活动、额外 helper、UNKNOWN、过期/不完整/与当前 PID 集不匹配均阻断。当前没有新鲜现场 snapshot，执行仍阻断；不可自动使用历史 PID。
 
-主机命令（仅在用户明确安排设备窗口、独立恢复条件就绪且新鲜 metadata 已取得后使用）：
+下一次由用户另行安排设备窗口、独立恢复条件就绪后，先 capture，再从同一时段手动确认 Trial 仍被授权；这是操作说明，不是本轮执行要求。collector 会提示输入 SSH 密码且不会将其写入文件：
 
 ```powershell
-python scripts\btstack-power-trial.py --execute --mode inbound --session-evidence <fresh-metadata.json>
+python scripts\capture-btstack-session-evidence.py --capture --output artifacts\session-evidence.json
+python scripts\btstack-power-trial.py --execute --mode inbound --session-evidence artifacts\session-evidence.json
 ```
 
 不带 `--execute` 时 CLI 输出 `NO_DEVICE_ACTION` 并以状态码 2 退出；`--execute` 配合 `--mode power-only` 保留旧 power-only 行为。此命令不安装 package、不配对、不改热点、不发送应用数据。成功标志分别为 `TRANSPORT_RESULT=PASSED`、`BTSTACK_POWER_OFF_OBSERVED`、`RESTORATION_RESULT=VERIFIED`；可确认的 inbound accept/close 失败表现为 `TRANSPORT_RESULT=FAILED`，但仍应观察 OFF 和 guard restoration；SSH loss/timeout 表现为 `EXIT_UNCONFIRMED` / `DELEGATED_TO_GUARD`，这不是成功恢复证据，之后必须通过独立只读检查观察 guard `result`。Guard deadline 为从 arm 开始的绝对 240 秒，预算包含 takeover、最长 45 秒 C 命令、最多 15 秒 OFF wait、最多 65 秒 restore observation 与执行余量。本轮未运行该设备命令。
 
 ### B. 真实 HiCar 协议/metadata 模式
 
-该 inbound 模式只验证 FE35 本机 listener/SDP、incoming accept 和 bounded close；不启动 discovery，不实现 HiCar control handshake 或 auth channel 协商。真实 Honor 测试须等待另行实现 OpenHC FE35 控制消息的 metadata-only 状态机、auth listener/connect 协商和用户正常发起 HiCar 连接的窗口。真实手机绝不运行 synthetic echo adapter，也不发送任意 synthetic auth/control 数据；后续实现只记录事件类型/长度、协商 channel/CID 和状态，不记录地址、raw payload 或认证 transcript。Synthetic peer 是可选工程路径，不是 HiCar 项目硬前置，目前没有证据用户具有该 peer。
+该 inbound 模式只验证 FE35 本机 listener/SDP、incoming accept 和 bounded close；不启动 discovery，不运行上面描述的控制协商核心，因为 Nearby frame reader/handshake 还没有实现。真实 Honor 测试须等待 FE35 reader 与该状态机、auth listener/connect 的 callback 集成和用户正常发起 HiCar 的窗口。真实手机绝不运行 synthetic echo adapter，也不发送任意 synthetic auth/control 数据；真实控制事件将来只允许提取事件类别、长度、channel 和状态，不记录地址、raw payload、UUID 原值或认证 transcript。Synthetic peer 是可选工程路径，不是 HiCar 项目硬前置，目前没有证据用户具有该 peer。
 
 ### 失败判据与恢复
 

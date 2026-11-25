@@ -39,6 +39,8 @@ jobs:
           python3 scripts/test-btstack-session-gate.py 2>&1 | tee artifacts/logs/btstack-session-gate-tests.log
           python3 scripts/test-btstack-transport-runner.py 2>&1 | tee artifacts/logs/btstack-transport-runner-tests.log
           python3 scripts/test-btstack-transport-metadata.py 2>&1 | tee artifacts/logs/btstack-transport-metadata-tests.log
+          python3 scripts/test-capture-btstack-session-evidence.py 2>&1 | tee artifacts/logs/session-evidence-capture-tests.log
+          python3 scripts/test-session-owner-probe.py 2>&1 | tee artifacts/logs/session-owner-probe-tests.log
           python3 scripts/test-btstack-power.py 2>&1 | tee artifacts/logs/btstack-power-trial-tests.log
       - name: Build candidate static crypto backend
         shell: bash

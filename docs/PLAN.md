@@ -1,26 +1,21 @@
 # OpenHC-iPad Stage 0 Plan
 
-Current status (2026-11-26): prior startup and broker-owner checks are complete
-and must not be repeated. The fixed broker endpoint owner was observed as PID
-27078 and matched its comm; this confirms a broker role, not absence of a
-parallel active session or exclusive controller ownership. One earlier
-power/restoration cycle passed its state and restore observations, but its
-preflight missed a shared helper, so it is not an uncontested ownership PASS.
-This turn adds a finite metadata classifier, explicit synthetic two-channel
-runner core, and a bounded FE35 outbound C socket adapter/CLI for a controlled
-synthetic peer. Installed BTdaemon RFCOMM opened-event routing/length remains
-unknown until the adapter's first controlled connection observes it. The C
-socket mock is wired into CI but has not run in this Windows environment
-because clang is unavailable. GitHub-hosted macOS run `45698383060` passed the
-actual C mock and Theos package build; the candidate DEB is version 0.3.3 and
-was not installed. No wireless SDP/I/O or real HiCar handshake has passed. The
-synthetic loopback is an optional engineering test; there is no
-evidence the user has a suitable peer, and it is not a HiCar project
-prerequisite. No device command is ready because the adapter is not integrated
-with the existing power driver's guarded WORKING lifetime. The shortest real
-Honor path is FE35 incoming/listen/accept plus its control state machine, then
-protocol-directed auth transport, followed by a single-driver lease callback.
-See `HANDOFF-CURRENT.md` and `BTSTACK-OWNERSHIP.md` for this boundary.
+Current stage status (2026-11-26): guarded FE35 inbound listener/accept/close
+and single-owner power lease integration passed macOS CI run `45706468742` on
+the prior baseline. This turn adds an offline FE35 message-layer control
+negotiator based on read-only OpenHC revision
+`8132399bea6aa86d68da6d3e1d9e3e001c0a7643`, plus a read-only host collector
+that obtains a bounded current peer PID/process/marker/recovery snapshot without
+hand-authored JSON or historical PID reuse. The negotiator does not parse
+Nearby framing, CRC, handshake, encryption or RFCOMM data and is not wired into
+the C accept CLI; no real phone control/auth protocol is ready. New CI is
+pending for this revision. The collector cannot supply positive session-state
+metadata; extra or unexplained shared helpers remain UNKNOWN and block. No
+device command was run in this stage. Synthetic loopback remains optional and
+is not a HiCar project prerequisite. The next protocol implementation step is
+a bounded FE35 Nearby frame reader/handshake integrated with the C listener
+callback; HiCar auth/DMSDP/media remain out of scope. See
+`HANDOFF-CURRENT.md` and `BTSTACK-OWNERSHIP.md` for current evidence.
 
 Target: iPad mini 4 Wi-Fi (A8, 2 GB), iPadOS 15.8.8, Dopamine rootless, Sileo DEB. Development is Windows + WSL2/Theos; no local Mac is available.
 

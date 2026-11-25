@@ -17,11 +17,11 @@ Date: 2026-11-25
 - GitHub CLI was initially unauthenticated; after the user logged in, a new private repository `2018187068-prog/OpenHC-iPad` was created. Remote contents were checked while empty, then a README seed and all project files were added through normal parented Git commits. Smart-HTTP pushes were reset by the network, so authenticated Git Database API ref updates were used with `force=false`; no existing remote file or commit was overwritten.
 - AGENTS.md: none found in `D:\`, `D:\orcafile`, or the new validation root.
 - WSL: no installed/registered distribution; `wsl --exec` requests WSL installation.
-- GitHub CLI: not authenticated; no repository listing was obtained.
+- GitHub CLI: initial check was unauthenticated; subsequently logged in and used for the private repository and CI (see above).
 - SSH config has aliases `aliyun-vps` and `singa-vps` only. No device alias was found; no host was contacted. No SSH agent identities were listed.
 - Windows PATH has no `xcrun`, `clang`, `theos`, or `ldid`.
 
-## Implemented, not yet built
+## Implemented and built in CI
 
 Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `BridgeSelfCheck.selfCheck()`, common `WifiChannels` source/tests targeting JVM and iOS simulator, a macOS-15 GitHub Actions workflow, framework inspection script, Theos arm64/iOS-15 rootless command-line package targeting `/usr/bin`, and a device-run helper. The expected device output is `KOTLIN_BRIDGE_OK`.
 
@@ -32,9 +32,17 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 - Shared `jvmTest` and `iosSimulatorArm64Test`: both passed on that run (`BUILD SUCCESSFUL`). This confirms the test suites run on JVM and simulator, not an installed app on the physical iPad.
 - Objective-C link, static-link dependency inspection, arm64, package layout/metadata, system-library inspection, and iOS minimum checks: passed in CI. Framework archive members report minimum iOS 12.0; the Theos executable reports minimum iOS 15.0.
 - Theos reported its signing stage; `ldid -h` found an embedded CodeDirectory and CDHash. This is a local ad-hoc/fakesign result with no developer certificate identity, not proof of trusted signing or device acceptance.
-- Native simulator test task: passed. A GUI simulator app launch and physical device run have not been done.
-- Physical iPad mini 4: not run; no configured device SSH connection was found.
+- Native simulator test task: passed. A GUI simulator app launch has not been done.
+- Physical iPad mini 4 bridge: **passed, user-reported**. On 2026-11-25 the user reported `KOTLIN_BRIDGE_OK` after the installation/run instructions. This agent did not operate SSH or observe installation, `uname -m`, exit status, device metadata or the installed package hash; none of those are claimed as independently captured device evidence.
 - WifiChannels JVM/Native shared test: passed in the macOS CI run above on both JVM and iOS simulator.
+
+## Physical-device deployment check (2026-11-25)
+
+- Re-read `scripts/run-on-device.sh`: it accepts exactly one configured SSH alias and runs `ssh <alias> 'uname -m; /usr/bin/openhc-bridge-check'`. Expected output is two lines: `arm64` then `KOTLIN_BRIDGE_OK`.
+- The helper has no install step. The downloaded package is `artifacts/ci-run-45620285649/openhc-ipad-stage0-bd0168441fb8362cd0466acd0227242ebd77f8d5/deb/com.gcbond.openhc-bridge-check_0.1.0_iphoneos-arm64.deb`; package inspection shows it installs to `/var/jb/usr/bin/openhc-bridge-check`; use that canonical rootless path (do not assume `/usr/bin` is redirected). Install using Sileo by opening/importing this DEB on the iPad, or with an already configured privileged SSH account by copying it to `/var/mobile/` and running `dpkg -i /var/mobile/com.gcbond.openhc-bridge-check_0.1.0_iphoneos-arm64.deb`. The SSH route requires root, or an account with working `sudo`; that access mode has not been verified.
+- Connection preflight: Windows SSH config contains only `aliyun-vps` and `singa-vps`, with no iPad alias. Neither host was contacted. No SSH identities were printed or used. WSL has no registered distribution. Do not substitute either VPS alias.
+- The initial SSH preflight was blocked on connection setup; it is superseded for bridge execution by the user-reported result below. Agent-operated SSH remains unconfigured. Required to enable agent-operated SSH: the configured iPad SSH alias (preferred), or its LAN address, SSH port and login name, plus confirmation that the account can run `dpkg` as root. Do not send passwords or private keys.
+- Verified artifact SHA-256 remains `45FC16BC3F94C938BDB2AFA6BC355631B936A2E30610B09B0DF93BD4F6CD9FD8`. The user subsequently reported the device output below; the installed package hash was not independently verified on-device.
 
 ## Successful CI artifacts
 
@@ -57,4 +65,18 @@ SHA-256: framework archive `1B33DA2067763D1DE5166F7B8C7E783E9686B98102E6B73584C2
 
 `WifiConnectionInfo` depends on `WifiMode`, `WifiChannels`, `Ipv4Text.isCanonical`, Kotlin `Regex`/collections/string APIs, and `MalformedMessageException`. No Java API is directly referenced in `WifiConnectionInfo`; the blocker is the exception base class in `java.io.IOException` (and its `cause` constructor). A narrowly scoped migration can keep parse behavior while introducing a common exception type, but callers that catch `IOException` must be audited. `Ipv4Text` is a small pure Kotlin IPv4 parser in `core/common/codec`; its edge cases and test vectors still need a separate review before treating this slice as migration-ready.
 
-CI-verifiable portion of gate 1 is **passed**. Stage 0 gate 1 remains **incomplete** until the DEB is installed and `/usr/bin/openhc-bridge-check` prints `KOTLIN_BRIDGE_OK` on the physical iPad mini 4. Simulator and CI results do not establish device execution.
+## Physical bridge result and next probe (2026-11-25)
+
+User supplied the following device result after the install/run instructions:
+
+```text
+KOTLIN_BRIDGE_OK
+```
+
+Gate 1 bridge execution is **passed on the basis of user-reported physical-device output**. The agent has no live device connection and did not capture `uname -m` or installation logs. This result establishes the minimal Kotlin/Native-to-Objective-C bridge only; Stage 0 as a whole remains incomplete.
+
+The next probe extracts `WifiMode` and `WifiConnectionInfo` verbatim from the fixed reference file up to the following `WifiLinkMessages` documentation block; it copies `Ipv4Text` and its tests. `WifiLinkMessages` is deliberately excluded: its `String(value, Charsets.US_ASCII)` is a separate JVM boundary, not silently rewritten. `scripts/source-slices.sha256` pins LF-normalized probe sources, checked by CI.
+
+`MalformedMessageException` is an explicit expect/actual boundary: the JVM actual keeps `java.io.IOException(message, cause)`, and the Native actual uses `Exception(message, cause)`. Shared tests check message/cause preservation and malformed-input behavior; a JVM test checks `IOException` catch compatibility. Native callers must catch `MalformedMessageException` explicitly; session `SocketRunner` IOException catch sites (301/324/344/357/450/473/497/505 at the reference revision) require policy review when that layer is migrated. No session migration is included.
+
+The 0.2.0 DEB adds `openhc-bridge-check --wifi`, which executes synthetic encode/parse, channel and rejection checks and emits only `WIFI_CONNECTION_INFO_OK` or `WIFI_CONNECTION_INFO_FAILED`. Default invocation still emits `KOTLIN_BRIDGE_OK`. The new probe is not yet claimed as device-passed. New JVM/Native CI results will be recorded after execution. The helper now uses the canonical `/var/jb/usr/bin/openhc-bridge-check` path and accepts optional `--wifi`.

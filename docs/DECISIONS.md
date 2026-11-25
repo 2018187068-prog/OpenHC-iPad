@@ -14,3 +14,9 @@
 ## Open platform question
 
 `MalformedMessageException` in the reference extends `java.io.IOException`. Native migration needs an explicit common exception type and call-site policy; do not silently replace it during unrelated compilation work.
+
+## 2026-11-25: User-reported physical bridge pass; minimal WiFi parser probe
+
+The user reported `KOTLIN_BRIDGE_OK` from the physical device after install/run instructions. Record this as user-reported evidence, with no agent SSH session, architecture output or on-device artifact hash claimed. Gate 1 is passed at that evidence level; this does not complete Stage 0.
+
+Extract WifiMode/WifiConnectionInfo without parser edits. Exclude the adjacent WifiLinkMessages object and its JVM-only charset conversion. Preserve IOException ancestry on JVM via an explicit actual exception and use Exception on Native. Keep message/cause, wire fields, validation and existing acceptance of leading zeroes in numeric port text; do not alter protocol semantics to compile. Audit session IOException catches before migrating session code. All new probe credentials are synthetic and never emitted in probe output.

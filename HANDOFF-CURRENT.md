@@ -13,11 +13,11 @@
 - `scripts/btstack-power-trial.py --execute --mode inbound --session-evidence <fresh-file>` 已通过上一基线 CI 验收；它通过固定 rootless C 子命令与独立 SSH channel 运行于 Trial 的 WORKING callback。Trial 单独持有 power lease、heartbeat 与恢复请求；仅确认 C 子进程远端退出后发 OFF，SSH loss/timeout 时由独立 guard 恢复。无 `--execute` 默认不做设备动作，`--mode power-only` 保留。
 - 当前会话结论：broker endpoint owner PID 曾与 comm-only `CarPlay Simulator` PID 27078 匹配，且 broker 源码分支在网络会话初始化前进入 broker loop，属已证实 broker 证据；这不代表没有并发活动会话。另有已知活动 helper 的正向观测才分类为活动会话；信息缺失、未解释 shared helper、残留 marker 或恢复活动均为 UNKNOWN。marker、进程名和进程不存在单独不构成放行条件。`CLEAR_SNAPSHOT` 仅表示这组限定指标在该次快照未见，不声称绝对无并发或没有未来竞争。
 - 本轮限制：仅本地代码、合成测试及文档；未连接设备、未上电/卸载/配对/改热点/kill、未读取身份或认证材料、未作新签名信任操作，也未启用收费 runner。
-- 最近已通过 CI 基线：GitHub-hosted `macos-15` run `45706468742`，revision `c5d49a04c5bdfec4aad6cd732d618a2ab99454ec`，C socket 与 guarded power/restore 测试、Kotlin/Native framework/tests、Theos 0.3.4 均成功；DEB SHA-256 `CE546A9E72142790DA7FB68B03A9F4F59163753B09756F24F51257C6FC6BA871`。它不覆盖本轮新增控制状态机、peer-PID collector 与 `0.3.5` 包。当前 revision/CI 结果在本段更新为新 CI 后补录。
+- 最新代码验收：GitHub-hosted `macos-15` workflow run `45715083711`，测试 revision `40fe9939b06d4a713c07c6ecc2274d9f046bf391`，结论 success；覆盖 Python/C mock 与 guarded power tests、iOS arm64 Release framework、JVM/Native simulator shared tests 和 Theos rootless 0.3.5 package。FE35 状态机测试在 JVM 与 iOS Simulator 各 7 项、0 failures；C socket adapter 10 项、inbound 5 项、guarded power 24 项均通过。产物 `com.gcbond.openhc-bridge-check_0.3.5_iphoneos-arm64.deb` SHA-256 `805EBA1F4CB5F490E09AF8148C3360461C270F5E52DB04CADF15C2923FD15ADF`，CI 日志、测试报告及 DEB 本地副本位于被忽略的 `artifacts/ci-45715083711/`，未安装。后续仅交接文档提交不改变该测试 revision 的代码。
 
 ## 下一步路径
 
-本轮只完成离线协商状态机与只读 metadata collector 代码；没有执行设备命令。Synthetic echo peer 是可选工程测试，目前没有证据用户具备它，也不是 HiCar 硬前置。最短真机推进条件是标准 CI 通过后，由用户另行安装相应 DEB、建立既有 USB SSH tunnel，并安排 Honor 20 Pro/HarmonyOS 4.0 正常发起 HiCar 的窗口；先运行 collector 得到不超过 60 秒的新快照，若分类 UNKNOWN 则停止。只有在 C inbound 适配器接上真实 Nearby frame 解码器之后，才能把控制 channel/UUID 协商状态机用于真实手机连接；随后再实现 FE36 listener/connect 的协议调用与状态关联，HiCar auth 握手仍未实现。不得把 synthetic 字节发给真实手机。
+本轮仅完成离线 FE35 control negotiation 状态机与只读 metadata collector 代码；没有执行设备命令。状态机接收已解码的消息层 TLV，尚未接入 Nearby frame reader/CRC/加密或 C RFCOMM adapter，因此这不是手机端可执行的控制协商链路。Synthetic echo peer 是可选工程测试，目前没有证据用户具备它，也不是 HiCar 硬前置。后续最小代码范围是将受界限的 Nearby control frame 解码/编码与 FE35 状态机、C FE36 listener/connect 回调接通，并覆盖协议帧测试；HiCar auth 握手、DMSDP、媒体仍未实现。真机推进仍需用户具备 Honor 20 Pro/HarmonyOS 4.0 正常发起 HiCar 的窗口、既有 USB SSH tunnel 和适配构建；先用 collector 获取不超过 60 秒的新快照，若分类 UNKNOWN 即停止。不得把 synthetic 字节发给真实手机。
 
 真实 Honor 手机用户操作须另行安排；本轮不执行，也不发送 synthetic 测试数据。
 
@@ -29,5 +29,5 @@
 
 - 本地 ownership 外部快照、恢复闭环和命令记录：`artifacts/device-validation-20261126/`；详细来源与限制见 `docs/BTSTACK-OWNERSHIP.md`。
 - 工具启动路径、SHA-256、SIGKILL 137 和 rootless 路径成功证据：`docs/ROLE-PROBE-DIAGNOSTIC.md`。启动位置差异已解决；终止原因仍未知，不追查 SIGKILL 内核原因。
-- 更早 CI `45683689513` / `dddd437` 的 22 项测试、`45698383060` 与 `45702890162` 均为历史证据；本轮 host接线、C adapter 与 package 验收以 `45706468742` 为准。
+- 更早 CI `45683689513` / `dddd437` 的 22 项测试、`45698383060`、`45702890162`、`45706468742` 均为历史证据；FE35 状态机、metadata collector 与 0.3.5 包验收以 `45715083711` 为准。
 - 更早的 PID、plist/job 状态、工具启动待验证结论均为历史快照，不可当作当前状态或重复执行指令。lockdown 无需修复。

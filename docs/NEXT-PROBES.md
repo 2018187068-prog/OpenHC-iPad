@@ -30,7 +30,7 @@ The user confirmed `/var/jb/usr/bin/openhc-bridge-check --wifi` returned OK. Exp
 
 ## Next device handoff
 
-Latest handoff: install 0.3.2 from `artifacts/device-ready/` (successful CI 45661451771) and run `--version` plus `--btstack-services` outside active Bluetooth sessions. The phone is not needed yet. Expect two local registration cycles and `BTSTACK_LOCAL_SERVICES_OK`; this is not live FE35/FE36 I/O or a HiCar handshake. User's intended later peer is Honor 20 Pro / HarmonyOS 4.0 / HiCar supported. Controller ownership and recovery remain prerequisites to powered tests.
+The 0.3.2 handoff was completed: the user installed the package and reported two local registration cycles ending in `BTSTACK_LOCAL_SERVICES_OK` outside active peer testing. The phone was not needed. This closes the local daemon prerequisite, not live FE35/FE36 I/O or a HiCar handshake. User's intended later peer is Honor 20 Pro / HarmonyOS 4.0 / HiCar supported. Controller ownership and recovery remain prerequisites to powered tests.
 
 Update 2026-11-26: user reports 0.3.1 daemon query success, version 1.1 / revision 3257 / state 0. Do not repeat the query as a required gate. Next work is bounded FE35/FE36 daemon-side registration/SDP probing plus controller ownership/recovery review before any radio power request, then actual peer channel tests. State 0 is BTstack OFF per the fixed reference, not evidence of an initialization failure or Apple's Bluetooth switch position. A compatible HiCar peer is required for the later real handshake.
 

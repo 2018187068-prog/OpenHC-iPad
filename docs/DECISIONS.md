@@ -24,3 +24,9 @@ Extract WifiMode/WifiConnectionInfo without parser edits. Exclude the adjacent W
 ## 2026-11-25: User-confirmed WiFi parser device pass
 
 The user confirmed the second command (`/var/jb/usr/bin/openhc-bridge-check --wifi`) returned OK. Accept this as user-reported physical execution of the synthetic parser probe, separately from CI/simulator results. No package-version output or installed hash was supplied. Authentication, BTstack dual channels and actual hotspot capability remain unverified.
+
+## 2026-11-26: Pinned static authentication-backend candidate
+
+OpenSSL 3.5.9, commit `45e844fa2a14ec92d146bd8f5778ac130b6625fb`, is used solely as a reproducible C-backend experiment. It is not selected as the final architecture. Copy JVM AuthCrypto exactly, adapt only an explicit common interface and HKDF array-copy boundary, and compare shared standard vectors and a synthetic SPEKE3072 math slice. Preserve reference fixed-width/public-value behavior for tested cases; record unknown exception/encoding/state-machine equivalence instead of changing protocol callers. CI 45649915495 passed both test targets and static rootless packaging.
+
+Add a read-only platform inventory to the same 0.3.0 package to resolve known device prerequisites. It may load platform bundles for class/symbol inspection and enumerate IPv4 interfaces, but does not instantiate sharing control, alter WiFi state, read credentials or connect a Bluetooth socket. API/symbol presence is not hotspot capability or HiCar success. Wait for the user's auth result/inventory before claiming physical evidence or doing live dual-channel/AP experiments. Include upstream OpenHC/OpenSSL licenses with the validation package.

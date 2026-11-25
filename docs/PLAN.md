@@ -13,3 +13,5 @@ Later gates cover authentication vectors (SPEKE3072, X25519, Ed25519, AES-GCM, H
 Identity files and keys are excluded. All tests use synthetic values; logs must not contain passwords or keys. Reference repositories remain read-only.
 
 Progress on 2026-11-25: gate 1 physical bridge passed by user-reported `KOTLIN_BRIDGE_OK`; the agent has not captured a device shell or architecture output. The next 0.2.0 probe adds a synthetic WifiConnectionInfo check via `--wifi`, with the parser slice kept verbatim and explicit platform-specific exception classes. Subsequent authentication/Bluetooth/hotspot evidence requirements and source findings are tracked in `docs/NEXT-PROBES.md`. No full protocol port is authorized by a hello result.
+
+Progress on 2026-11-26: authentication standard vectors and a synthetic SPEKE3072 arithmetic/key-derivation slice passed JVM/Native simulator CI with a pinned static OpenSSL candidate. This validates a bounded backend experiment only. Deliver 0.3.0 for physical `--auth` and read-only `--platform` inventory before further live BTstack/hotspot work. Complete authentication state-machine/real HiCar transcript evidence remains outstanding.

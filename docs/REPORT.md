@@ -1,6 +1,6 @@
 # Stage 0 Validation Report
 
-Date: 2026-11-25
+Date: 2026-11-26
 
 ## Confirmed from source
 
@@ -105,3 +105,29 @@ Expected stdout respectively: `KOTLIN_BRIDGE_OK` and `WIFI_CONNECTION_INFO_OK`. 
 After the canonical rootless `--wifi` command was supplied, the user replied “第二个是ok的” (the second command is OK). Record the expected `WIFI_CONNECTION_INFO_OK` result as user-confirmed physical-device evidence. The user did not report the first (`dpkg-query`) command's version output; package version was not independently verified. File name and modification time are not used as pass criteria.
 
 Both minimal bridge and synthetic WiFi parser device gates now have user-reported passes. This does not validate live WiFi/AP configuration, HiCar authentication, Bluetooth services or a full protocol migration. Continue only with bounded Stage 0 probes.
+
+## Authentication candidate probe CI (2026-11-26 Asia/Shanghai)
+
+Run `45649915495`, commit `2793c7f38e2e1c2bfb3a0de7efad9c7a2263860a`: **success**. Downloaded test XML reports **23 JVM / 21 iosSimulatorArm64 tests**, zero failures/errors. New auth coverage comprises 8 shared tests plus a JVM reference-equivalence test: SHA-256, HMAC, HKDF, AES-GCM/AAD/tamper rejection, Ed25519, X25519/small-order rejection, HKDF bounds and synthetic SPEKE3072 math/key-derivation/public-value boundaries. The independent Python oracle also passed. Tests use only public standard vectors and synthetic values, and no credential/derived bytes are emitted.
+
+JVM uses the pinned reference AuthCrypto source and Bouncy Castle 1.79. Native uses a candidate OpenSSL 3.5.9 static backend, verified upstream commit `45e844fa2a14ec92d146bd8f5778ac130b6625fb`. Both device and simulator arm64 backend archives compiled with minimum iOS 15.0 and correct, distinct device/simulator platforms. The combined framework contains 12.0/15.0 minimum objects; the final CLI minimum is 15.0. `_oh_crypto` was found in the linked tool; no dynamic libcrypto/libssl/OpenHCBridge dependency is present. Theos build/sign, ldid CodeDirectory, architecture and rootless layout checks passed. See `docs/AUTH-PROBE.md` for explicit adapter boundaries and source provenance.
+
+Artifacts and full log downloaded to `artifacts/ci-run-45649915495/` and `artifacts/ci-run-45649915495.log`. Independent ar/tar inspection confirmed the DEB contains `/var/jb/usr/bin/openhc-bridge-check` and OpenHC/OpenSSL license documents; binary bytes match the CI extracted-binary artifact. Convenience copy:
+
+`artifacts/device-ready/com.gcbond.openhc-bridge-check_0.3.0_iphoneos-arm64.deb`
+
+DEB SHA-256: `19820169296137F8648D5FF875CD0056C7EF4958B6D0241C3C025025DD36F441`.
+
+Install this new DEB with Sileo, then run:
+
+```sh
+/var/jb/usr/bin/openhc-bridge-check --version
+/var/jb/usr/bin/openhc-bridge-check --auth
+/var/jb/usr/bin/openhc-bridge-check --platform
+```
+
+Expected version: `OPENHC_STAGE0_VERSION=0.3.0`. Expected auth success: `AUTH_VECTORS_OK`. Platform output ends with `PLATFORM_INVENTORY_DONE` and reports hardware/OS, IPv4 interfaces, MIS/MobileWiFi availability and known BTstack socket/daemon presence. It never starts sharing, reads passwords, calls WiFi setters or connects to the BTstack socket; the presence of these APIs/files alone does not establish a functional hotspot or dual-channel transport.
+
+**Physical 0.3.0 auth/platform runs are pending**: no live iPad SSH connection is configured for this agent. The original bridge and 0.2.0 parser retain their separately recorded user-reported physical passes. Full SPEKE/STS/identity-exchange state transitions, real HiCar handshake, Bluetooth FE35/FE36 dual-channel I/O/close and actual AP IP/SSID/BSSID/frequency remain unverified. Stage 0 is not complete, and full migration has not started. No extra paid runner or paid-quota setting was enabled.
+
+CI repair evidence: run `45648844771` failed at duplicate OpenSSL target flags; run `45649195389` compiled both archives and framework then failed because `nm | grep -q` caused a broken pipe in the larger archive inspection. Both checks were corrected without changing protocol behavior. The screenshot's older `96f1a22` run (`45617916269`, 2026-11-25 20:52 Asia/Shanghai) failed on a package-list path assertion requiring a leading slash; subsequent bridge/parser runs passed. A past CI failure notification does not invalidate those later results.

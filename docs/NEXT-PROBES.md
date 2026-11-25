@@ -2,19 +2,19 @@
 
 These are pending gates, not a claim of protocol portability. Reference revisions remain OpenHC `8132399bea6aa86d68da6d3e1d9e3e001c0a7643` and Showcase `ce9d1d50758f67307deb3f00c901a8e82894930c`.
 
-## Authentication: source review only
+## Authentication: candidate backend probe in CI
 
 `core/auth/src/main/kotlin/io/github/gcbond/openhc/core/auth/crypto/AuthCrypto.kt` imports `java.math.BigInteger`, `java.security.MessageDigest`/`GeneralSecurityException`, `javax.crypto.Cipher`/`Mac`/specs, and Bouncy Castle X25519/Ed25519. This file cannot be copied unchanged into common Native code.
 
 Existing `core/auth/src/test/.../CryptoTest.kt` includes named SHA-256 FIPS180, HMAC RFC4231, HKDF RFC5869, AES-GCM standard, Ed25519 RFC8032, X25519 RFC7748, and MODP prime/fixed-length tests. Use their synthetic/public test vectors without printing vector bytes, keys, passwords or derived secrets. SPEKE3072 also needs transcript/public-value validation, leading-zero padding and invalid-value/rejection equivalence; a passing generic modPow operation is insufficient.
 
-Next executable experiment must isolate backend operations and compare JVM-reference and Native pass/fail results, including AES-GCM tamper rejection and X25519 invalid/zero-output handling. An external C backend is a candidate requiring its own iOS 15 arm64 build, symbols, licensing and error-semantics checks; none has been selected or linked. Authentication vectors have **not** passed on Native or the iPad.
+The executable candidate probe now compares copied JVM-reference operations with OpenSSL-backed Native operations using the same standard vectors and synthetic SPEKE3072 math slice. See `docs/AUTH-PROBE.md` for exact boundaries, backend commit and required rejection tests. OpenSSL has compiled as static arm64 device/simulator libraries, and the new JVM/Native simulator vector tests passed in run 45649915495. This is not production backend selection; new physical results and real authentication transcripts remain pending.
 
 ## Bluetooth: needs real platform/device evidence
 
 OpenHC `NearbySession.kt` defines FE35 control and FE36 default authentication subchannel service UUIDs. `NearbyAction.kt` describes an authentication channel number and optional service UUID received from the peer. These UUIDs are not fixed RFCOMM channel numbers.
 
-Showcase's BTstack daemon exposes RFCOMM service registration, SDP and per-client cleanup code, but its CarPlay client is not a HiCar implementation. A probe must observe both FE35/FE36 services and actual SDP/negotiated channel numbers, verify the no-forced-link-authentication requirement, accept/open both channels, transmit/receive synthetic data, and close/reopen cleanly. Ordinary RFCOMM connection is insufficient to mark a real HiCar handshake passed.
+Showcase's BTstack daemon exposes RFCOMM service registration, SDP and per-client cleanup code, but its CarPlay client is not a HiCar implementation. At the fixed reference revision, `src/classic/rfcomm.c:2187` initializes `rfcomm_security_level` to `LEVEL_0` and passes it to L2CAP service registration; no `rfcomm_set_required_security_level` call was found under platform/daemon, port/ios or source. This is source-only evidence, not evidence about the binary installed on the iPad. The client header and launchd plist name the local Unix socket `/tmp/BTstack`; that known path is inspected without connecting by the 0.3.0 `--platform` probe. A probe must observe both FE35/FE36 services and actual SDP/negotiated channel numbers, verify the no-forced-link-authentication requirement, accept/open both channels, transmit/receive synthetic data, and close/reopen cleanly. Ordinary RFCOMM connection is insufficient to mark a real HiCar handshake passed.
 
 Before a meaningful device run, establish the installed BTstack daemon/client version and a confirmed control endpoint on the iPad. A subsequent real handshake test requires the user's compatible HiCar phone and an explicit pairing attempt. No daemon changes, Bluetooth takeover or connection to an unknown host has been performed.
 
@@ -27,3 +27,7 @@ First use a read-only device capability probe for available APIs and interfaces.
 ## Completed device action (user-reported)
 
 The user confirmed `/var/jb/usr/bin/openhc-bridge-check --wifi` returned OK. Expected stdout is `WIFI_CONNECTION_INFO_OK`; exit status and installed package version were not independently captured. This is an in-process synthetic parser probe; it does not enable Wi-Fi, read stored credentials or open Bluetooth connections.
+
+## Next device handoff
+
+The completed, downloaded 0.3.0 CI DEB is available under `artifacts/device-ready/` (run 45649915495). Install it through Sileo. Run `--version`, `--auth` and `--platform` using the canonical `/var/jb/usr/bin/openhc-bridge-check` path. Supply the marker lines and inventory output, with no credentials or identity files. If the BTstack socket/daemon is missing, report that precise blocker before implementing/attempting live dual-channel I/O. Available MIS/MobileWiFi symbols do not establish a functioning hotspot on this Wi-Fi-only target.

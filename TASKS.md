@@ -14,4 +14,10 @@
 - [x] Assess WifiConnectionInfo minimal dependency closure and document explicit JVM/Native exception substitution and excluded WifiLinkMessages boundary.
 - [x] Run new WifiConnectionInfo JVM/Native tests in macOS CI and download 0.2.0 probe artifacts (run 45642428044: 14 JVM / 13 Native simulator tests, all passed).
 - [x] Physical `--wifi` synthetic parser self-check passed by user confirmation; package database version, exit status and installed hash not independently captured.
-- [ ] Continue later Stage 0 protocol/platform gates only after bridge gate is evidenced.
+- [x] Run bounded authentication primitive/SPEKE3072 synthetic math probes on JVM and Native simulator (CI 45649915495: 23/21 total tests, all passed).
+- [x] Build and inspect candidate OpenSSL static iosArm64/iosSimulatorArm64 archives; download signed rootless 0.3.0 DEB, logs and licenses.
+- [ ] Run 0.3.0 `--auth` on physical iPad; observe `AUTH_VECTORS_OK`.
+- [ ] Run 0.3.0 read-only `--platform` and assess actual iPad API/interface/BTstack inventory.
+- [ ] Validate real authentication transcript/state-machine behavior; primitive vectors alone do not pass this gate.
+- [ ] Validate BTstack FE35/FE36 SDP/channel numbers/no-forced-link-auth/I/O/close on device.
+- [ ] Validate actual hotspot/AP capability and true IP/SSID/BSSID/frequency; bridge MAC is not assumed to be BSSID.

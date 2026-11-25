@@ -32,4 +32,22 @@ Expected first two lines respectively: `OPENHC_STAGE0_VERSION=0.3.0`, `AUTH_VECT
 
 ## Current status
 
-Implementation prepared; CI and new physical results pending. First CI run `45648844771` failed at OpenSSL Configure because an extra `-arch arm64` argument was treated as a second target. Removed it: the fixed upstream ios64/iossimulator-arm64 target already declares the architecture. No protocol behavior changed for that fix.
+CI **passed** in run `45649915495`, commit `2793c7f38e2e1c2bfb3a0de7efad9c7a2263860a`; new physical results are pending. The run completed at approximately 2026-11-26 00:00 Asia/Shanghai (2026-11-25 16:00 UTC). First CI run `45648844771` failed at OpenSSL Configure because an extra `-arch arm64` argument was treated as a second target. Removed it: the fixed upstream ios64/iossimulator-arm64 target already declares the architecture. No protocol behavior changed for that fix.
+
+Second CI run `45649195389` built both candidate backend archives and linked the iosArm64 framework (`BUILD SUCCESSFUL`). Framework inspection then failed with LLVM `Broken pipe`: `nm | grep -q` closed its input early after finding the class symbol in the larger archive. Changed to a consuming grep, retaining the actual symbol check. No authentication vector result is inferred from that successful link.
+
+The adapter normalizes candidate backend failures to null/false for decrypt, verify and agreement; encryption backend failure raises a generic exception. JVM JCA exception classes are not a Native API guarantee. Listed vector and rejection cases must be tested, and malformed encodings outside that set remain an equivalence audit item. This boundary is explicit; no protocol caller is silently modified to accommodate it.
+
+## Completed CI evidence (2026-11-26 Asia/Shanghai)
+
+Downloaded JUnit XML: JVM 23 tests and iosSimulatorArm64 21 tests, zero failures/errors. Each platform ran the 8 new authentication tests; JVM also ran reference-equivalence and existing IOException compatibility checks. The independent Python oracle printed only `SPEKE3072_PYTHON_ORACLE_OK`. All pinned source SHA checks passed. The device and simulator crypto archives both contain arm64 objects with minimum iOS 15.0 and distinct Mach-O platforms 2 and 7 respectively. Framework objects report minima 12.0/15.0, making the combined candidate require iOS 15.0; the final CLI also reports minimum iOS 15.0.
+
+Theos linked and signed the 0.3.0 package. `_oh_crypto` is present in the linked executable, and otool shows no dynamic OpenHCBridge/libcrypto/libssl dependency. Downloaded DEB payload independently matches the extracted binary; it contains the tool and two license documents. This verifies build/package structure, not new device acceptance.
+
+Artifacts: `artifacts/ci-run-45649915495/openhc-ipad-stage0-2793c7f38e2e1c2bfb3a0de7efad9c7a2263860a/`. Device-ready copy: `artifacts/device-ready/com.gcbond.openhc-bridge-check_0.3.0_iphoneos-arm64.deb`.
+
+DEB SHA-256: `19820169296137F8648D5FF875CD0056C7EF4958B6D0241C3C025025DD36F441`.
+Executable SHA-256: `1C3762A2A783AFA17143A461D60F2763CC012A622AFE079A528D57A1C6F65100`.
+Executable size: 4,535,520 bytes. Package size: 1,295,302 bytes. Logs, backend provenance, platform-specific archives, license copies and test XML are downloaded; summary is `artifacts/auth-validation-summary.json`.
+
+Status: authentication primitive/synthetic-math CI probe passed; physical `--auth`, actual SPEKE/STS state-machine exchange, HiCar handshake, BTstack FE35/FE36 and actual hotspot capability remain unverified. OpenSSL remains a tested backend candidate. No paid runner or billing setting was enabled.

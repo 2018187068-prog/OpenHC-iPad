@@ -84,17 +84,6 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
     return -1;
 }
 
-static int refresh_heartbeat(const char *run_dir) {
-    char path[512];
-    if (!run_dir || snprintf(path, sizeof(path), "%s/heartbeat", run_dir) >= (int)sizeof(path)) return -1;
-    FILE *file = fopen(path, "w");
-    if (!file) return -1;
-    int64_t now = now_ms();
-    int ok = now >= 0 && fprintf(file, "%lld\n", (long long)(time(NULL))) > 0 && fflush(file) == 0;
-    if (fclose(file) != 0) ok = 0;
-    return ok ? 0 : -1;
-}
-
 static int guard_ready(const char *run_dir) {
     char path[512], value[64];
     if (!run_dir || snprintf(path, sizeof(path), "%s/ready", run_dir) >= (int)sizeof(path)) return -1;
@@ -112,7 +101,7 @@ static int guard_ready(const char *run_dir) {
     ok = fscanf(file, "%lld", &deadline) == 1 && deadline > (long long)time(NULL) + 30;
     fclose(file);
     if (!ok) return -1;
-    return refresh_heartbeat(run_dir);
+    return 0;
 }
 
 static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
@@ -125,10 +114,7 @@ static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
         struct pollfd p = {fd, sending ? POLLOUT : POLLIN, 0};
         int r = poll(&p, 1, (int)(slice - now));
         if (r < 0 && errno == EINTR) continue;
-        if (r == 0) {
-            if (refresh_heartbeat(run_dir)) return -1;
-            continue;
-        }
+        if (r == 0) continue;
         if (r < 0 || !(p.revents & (sending ? POLLOUT : POLLIN))) return -1;
         ssize_t n = sending ? send(fd, buf, size, 0) : recv(fd, buf, size, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
@@ -136,7 +122,8 @@ static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
         buf += n;
         size -= (size_t)n;
     }
-    return refresh_heartbeat(run_dir);
+    (void)run_dir; /* Only the power driver owns guard heartbeat updates. */
+    return 0;
 }
 
 static int send_btstack_packet(int fd, uint16_t type, uint16_t channel,
@@ -165,19 +152,25 @@ static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *typ
     } else if (*type == 4 && *channel == 0 && *size >= 2) {
         uint8_t event_header[2];
         if (transfer_guarded(fd, event_header, 2, 0, deadline, run_dir)) return -1;
-        if (event_header[0] != 0x60 && event_header[0] != 0x80 && event_header[0] != 0x81) return -2;
+        if (event_header[0] != 0x60 && event_header[0] != 0x80 &&
+            event_header[0] != 0x81 && event_header[0] != 0x82) return -2;
         body[0] = event_header[0];
         body[1] = event_header[1];
         if (event_header[1] != *size - 2 &&
             !(event_header[0] == 0x80 && *size == 17 && event_header[1] == 16)) return -2;
         if ((event_header[0] == 0x60 && *size != 3) ||
             (event_header[0] == 0x80 && *size != 16 && *size != 17) ||
+            (event_header[0] == 0x82 && *size != 11) ||
             (event_header[0] == 0x81 && *size != 4)) return -2;
         if (event_header[0] == 0x80) {
             uint8_t discard[6];
             if (transfer_guarded(fd, body + 2, 1, 0, deadline, run_dir) ||
                 transfer_guarded(fd, discard, sizeof(discard), 0, deadline, run_dir) ||
                 transfer_guarded(fd, body + 9, *size - 9, 0, deadline, run_dir)) return -1;
+        } else if (event_header[0] == 0x82) {
+            uint8_t discard_address[6];
+            if (transfer_guarded(fd, discard_address, sizeof(discard_address), 0, deadline, run_dir) ||
+                transfer_guarded(fd, body + 8, *size - 8, 0, deadline, run_dir)) return -1;
         } else if (transfer_guarded(fd, body + 2, *size - 2, 0, deadline, run_dir)) {
             return -1;
         }
@@ -381,6 +374,152 @@ static size_t service_record(uint8_t *out, uint16_t uuid, uint8_t channel) {
     return sizeof(record);
 }
 
+/* Passive FE35 milestone: register the local SDP/RFCOMM listener, accept one
+ * incoming request, validate the opened event, then close without reading the
+ * RFCOMM data channel. Addresses and data payloads are never retained/logged.
+ */
+static int transport_inbound(const char *path, const char *run_dir) {
+    uint8_t state[3], reply[7], owned_channel = 0;
+    uint32_t handle = 0;
+    uint16_t cid = 0, packet_type = 0, packet_channel = 0;
+    uint8_t body[32];
+    size_t size = 0;
+    int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
+    unsigned status = 0;
+    const char *stage = "GUARD";
+    if (guard_ready(run_dir)) goto done;
+    fd = connect_daemon(path);
+    if (fd < 0) { stage = "CONNECT"; goto done; }
+    stage = "STATE";
+    if (query(fd, 1, 0x60, state, sizeof(state)) || state[2] != 2) goto done;
+
+    stage = "RFCOMM_LISTEN";
+    for (uint8_t channel = 16; channel <= 23; ++channel) {
+        uint8_t params[] = {channel, 0, 2};
+        if (exchange(fd, 0x42, params, sizeof(params), 0x85, reply, 4)) goto done;
+        status = reply[2];
+        if (reply[3] != channel) goto done;
+        if (status == 0) { owned_channel = channel; break; }
+        if (status != 0x71) goto done;
+    }
+    if (!owned_channel) { stage = "RFCOMM_CHANNELS_BUSY"; goto done; }
+
+    stage = "FE35_SDP";
+    {
+        uint8_t record[64];
+        size_t record_size = service_record(record, 0xfe35, owned_channel);
+        if (exchange(fd, 0x30, record, record_size, 0x90, reply, 7)) goto done;
+        status = reply[2];
+        handle = le32(reply + 3);
+        if (status || handle < 0x10000) goto done;
+    }
+
+    stage = "INCOMING_TIMEOUT";
+    {
+        int64_t deadline = now_ms() + 25000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+        deadline = now_ms() + 150;
+#endif
+        int found = 0;
+        for (unsigned n = 0; n < 64; ++n) {
+            int received = receive_transport_packet(fd, 0, &packet_type, &packet_channel,
+                                                    body, &size, deadline, run_dir);
+            if (received) { if (received == -2) stage = "INCOMING_EVENT_REJECTED"; goto done; }
+            if (packet_type != 4 || body[0] != 0x82) continue;
+            if (size != 11 || body[8] != owned_channel) { stage = "INCOMING_EVENT_SHAPE"; goto done; }
+            cid = (uint16_t)le16(body + 9);
+            if (!cid) { stage = "INCOMING_CID_INVALID"; goto done; }
+            found = 1;
+            break;
+        }
+        if (!found) goto done;
+    }
+
+    stage = "RFCOMM_ACCEPT";
+    {
+        uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8)};
+        if (command(fd, 0x44, params, sizeof(params), now_ms() + 4000)) goto done;
+        accepted = 1;
+    }
+    stage = "INCOMING_OPEN";
+    {
+        int64_t deadline = now_ms() + 10000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+        deadline = now_ms() + 150;
+#endif
+        int found = 0;
+        for (unsigned n = 0; n < 64; ++n) {
+            int received = receive_transport_packet(fd, 0, &packet_type, &packet_channel,
+                                                    body, &size, deadline, run_dir);
+            if (received) { if (received == -2) stage = "OPEN_EVENT_REJECTED"; goto done; }
+            if (packet_type != 4 || body[0] != 0x80) continue;
+            if (size == 16 && body[2] != 0) { stage = "ACCEPT_FAILED"; goto done; }
+            int strict = size == 17 && body[1] == 15;
+            int reference = size == 17 && body[1] == 16;
+            if ((!strict && !reference) || body[2] || body[11] != owned_channel ||
+                le16(body + 12) != cid || body[16] != 1) {
+                stage = "INCOMING_OPEN_PROFILE";
+                goto done;
+            }
+            found = opened = 1;
+            printf("BTSTACK_FE35_INCOMING_OPENED_PROFILE=%s\n",
+                   strict ? "strict-17" : "reference-17-len16");
+            break;
+        }
+        if (!found) goto done;
+    }
+
+    stage = "RFCOMM_DISCONNECT";
+    {
+        uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
+        if (command(fd, 0x41, params, sizeof(params), now_ms() + 4000)) goto done;
+    }
+    stage = "DISCONNECT_UNCONFIRMED";
+    {
+        int64_t deadline = now_ms() + 5000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+        deadline = now_ms() + 150;
+#endif
+        for (unsigned n = 0; n < 64; ++n) {
+            if (receive_transport_packet(fd, cid, &packet_type, &packet_channel,
+                                         body, &size, deadline, run_dir)) break;
+            if (packet_type == 4 && body[0] == 0x81 && le16(body + 2) == cid) {
+                disconnected = 1;
+                break;
+            }
+        }
+    }
+    if (!disconnected) goto done;
+    puts("BTSTACK_FE35_INCOMING_ACCEPT_OK");
+    result = 0;
+    stage = "CLEANUP";
+done:
+    if (fd >= 0) {
+        int cleanup_ok = 1;
+        int64_t deadline = now_ms() + 4000;
+        if (handle) {
+            uint8_t params[] = {(uint8_t)handle, (uint8_t)(handle >> 8),
+                                (uint8_t)(handle >> 16), (uint8_t)(handle >> 24)};
+            if (command(fd, 0x31, params, sizeof(params), deadline)) cleanup_ok = 0;
+        }
+        if (owned_channel) {
+            uint8_t params[] = {owned_channel, 0};
+            if (command(fd, 0x43, params, sizeof(params), deadline)) cleanup_ok = 0;
+        }
+        if (handle || owned_channel) {
+            uint8_t barrier[3];
+            if (query(fd, 1, 0x60, barrier, sizeof(barrier))) cleanup_ok = 0;
+        }
+        if (!cleanup_ok) { result = 1; stage = "CLEANUP_UNCONFIRMED"; }
+        close(fd); /* daemon client teardown also releases any pending CID */
+    }
+    if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
+    else if (disconnected) puts("BTSTACK_FE35_DISCONNECT_CONFIRMED");
+    (void)accepted;
+    (void)opened;
+    return result;
+}
+
 static int remove_services(int fd, uint8_t channels[2], uint32_t handles[2]) {
     /* Unregister has no reply. A subsequent GET_STATE is an ordered processing
      * barrier; this is not a remote SDP-absence query or a radio-close proof.
@@ -477,6 +616,7 @@ done:
 int main(int argc, char **argv) {
     if (argc == 2) return probe(argv[1]);
     if (argc == 3 && strcmp(argv[2], "--services") == 0) return services_probe(argv[1]);
+    if (argc == 4 && strcmp(argv[2], "--inbound") == 0) return transport_inbound(argv[1], argv[3]);
     if (argc == 7 && strcmp(argv[2], "--transport") == 0) {
         char *end = NULL;
         unsigned long channel = strtoul(argv[4], &end, 10);
@@ -489,5 +629,8 @@ int main(int argc, char **argv) {
 int openhc_btstack_control_synthetic(const char *address, unsigned channel,
                                      const char *profile, const char *run_dir) {
     return transport_synthetic("/tmp/BTstack", address, channel, profile, run_dir);
+}
+int openhc_btstack_control_inbound(const char *run_dir) {
+    return transport_inbound("/tmp/BTstack", run_dir);
 }
 #endif

@@ -115,7 +115,12 @@ class PowerProtocol:
                 return
         raise TimeoutError('EXPECTED_STATE_TIMEOUT')
 
-    def run(self):
+    def run(self, on_working=None):
+        """Run one guarded lease; on_working runs inside its WORKING window.
+
+        The callback must be bounded and must not own/refresh the recovery
+        guard. This protocol remains the sole owner of power release.
+        """
         self.command(1)
         if self.state(time.monotonic() + 4) != 0:
             raise RuntimeError('INITIAL_STATE_NOT_OFF')
@@ -125,6 +130,8 @@ class PowerProtocol:
             self.command(2, 1)
             self.wait_state(2, 25)
             self.emit('BTSTACK_POWER_WORKING')
+            if on_working is not None:
+                on_working()
         finally:
             if requested:
                 self.command(2, 0)

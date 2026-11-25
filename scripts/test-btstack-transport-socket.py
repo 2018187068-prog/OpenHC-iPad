@@ -55,6 +55,7 @@ def run_case(executable, case):
     with tempfile.TemporaryDirectory(prefix='oh-transport-') as guard:
         Path(guard, 'ready').write_text('READY\n', encoding='ascii')
         Path(guard, 'deadline').write_text(str(int(__import__('time').time()) + 120) + '\n', encoding='ascii')
+        Path(guard, 'heartbeat').write_text('POWER_DRIVER_OWNS_THIS\n', encoding='ascii')
         endpoint = str(Path(guard) / 'btstack.sock')
         errors = []
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -141,11 +142,88 @@ def run_case(executable, case):
         if expected_failure:
             assert 'BTSTACK_SYNTHETIC_CONTROL_FAILED=' + expected_failure in proc.stdout, (case, proc.stdout)
         heartbeat = Path(guard, 'heartbeat')
-        assert heartbeat.exists(), (case, 'adapter did not refresh guard heartbeat')
-        heartbeat_value = int(heartbeat.read_text(encoding='ascii').strip())
-        if case == 'delayed_echo':
-            assert heartbeat_value >= started_epoch + 1, 'long I/O did not keep guard heartbeat fresh'
+        assert heartbeat.read_text(encoding='ascii') == 'POWER_DRIVER_OWNS_THIS\n', (
+            case, 'transport must not take ownership of guard heartbeat')
         assert 'AA:BB:CC:DD:EE:FF' not in proc.stdout + proc.stderr
+        return proc.stdout
+
+
+def run_inbound_case(executable, case):
+    with tempfile.TemporaryDirectory(prefix='oh-inbound-') as guard:
+        Path(guard, 'ready').write_text('READY\n', encoding='ascii')
+        Path(guard, 'deadline').write_text(str(int(time.time()) + 120) + '\n', encoding='ascii')
+        Path(guard, 'heartbeat').write_text('POWER_DRIVER_OWNS_THIS\n', encoding='ascii')
+        endpoint = str(Path(guard) / 'btstack.sock')
+        errors = []
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(endpoint)
+        server.listen(1)
+
+        def serve():
+            try:
+                conn, _ = server.accept()
+                with conn:
+                    conn.settimeout(4)
+                    command(conn, 1, b'')
+                    send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
+                    command(conn, 0x42, bytes([16, 0, 2]))
+                    send_frame(conn, 4, 0, bytes([0x85, 2, 0, 16]))
+                    packet_type, channel, size = struct.unpack('<HHH', exact(conn, 6))
+                    packet = exact(conn, size)
+                    opcode, length = struct.unpack('<HB', packet[:3])
+                    assert (packet_type, channel, opcode, length) == (1, 0, 0xF430, size - 3)
+                    assert b'\xfe\x35' in packet[3:]
+                    assert bytes([16]) in packet[3:]
+                    send_frame(conn, 4, 0, bytes([0x90, 5, 0]) + struct.pack('<I', 0x10001))
+                    if case == 'incoming_timeout':
+                        time.sleep(.3)
+                        command(conn, 0x31, struct.pack('<I', 0x10001))
+                        command(conn, 0x43, bytes([16, 0]))
+                        command(conn, 1, b'')
+                        send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
+                        return
+                    cid = 0x2345
+                    incoming = bytes([0x82, 9]) + bytes.fromhex('a1a2a3a4a5a6') + bytes([16]) + struct.pack('<H', cid)
+                    send_frame(conn, 4, 0, incoming)
+                    command(conn, 0x44, struct.pack('<H', cid))
+                    if case == 'daemon_cleanup':
+                        return
+                    if case == 'accept_failure':
+                        failed = bytes([0x80, 14, 0x04]) + bytes.fromhex('010203040506') + struct.pack('<H', 0x5678) + bytes([16]) + struct.pack('<HH', cid, 512)
+                        send_frame(conn, 4, 0, failed)
+                    else:
+                        opened = bytes([0x80, 15, 0]) + bytes.fromhex('010203040506') + struct.pack('<H', 0x5678) + bytes([16]) + struct.pack('<HHB', cid, 512, 1)
+                        send_frame(conn, 4, 0, opened)
+                        command(conn, 0x41, struct.pack('<HB', cid, 0))
+                        if case != 'disconnect_timeout':
+                            send_frame(conn, 4, 0, bytes([0x81, 2]) + struct.pack('<H', cid))
+                    command(conn, 0x31, struct.pack('<I', 0x10001))
+                    command(conn, 0x43, bytes([16, 0]))
+                    command(conn, 1, b'')
+                    send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
+                    try:
+                        conn.recv(1)
+                    except OSError:
+                        pass
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        proc = subprocess.run([executable, endpoint, '--inbound', guard],
+                              capture_output=True, text=True, timeout=8)
+        thread.join(5)
+        server.close()
+        assert not thread.is_alive(), (case, proc.stdout, proc.stderr)
+        assert not errors, (case, errors, proc.stdout, proc.stderr)
+        success = case == 'success'
+        assert proc.returncode == (0 if success else 1), (case, proc.returncode, proc.stdout, proc.stderr)
+        assert Path(guard, 'heartbeat').read_text(encoding='ascii') == 'POWER_DRIVER_OWNS_THIS\n'
+        assert ('BTSTACK_FE35_INCOMING_ACCEPT_OK' in proc.stdout) == success, (case, proc.stdout)
+        assert 'a1:a2:a3:a4:a5:a6' not in proc.stdout.lower() + proc.stderr.lower()
+        assert 'BTSTACK_FE35_INBOUND_FAILED=ACCEPT_FAILED' in proc.stdout if case == 'accept_failure' else True
+        assert 'BTSTACK_FE35_INBOUND_FAILED=INCOMING_TIMEOUT' in proc.stdout if case == 'incoming_timeout' else True
+        assert 'BTSTACK_FE35_INBOUND_FAILED=DISCONNECT_UNCONFIRMED' in proc.stdout if case == 'disconnect_timeout' else True
         return proc.stdout
 
 
@@ -166,6 +244,11 @@ def main():
         run_case(executable, 'strict_event')
         run_case(executable, 'strict_event')
         print('BTSTACK_TRANSPORT_SOCKET_REOPEN_OK=2')
+        for case in ('success', 'accept_failure', 'incoming_timeout',
+                     'disconnect_timeout', 'daemon_cleanup'):
+            run_inbound_case(executable, case)
+            print('BTSTACK_INBOUND_SOCKET_CASE_OK=' + case)
+        print('BTSTACK_INBOUND_SOCKET_TESTS_OK=5')
 
 
 if __name__ == '__main__':

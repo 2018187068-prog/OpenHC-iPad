@@ -43,6 +43,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(c.sent, [bytes.fromhex(x) for x in
             ('01000000030001f400', '01000000040002f40101', '01000000040002f40100')])
 
+    def test_working_callback_runs_before_single_release(self):
+        c = Channel(event(0) + event(1) + event(2) + event(3) + event(0))
+        observed = []
+        trial.PowerProtocol(c, lambda _: None).run(
+            on_working=lambda: observed.append(len(c.sent)))
+        self.assertEqual(observed, [2])
+        self.assertEqual(len(c.sent), 3)
+
+    def test_working_callback_failure_still_releases_once(self):
+        c = Channel(event(0) + event(1) + event(2) + event(3) + event(0))
+        with self.assertRaisesRegex(RuntimeError, 'CALLBACK_FAIL'):
+            trial.PowerProtocol(c, lambda _: None).run(
+                on_working=lambda: (_ for _ in ()).throw(RuntimeError('CALLBACK_FAIL')))
+        self.assertEqual(c.sent[-1], bytes.fromhex('01000000040002f40100'))
+        self.assertEqual(len(c.sent), 3)
+
     def test_failure_still_releases(self):
         c = Channel(event(0) + struct.pack('<HHHBB', 4, 0, 2, 0x62, 0) + event(0))
         with self.assertRaisesRegex(RuntimeError, 'POWERON_FAILED'):

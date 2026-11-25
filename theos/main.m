@@ -36,7 +36,7 @@ int main(int argc, const char *argv[]) {
             if (!end || *end || channel < 1 || channel > 30) return 2;
             return openhc_btstack_control_synthetic(argv[2], (unsigned)channel, argv[4], argv[5]);
         } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-            puts("OPENHC_STAGE0_VERSION=0.3.2");
+            puts("OPENHC_STAGE0_VERSION=0.3.3");
         } else {
             fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--version]\n", stderr);
             return 2;

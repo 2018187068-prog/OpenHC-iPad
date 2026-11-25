@@ -33,8 +33,8 @@ class Fe35ControlNegotiatorTest {
         assertEquals(2, replies.size)
         val first = assertIs<Fe35ControlNegotiator.Action.SendControl>(replies[0]).payload
         val second = assertIs<Fe35ControlNegotiator.Action.SendControl>(replies[1]).payload
-        assertTrue(first.contentEquals(hex("84a1801e8082938968696361724175746880900000fe3600001000800000805f9b34fb")))
-        assertTrue(second.contentEquals(hex("84a1801e8082938968696361724175746880900000fe3600001000800000805f9b34fb")))
+        assertTrue(first.contentEquals(hex("84a0809e82938968696361724175746880900000fe3600001000800000805f9b34fb")))
+        assertTrue(second.contentEquals(hex("84a0809e82938968696361724175746880900000fe3600001000800000805f9b34fb")))
     }
 
     @Test

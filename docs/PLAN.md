@@ -11,3 +11,5 @@ Gate 2: copy the fixed-revision `WifiChannels.kt` into common Kotlin and test JV
 Later gates cover authentication vectors (SPEKE3072, X25519, Ed25519, AES-GCM, HKDF), BTstack FE35/FE36 channels/SDP/actual channel numbers/authentication requirements/I/O/close, and hotspot IP/SSID/BSSID/frequency. Showcase MISManager and bridge100 are references only; bridge MAC is not assumed to equal BSSID. The password is local-only. Ordinary RFCOMM connection is not evidence of a real HiCar handshake.
 
 Identity files and keys are excluded. All tests use synthetic values; logs must not contain passwords or keys. Reference repositories remain read-only.
+
+Progress on 2026-11-25: gate 1 physical bridge passed by user-reported `KOTLIN_BRIDGE_OK`; the agent has not captured a device shell or architecture output. The next 0.2.0 probe adds a synthetic WifiConnectionInfo check via `--wifi`, with the parser slice kept verbatim and explicit platform-specific exception classes. Subsequent authentication/Bluetooth/hotspot evidence requirements and source findings are tracked in `docs/NEXT-PROBES.md`. No full protocol port is authorized by a hello result.

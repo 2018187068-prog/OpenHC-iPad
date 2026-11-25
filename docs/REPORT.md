@@ -8,7 +8,7 @@ Date: 2026-11-25
 - The reference version catalog pins Kotlin 2.1.20 and Gradle wrapper properties pin 8.13.
 - Session documentation says core is pure Kotlin/JVM and the session composes nearby/auth/dmsdp/hisight; `SocketRunner` owns `java.net` blocking I/O.
 - `MalformedMessageException` extends `IOException`.
-- `WifiChannels.kt` is a self-contained candidate, while `WifiConnectionInfo.kt` uses `MalformedMessageException`, `WifiChannels`, and other platform-free Kotlin/JVM APIs; dependency review and tests remain pending.
+- `WifiChannels.kt` is a self-contained candidate, while `WifiConnectionInfo.kt` uses `MalformedMessageException`, `WifiChannels`, and other platform-free Kotlin/JVM APIs; the minimal dependency slice is now tested as described below.
 - The copied `WifiChannels.kt` file's SHA-256 matches the fixed reference source: `F36BEDCAD3EF407D0002C9D461579DFC527F05C7C43B9703AAE714DB63EC9CEB`.
 
 ## Environment checks
@@ -28,7 +28,7 @@ Added a minimal Kotlin Multiplatform `iosArm64` static framework with exported `
 ## Validation status
 
 - Source/configuration review: completed for the items above.
-- Kotlin/Native framework build: passed on GitHub macOS 15 arm64 runner, latest successful GitHub Actions run `45620285649`, commit `bd0168441fb8362cd0466acd0227242ebd77f8d5`.
+- Kotlin/Native framework build: passed on GitHub macOS 15 arm64 runner, initial successful GitHub Actions run `45620285649`, commit `bd0168441fb8362cd0466acd0227242ebd77f8d5`.
 - Shared `jvmTest` and `iosSimulatorArm64Test`: both passed on that run (`BUILD SUCCESSFUL`). This confirms the test suites run on JVM and simulator, not an installed app on the physical iPad.
 - Objective-C link, static-link dependency inspection, arm64, package layout/metadata, system-library inspection, and iOS minimum checks: passed in CI. Framework archive members report minimum iOS 12.0; the Theos executable reports minimum iOS 15.0.
 - Theos reported its signing stage; `ldid -h` found an embedded CodeDirectory and CDHash. This is a local ad-hoc/fakesign result with no developer certificate identity, not proof of trusted signing or device acceptance.
@@ -63,7 +63,7 @@ SHA-256: framework archive `1B33DA2067763D1DE5166F7B8C7E783E9686B98102E6B73584C2
 
 ## WifiConnectionInfo dependency assessment (source review only)
 
-`WifiConnectionInfo` depends on `WifiMode`, `WifiChannels`, `Ipv4Text.isCanonical`, Kotlin `Regex`/collections/string APIs, and `MalformedMessageException`. No Java API is directly referenced in `WifiConnectionInfo`; the blocker is the exception base class in `java.io.IOException` (and its `cause` constructor). A narrowly scoped migration can keep parse behavior while introducing a common exception type, but callers that catch `IOException` must be audited. `Ipv4Text` is a small pure Kotlin IPv4 parser in `core/common/codec`; its edge cases and test vectors still need a separate review before treating this slice as migration-ready.
+`WifiConnectionInfo` depends on `WifiMode`, `WifiChannels`, `Ipv4Text.isCanonical`, Kotlin `Regex`/collections/string APIs, and `MalformedMessageException`. No Java API is directly referenced in the `WifiConnectionInfo` class slice; the blocker is the exception base class in `java.io.IOException` (and its `cause` constructor). A narrowly scoped migration can keep parse behavior while introducing a common exception type, but callers that catch `IOException` must be audited. `Ipv4Text` is a small pure Kotlin IPv4 parser in `core/common/codec`; its copied reference tests now pass in JVM and Native simulator. This is limited parser-slice evidence, not full protocol migration readiness.
 
 ## Physical bridge result and next probe (2026-11-25)
 
@@ -79,4 +79,23 @@ The next probe extracts `WifiMode` and `WifiConnectionInfo` verbatim from the fi
 
 `MalformedMessageException` is an explicit expect/actual boundary: the JVM actual keeps `java.io.IOException(message, cause)`, and the Native actual uses `Exception(message, cause)`. Shared tests check message/cause preservation and malformed-input behavior; a JVM test checks `IOException` catch compatibility. Native callers must catch `MalformedMessageException` explicitly; session `SocketRunner` IOException catch sites (301/324/344/357/450/473/497/505 at the reference revision) require policy review when that layer is migrated. No session migration is included.
 
-The 0.2.0 DEB adds `openhc-bridge-check --wifi`, which executes synthetic encode/parse, channel and rejection checks and emits only `WIFI_CONNECTION_INFO_OK` or `WIFI_CONNECTION_INFO_FAILED`. Default invocation still emits `KOTLIN_BRIDGE_OK`. The new probe is not yet claimed as device-passed. New JVM/Native CI results will be recorded after execution. The helper now uses the canonical `/var/jb/usr/bin/openhc-bridge-check` path and accepts optional `--wifi`.
+The 0.2.0 DEB adds `openhc-bridge-check --wifi`, which executes synthetic encode/parse, channel and rejection checks and emits only `WIFI_CONNECTION_INFO_OK` or `WIFI_CONNECTION_INFO_FAILED`. Default invocation still emits `KOTLIN_BRIDGE_OK`. The new probe is not yet claimed as device-passed. New JVM/Native CI results are recorded below. The helper now uses the canonical `/var/jb/usr/bin/openhc-bridge-check` path and accepts optional `--wifi`.
+
+## WiFi parser probe CI evidence (2026-11-25)
+
+Run `45642428044`, commit `d53c49c1aa4047a2f45f09c9f118761be9241afc`: **success**. The downloaded JUnit XML reports 14 JVM tests and 13 iosSimulatorArm64 tests, all with zero failures/errors. Coverage includes WifiChannels, copied Ipv4Text tests, 8 WifiConnectionInfo tests, and JVM IOException catch compatibility. All four pinned source-slice checks passed. `BUILD SUCCESSFUL` is present for the framework and shared-test steps.
+
+The 0.2.0 static framework and Theos package passed architecture, static-link, minimum OS (framework 12.0, executable 15.0), signature-metadata and rootless layout checks. Dynamic dependencies are libobjc, Foundation, CoreFoundation, libSystem and libc++; no OpenHCBridge runtime framework dependency is present. This CI signing evidence is separate from acceptance of the new binary on the iPad.
+
+Artifacts downloaded to `artifacts/ci-run-45642428044/openhc-ipad-stage0-d53c49c1aa4047a2f45f09c9f118761be9241afc/`; full run log is `artifacts/ci-run-45642428044.log`. An identical convenience DEB copy is at `artifacts/device-ready/com.gcbond.openhc-bridge-check_0.2.0_iphoneos-arm64.deb`.
+
+DEB SHA-256: `2CF3C1921A003E686C4C097D264E311A8DEFDBAB35C7AF0A18F2BFC0974E6547`. Independently inspected the downloaded ar/tar payload: its only regular installed file is `./var/jb/usr/bin/openhc-bridge-check`, executable mode 0755; bytes match the CI extracted-binary artifact.
+
+Install the 0.2.0 DEB via Sileo, then run:
+
+```sh
+/var/jb/usr/bin/openhc-bridge-check
+/var/jb/usr/bin/openhc-bridge-check --wifi
+```
+
+Expected stdout respectively: `KOTLIN_BRIDGE_OK` and `WIFI_CONNECTION_INFO_OK`. The new `--wifi` device result is **not verified**; only the original bridge has a user-reported physical pass. Authentication, Bluetooth and real hotspot gates remain pending; see `docs/NEXT-PROBES.md`. No additional paid runner or billing setting was enabled.

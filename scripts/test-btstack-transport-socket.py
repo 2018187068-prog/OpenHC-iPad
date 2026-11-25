@@ -66,7 +66,7 @@ def run_case(executable, case):
             try:
                 conn, _ = server.accept()
                 with conn:
-                    conn.settimeout(3)
+                    conn.settimeout(6)
                     command(conn, 1, b'')
                     send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
                     command(conn, 0x40, bytes.fromhex('ffeeddccbbaa') + bytes([7]))
@@ -101,7 +101,7 @@ def run_case(executable, case):
                         time.sleep(2.3)
                     if case == 'echo_mismatch':
                         send_frame(conn, 7, cid, b'wrong')
-                    elif case != 'close_timeout':
+                    elif case not in ('close_timeout', 'echo_timeout'):
                         send_frame(conn, 7, cid, PAYLOAD)
                     command(conn, 0x41, struct.pack('<HB', cid, 0))
                     if case != 'close_timeout':
@@ -114,8 +114,8 @@ def run_case(executable, case):
         profile = {'reference_event': 'auto'}.get(case, 'auto')
         started_epoch = int(time.time())
         proc = subprocess.run([executable, endpoint, '--transport', 'AA:BB:CC:DD:EE:FF',
-                               '7', profile, guard], capture_output=True, text=True, timeout=5)
-        thread.join(4)
+                               '7', profile, guard], capture_output=True, text=True, timeout=8)
+        thread.join(7)
         server.close()
         assert not thread.is_alive(), case
         assert not errors, (case, errors, proc.stdout, proc.stderr)
@@ -127,6 +127,8 @@ def run_case(executable, case):
         if success:
             expected_profile = 'reference-17-len16' if case == 'reference_event' else 'strict-17'
             assert 'BTSTACK_OPENED_PROFILE=' + expected_profile in proc.stdout, (case, proc.stdout)
+        if case == 'echo_timeout':
+            assert 'BTSTACK_SYNTHETIC_CONTROL_FAILED=ECHO_TIMEOUT' in proc.stdout
         heartbeat = Path(guard, 'heartbeat')
         assert heartbeat.exists(), (case, 'adapter did not refresh guard heartbeat')
         heartbeat_value = int(heartbeat.read_text(encoding='ascii').strip())
@@ -141,13 +143,14 @@ def main():
         executable = str(Path(directory) / 'transport')
         subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                         '-DOPENHC_BTSTACK_TEST', '-DOPENHC_TRANSPORT_TEST_TIMEOUTS',
+                        '-DOPENHC_TRANSPORT_TEST_HEARTBEAT',
                         str(ROOT / 'theos/btstack-probe.c'), '-o', executable], check=True)
         for case in ('strict_event', 'reference_event', 'delayed_echo', 'bad_length',
                      'create_failure', 'open_timeout', 'echo_mismatch', 'close_timeout',
-                     'security_event'):
+                     'echo_timeout', 'security_event'):
             output = run_case(executable, case)
             print('BTSTACK_TRANSPORT_SOCKET_CASE_OK=' + case)
-        print('BTSTACK_TRANSPORT_SOCKET_TESTS_OK=9')
+        print('BTSTACK_TRANSPORT_SOCKET_TESTS_OK=10')
         # Re-open and reuse the same RFCOMM channel in separate daemon clients.
         run_case(executable, 'strict_event')
         run_case(executable, 'strict_event')

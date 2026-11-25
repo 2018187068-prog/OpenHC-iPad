@@ -251,6 +251,9 @@ static int transport_synthetic(const char *path, const char *address, unsigned s
 #ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
         deadline = now_ms() + 150;
 #endif
+#ifdef OPENHC_TRANSPORT_TEST_HEARTBEAT
+        deadline = now_ms() + 4000;
+#endif
         int echoed = 0;
         for (unsigned n = 0; n < 256; ++n) {
             if (receive_transport_packet(fd, cid, &packet_type, &channel, body, &size, deadline, run_dir)) goto done;

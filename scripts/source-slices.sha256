@@ -2,3 +2,4 @@ f36bedcad3ef407d0002c9d461579dfc527f05c7c43b9703aae714db63ec9ceb  bridge/src/com
 4cf8ce00baf2d49fc16f6b6e1e980df9e34048a571921daa26107ac851f627ea  bridge/src/commonMain/kotlin/io/github/gcbond/openhc/core/nearby/WifiConnectionInfo.kt
 25af8ef8304a9f15d64facd586c803b769f742331d3c863cedf05fb59ba8bfd0  bridge/src/commonMain/kotlin/io/github/gcbond/openhc/core/common/codec/Ipv4Text.kt
 6d757586c60b50a4e205d09a7f069a3318ba4a3d83f2113e87e424079df1e0cd  bridge/src/commonTest/kotlin/io/github/gcbond/openhc/core/common/codec/Ipv4TextTest.kt
+632101e621b08a2aa9bb9ffe9fafd84c8fd0c87d58f7543a6233039e68b39727  bridge/src/jvmMain/kotlin/io/github/gcbond/openhc/core/auth/crypto/AuthCrypto.kt

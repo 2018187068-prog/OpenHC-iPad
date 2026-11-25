@@ -11,8 +11,14 @@ int main(int argc, const char *argv[]) {
             NSString *result = [bridge wifiConnectionInfoSelfCheck];
             puts([result UTF8String]);
             return [result isEqualToString:@"WIFI_CONNECTION_INFO_OK"] ? 0 : 1;
+        } else if (argc == 2 && strcmp(argv[1], "--auth") == 0) {
+            NSString *result = [bridge authSelfCheck];
+            puts([result UTF8String]);
+            return [result isEqualToString:@"AUTH_VECTORS_OK"] ? 0 : 1;
+        } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+            puts("OPENHC_STAGE0_VERSION=0.3.0");
         } else {
-            fputs("usage: openhc-bridge-check [--wifi]\n", stderr);
+            fputs("usage: openhc-bridge-check [--wifi|--auth|--version]\n", stderr);
             return 2;
         }
     }

@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'bridge/**'
+      - 'native/**'
       - 'theos/**'
       - 'scripts/**'
       - 'build.gradle.kts'
@@ -23,6 +24,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Build candidate static crypto backend
+        shell: bash
+        run: bash scripts/build-crypto-backend.sh
       - name: Build static iOS framework
         shell: bash
         run: |
@@ -78,6 +82,10 @@ jobs:
           otool -L "$binary" | tee ../artifacts/logs/theos-link-dependencies.log
           if grep -q 'OpenHCBridge' ../artifacts/logs/theos-link-dependencies.log; then
             echo 'OpenHCBridge was dynamically linked instead of statically linked' >&2
+            exit 1
+          fi
+          if grep -Ei 'libcrypto|libssl' ../artifacts/logs/theos-link-dependencies.log; then
+            echo 'Crypto backend must be statically linked' >&2
             exit 1
           fi
           otool -l "$binary" | tee ../artifacts/logs/theos-load-commands.log

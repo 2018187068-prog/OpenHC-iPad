@@ -227,7 +227,11 @@ static int transport_synthetic(const char *path, const char *address, unsigned s
         deadline = now_ms() + 150;
 #endif
         for (unsigned n = 0; n < 256; ++n) {
-            if (receive_transport_packet(fd, 0, &packet_type, &channel, body, &size, deadline, run_dir)) goto done;
+            int received = receive_transport_packet(fd, 0, &packet_type, &channel, body, &size, deadline, run_dir);
+            if (received) {
+                stage = received == -1 ? "OPEN_EVENT_TIMEOUT_OR_IO" : "OPEN_EVENT_REJECTED";
+                goto done;
+            }
             if (packet_type != 4 || body[0] != 0x80) continue;
             if (size >= 14 && body[2] == 0) cid = (uint16_t)le16(body + 12);
             int strict = size == 17 && body[1] == 15;
@@ -256,7 +260,11 @@ static int transport_synthetic(const char *path, const char *address, unsigned s
 #endif
         int echoed = 0;
         for (unsigned n = 0; n < 256; ++n) {
-            if (receive_transport_packet(fd, cid, &packet_type, &channel, body, &size, deadline, run_dir)) goto done;
+            int received = receive_transport_packet(fd, cid, &packet_type, &channel, body, &size, deadline, run_dir);
+            if (received) {
+                stage = received == -1 ? "ECHO_TIMEOUT_OR_IO" : "ECHO_EVENT_REJECTED";
+                goto done;
+            }
             if (packet_type == 4) {
                 if (body[0] == 0x81 && le16(body + 2) == cid) { stage = "CLOSED_EARLY"; goto done; }
                 continue;

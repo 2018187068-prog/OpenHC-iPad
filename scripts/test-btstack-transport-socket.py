@@ -130,7 +130,16 @@ def run_case(executable, case):
             expected_profile = 'reference-17-len16' if case == 'reference_event' else 'strict-17'
             assert 'BTSTACK_OPENED_PROFILE=' + expected_profile in proc.stdout, (case, proc.stdout)
         if case == 'echo_timeout':
-            assert 'BTSTACK_SYNTHETIC_CONTROL_FAILED=ECHO_TIMEOUT' in proc.stdout, (case, proc.stdout)
+            assert 'BTSTACK_SYNTHETIC_CONTROL_FAILED=ECHO_TIMEOUT_OR_IO' in proc.stdout, (case, proc.stdout)
+        expected_failure = {
+            'bad_length': 'OPEN_EVENT_REJECTED',
+            'create_failure': 'CREATE_FAILED',
+            'open_timeout': 'OPEN_EVENT_TIMEOUT_OR_IO',
+            'close_timeout': 'CLOSE_UNCONFIRMED',
+            'security_event': 'OPEN_EVENT_REJECTED',
+        }.get(case)
+        if expected_failure:
+            assert 'BTSTACK_SYNTHETIC_CONTROL_FAILED=' + expected_failure in proc.stdout, (case, proc.stdout)
         heartbeat = Path(guard, 'heartbeat')
         assert heartbeat.exists(), (case, 'adapter did not refresh guard heartbeat')
         heartbeat_value = int(heartbeat.read_text(encoding='ascii').strip())

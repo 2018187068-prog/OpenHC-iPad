@@ -24,6 +24,6 @@ Showcase `source/Showcase.m` around `showcase_mis_manager` loads WirelessModemSe
 
 First use a read-only device capability probe for available APIs and interfaces. Then measure actual AP IP, SSID, radio BSSID and center frequency/channel, independently validating the BSSID rather than assigning the bridge interface MAC. Report unavailable/unknown fields explicitly; do not guess. Hotspot passwords stay on the device and must never be written to CI artifacts or terminal logs. Opening/changing a hotspot is a separate live experiment, not part of the synthetic parser check.
 
-## Current device action
+## Completed device action (user-reported)
 
-After installing the 0.2.0 DEB, run `/var/jb/usr/bin/openhc-bridge-check --wifi`. Expected stdout is `WIFI_CONNECTION_INFO_OK` and exit status 0. This is an in-process synthetic parser probe; it does not enable Wi-Fi, read stored credentials or open Bluetooth connections.
+The user confirmed `/var/jb/usr/bin/openhc-bridge-check --wifi` returned OK. Expected stdout is `WIFI_CONNECTION_INFO_OK`; exit status and installed package version were not independently captured. This is an in-process synthetic parser probe; it does not enable Wi-Fi, read stored credentials or open Bluetooth connections.

@@ -13,5 +13,5 @@
 - [x] Run WifiChannels Native simulator test on macOS CI (passed).
 - [x] Assess WifiConnectionInfo minimal dependency closure and document explicit JVM/Native exception substitution and excluded WifiLinkMessages boundary.
 - [x] Run new WifiConnectionInfo JVM/Native tests in macOS CI and download 0.2.0 probe artifacts (run 45642428044: 14 JVM / 13 Native simulator tests, all passed).
-- [ ] Run 0.2.0 `--wifi` on physical iPad; observe `WIFI_CONNECTION_INFO_OK`.
+- [x] Physical `--wifi` synthetic parser self-check passed by user confirmation; package database version, exit status and installed hash not independently captured.
 - [ ] Continue later Stage 0 protocol/platform gates only after bridge gate is evidenced.

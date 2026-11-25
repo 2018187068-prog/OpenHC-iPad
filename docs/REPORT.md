@@ -79,7 +79,7 @@ The next probe extracts `WifiMode` and `WifiConnectionInfo` verbatim from the fi
 
 `MalformedMessageException` is an explicit expect/actual boundary: the JVM actual keeps `java.io.IOException(message, cause)`, and the Native actual uses `Exception(message, cause)`. Shared tests check message/cause preservation and malformed-input behavior; a JVM test checks `IOException` catch compatibility. Native callers must catch `MalformedMessageException` explicitly; session `SocketRunner` IOException catch sites (301/324/344/357/450/473/497/505 at the reference revision) require policy review when that layer is migrated. No session migration is included.
 
-The 0.2.0 DEB adds `openhc-bridge-check --wifi`, which executes synthetic encode/parse, channel and rejection checks and emits only `WIFI_CONNECTION_INFO_OK` or `WIFI_CONNECTION_INFO_FAILED`. Default invocation still emits `KOTLIN_BRIDGE_OK`. The new probe is not yet claimed as device-passed. New JVM/Native CI results are recorded below. The helper now uses the canonical `/var/jb/usr/bin/openhc-bridge-check` path and accepts optional `--wifi`.
+The 0.2.0 DEB adds `openhc-bridge-check --wifi`, which executes synthetic encode/parse, channel and rejection checks and emits only `WIFI_CONNECTION_INFO_OK` or `WIFI_CONNECTION_INFO_FAILED`. Default invocation still emits `KOTLIN_BRIDGE_OK`. The user subsequently confirmed the second (`--wifi`) command returned OK; see the device evidence below. New JVM/Native CI results are recorded below. The helper now uses the canonical `/var/jb/usr/bin/openhc-bridge-check` path and accepts optional `--wifi`.
 
 ## WiFi parser probe CI evidence (2026-11-25)
 
@@ -98,4 +98,10 @@ Install the 0.2.0 DEB via Sileo, then run:
 /var/jb/usr/bin/openhc-bridge-check --wifi
 ```
 
-Expected stdout respectively: `KOTLIN_BRIDGE_OK` and `WIFI_CONNECTION_INFO_OK`. The new `--wifi` device result is **not verified**; only the original bridge has a user-reported physical pass. Authentication, Bluetooth and real hotspot gates remain pending; see `docs/NEXT-PROBES.md`. No additional paid runner or billing setting was enabled.
+Expected stdout respectively: `KOTLIN_BRIDGE_OK` and `WIFI_CONNECTION_INFO_OK`. The new `--wifi` device result is **passed, user-reported**: after being asked to run `/var/jb/usr/bin/openhc-bridge-check --wifi`, the user confirmed that the second command returned OK. This is evidence of the synthetic parser self-check running on the physical device. The agent did not independently capture stdout, exit status, package database version or the installed file hash, and does not infer those from this reply. Authentication, Bluetooth and real hotspot gates remain pending; see `docs/NEXT-PROBES.md`. No additional paid runner or billing setting was enabled.
+
+## WiFi parser physical-device confirmation (2026-11-25)
+
+After the canonical rootless `--wifi` command was supplied, the user replied “第二个是ok的” (the second command is OK). Record the expected `WIFI_CONNECTION_INFO_OK` result as user-confirmed physical-device evidence. The user did not report the first (`dpkg-query`) command's version output; package version was not independently verified. File name and modification time are not used as pass criteria.
+
+Both minimal bridge and synthetic WiFi parser device gates now have user-reported passes. This does not validate live WiFi/AP configuration, HiCar authentication, Bluetooth services or a full protocol migration. Continue only with bounded Stage 0 probes.

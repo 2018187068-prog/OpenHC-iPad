@@ -20,3 +20,7 @@
 The user reported `KOTLIN_BRIDGE_OK` from the physical device after install/run instructions. Record this as user-reported evidence, with no agent SSH session, architecture output or on-device artifact hash claimed. Gate 1 is passed at that evidence level; this does not complete Stage 0.
 
 Extract WifiMode/WifiConnectionInfo without parser edits. Exclude the adjacent WifiLinkMessages object and its JVM-only charset conversion. Preserve IOException ancestry on JVM via an explicit actual exception and use Exception on Native. Keep message/cause, wire fields, validation and existing acceptance of leading zeroes in numeric port text; do not alter protocol semantics to compile. Audit session IOException catches before migrating session code. All new probe credentials are synthetic and never emitted in probe output.
+
+## 2026-11-25: User-confirmed WiFi parser device pass
+
+The user confirmed the second command (`/var/jb/usr/bin/openhc-bridge-check --wifi`) returned OK. Accept this as user-reported physical execution of the synthetic parser probe, separately from CI/simulator results. No package-version output or installed hash was supplied. Authentication, BTstack dual channels and actual hotspot capability remain unverified.

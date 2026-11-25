@@ -8,7 +8,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class Fe35ControlNegotiatorTest {
-    private val authRequest = hex("838d86938968696361724175746880")
+    private val authRequest = hex("838d82938968696361724175746880")
     private val fe36 = hex("0000fe3600001000800000805f9b34fb")
 
     @Test
@@ -27,14 +27,14 @@ class Fe35ControlNegotiatorTest {
     @Test
     fun duplicatePassiveRequestsQueueAndChannelZeroMapsToBluetoothChannel() {
         val machine = Fe35ControlNegotiator(Fe35ControlNegotiator.Mode.PASSIVE)
-        machine.onMessageLayerPayload(hex("838d80938968696361724175746881")).single()
+        machine.onMessageLayerPayload(hex("838d80938968696361724175746880")).single()
         assertIs<Fe35ControlNegotiator.Action.Ignored>(machine.onMessageLayerPayload(authRequest).single())
         val replies = machine.onAuthListenerReady(30)
         assertEquals(2, replies.size)
         val first = assertIs<Fe35ControlNegotiator.Action.SendControl>(replies[0]).payload
         val second = assertIs<Fe35ControlNegotiator.Action.SendControl>(replies[1]).payload
         assertTrue(first.contentEquals(hex("84a1801e8082938968696361724175746880900000fe3600001000800000805f9b34fb")))
-        assertTrue(second.contentEquals(hex("84a1801e8682938968696361724175746880900000fe3600001000800000805f9b34fb")))
+        assertTrue(second.contentEquals(hex("84a1801e8082938968696361724175746880900000fe3600001000800000805f9b34fb")))
     }
 
     @Test
@@ -74,7 +74,7 @@ class Fe35ControlNegotiatorTest {
         invalid.onMessageLayerPayload(authRequest)
         val failed = invalid.onAuthListenerReady(31)
         val rejected = assertIs<Fe35ControlNegotiator.Action.SendControl>(failed[0])
-        assertTrue(rejected.payload.contentEquals(hex("848f818086938968696361724175746880")))
+        assertTrue(rejected.payload.contentEquals(hex("848f818082938968696361724175746880")))
         assertIs<Fe35ControlNegotiator.Action.CloseAuthListener>(failed[1])
         assertIs<Fe35ControlNegotiator.Action.AbortControl>(failed[2])
     }

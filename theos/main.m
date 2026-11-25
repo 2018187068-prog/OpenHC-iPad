@@ -3,7 +3,7 @@
 
 int main(void) {
     @autoreleasepool {
-        BridgeSelfCheck *bridge = [[BridgeSelfCheck alloc] init];
+        OHCBBridgeSelfCheck *bridge = [[OHCBBridgeSelfCheck alloc] init];
         puts([[bridge selfCheck] UTF8String]);
     }
     return 0;

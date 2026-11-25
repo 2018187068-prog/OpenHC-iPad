@@ -1,6 +1,52 @@
 # Metadata tool termination and transport preparation — 2026-11-26
 
-## Established offline evidence
+## Latest physical result after SSH resumed
+
+The user subsequently reported SSH connected. Port 2222 returned OpenSSH 9.7;
+an existing authenticated native SSH console supplied UID 0, iPad5,1 and
+15.8.8. No password, private key, pairing record, terminal history, process argv
+or broker application data was read. No new SSH authentication was performed.
+
+| Controlled condition | Observed result |
+| --- | --- |
+| New baseline, root-owned mode 700, `/var/root/Library/OpenHCStage0Tools/showcase-role-probe-baseline-dacf5f82`, remote SHA-256 matches CI | Direct zero-socket self-check killed / 137; no main marker |
+| Add only that baseline's SHA-1 CDHash, while its SHA-256 CDHash was already listed | Add returned 0; same self-check still killed / 137 |
+| Independently hashed legacy-fixups candidate under the same `/var/root` directory | Zero-socket self-check also killed / 137 |
+| Copy the **same baseline bytes and signature**, mode 700, to `/var/jb/usr/bin/openhc-role-probe-dacf5f82` | `ROLE_PROBE_MAIN_ENTERED`, `ROLE_PROBE_SELF_CHECK_OK`, exit 0 |
+| One normal fixed-endpoint query from that verified rootless copy | Owner PID 27078, zero application bytes sent/read, query OK, exit 0 |
+
+Both baseline copies have SHA-256
+`dacf5f82545ac5e67b32c34fe992dab9e4f804fdc65bd73bc86c9b526b12c445`.
+File metadata locates the failing copy on `/private/var` (device 16777222),
+and the working copy on `/private/preboot` (device 16777221). Mount metadata
+lists `protect` for `/private/var`; it does **not** list `noexec`. This is an
+observed execution-location/filesystem difference and a validated narrow
+deployment fix, not a proven kernel termination namespace or a demonstrated
+`noexec` mechanism. No device termination-reason record was obtained. Do not
+claim missing trust, memory pressure or chained fixups as the diagnosed cause.
+
+Comm-only metadata associates PID 27078 with `CarPlay Simulator`; a new
+Showcase main process PID 37681 was also present. No `CarDisplaySim`/`carplay_bt`
+was listed, and `/tmp/showcase_bt_owned` was absent. The reference broker
+branch returns into its loop before network-session initialization. Socket
+ownership now supports the persistent broker interpretation; it is not proof
+of installed source equivalence, no parallel session, exclusive controller
+ownership, or permission to power on. No process was stopped or killed.
+
+Evidence: `artifacts/device-validation-20261126/console-metadata-bridge.py.log`
+and `ssh-resumed-role-evidence.json` in the same directory. The local console
+bridge is session-specific and must not be reused blindly with its saved PID.
+
+`scripts/package-role-probe.py` now emits an audited copy under
+`rootless/var/jb/usr/bin/openhc-role-probe-<sha8>` and a manifest naming the
+required device execution path. It neither installs nor executes nor changes
+trustcache/signing policy. The copied layout was verified locally using the
+existing CI artifact; the new workflow packaging step has not yet run in CI.
+The prior 22 tests were not repeated for a layout-only change. Old files and
+the compatibility candidate are preserved; no DEB or system executable was
+overwritten. The power-driver role gate remains closed.
+
+## Earlier offline evidence
 
 The original helper artifact from CI `45680397016` has SHA-256
 `f5e6565974e35cec2480ceba1d3b24d704c044230debbdea46f31a065f5f10b7`.
@@ -51,7 +97,8 @@ Artifacts are under `artifacts/ci-run-45683159550/`:
 The first revised CI `45683029352` failed before iOS compilation because
 macOS Bash 3 with nounset rejects expansion of an empty array. That CI-only
 bug was corrected by keeping common flags in the array. It is unrelated to
-the old physical SIGKILL. No revised artifact has been uploaded or run on iPad.
+the old physical SIGKILL. At this point no revised artifact had run on iPad;
+the later physical execution and owner evidence is recorded above.
 
 Final combined CI `45683689513` / `dddd437` passed all 22 tests (6 signature,
 7 endpoint/startup, 9 new transport metadata cases). Artifacts were downloaded
@@ -68,10 +115,11 @@ Service during this session. The one subsequent host check returned
 `USB_DEVICE_COUNT=0`, `USB_LIST_EXIT=0`, `SSH_BANNER_PRESENT=0`,
 `SSH_BANNER_BYTES=0` using the existing port 2222 forwarder. No new forwarder
 was started, no process was killed, and no further trust reset or driver
-operation is requested. Transport is still unavailable. There is currently
-no evidence justifying another administrator command.
+operation was requested. At this earlier point transport was unavailable;
+it later resumed as recorded above. No further administrator command is needed.
 
-Only after USB SSH returns, use a narrow metadata-only diagnostic:
+The following was the diagnostic plan before SSH returned. Startup and owner
+steps are now completed as recorded above; do not repeat them:
 
 1. Confirm only the tool's path/type/owner/mode/hash and OS architecture; do
    not enumerate credential files or dump process arguments/environment.

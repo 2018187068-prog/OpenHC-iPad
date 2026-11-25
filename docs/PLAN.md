@@ -1,13 +1,16 @@
 # OpenHC-iPad Stage 0 Plan
 
-Latest continuation (2026-11-26): USB SSH remains unavailable after the confirmed
-administrator Apple Mobile Device Service restart. Continue local/CI work only.
-The helper SIGKILL has no established termination reason; original artifact
-hash/signature/arm64/minimum-OS audits pass. A zero-socket startup self-check,
-separately hashed compatibility candidate and bounded transport metadata reader
-with synthetic tests are implemented. See `ROLE-PROBE-DIAGNOSTIC.md` for evidence
-and reference RFCOMM format/routing discrepancies. No revised tool has run on
-device, no owner PID is known, and no live transport or ownership gate passes.
+Latest continuation (2026-11-26): USB SSH resumed. The baseline tool's identical
+bytes pass zero-socket startup from `/var/jb/usr/bin` after failing under
+`/var/root`; a rootless layout is now generated to preserve this validated
+deployment fix. Its metadata-only owner query returned PID 27078, matching
+CarPlay Simulator, with zero application bytes sent/read. Exact kernel
+termination reason and no-competing-session/controller ownership remain
+unverified. Power remains prohibited. The offline transport metadata slice and
+reference RFCOMM discrepancies are recorded in `ROLE-PROBE-DIAGNOSTIC.md`.
+Next independent work is the guarded live runner/session gate; owner lookup
+and startup checks are complete and should not be repeated. No wireless I/O
+or HiCar handshake has passed.
 
 Target: iPad mini 4 Wi-Fi (A8, 2 GB), iPadOS 15.8.8, Dopamine rootless, Sileo DEB. Development is Windows + WSL2/Theos; no local Mac is available.
 

@@ -1,13 +1,16 @@
 # Controller ownership and recovery audit — 2026-11-26
 
-Latest continuation: USB SSH is currently unavailable even after the user
-confirmed an administrator restart of Apple Mobile Device Service. One host
-recheck still found zero USB devices and an empty SSH banner. No more trust
-reset, helper stop, unload or power action is requested. Offline signature
-audit, startup isolation and a synthetic transport metadata reader are recorded
-in `ROLE-PROBE-DIAGNOSTIC.md`. The probe's SIGKILL and endpoint owner PID remain
-unresolved. New CI artifacts are not physical evidence. The power trial below
-is historical; its procedure is not authorization to repeat it in this session.
+Latest continuation: USB SSH subsequently resumed. Identical baseline probe
+bytes fail zero-socket startup under `/var/root` but pass from the rootless
+`/var/jb/usr/bin/openhc-role-probe-dacf5f82` path. One metadata-only query from
+that copy established broker endpoint owner PID 27078, matching the current
+CarPlay Simulator comm; zero broker application bytes were sent/read. The
+kernel termination reason and complete no-competing-session gate remain
+unverified. Showcase main PID 37681 is also present; presence is not an active
+session assertion. The power-driver gate has not been relaxed. See
+`ROLE-PROBE-DIAGNOSTIC.md` for exact evidence and the rootless packaging fix.
+No more trust reset, helper stop, unload or power action is requested. The
+power trial below is historical and is not authorization to repeat it.
 
 The external root-shell capture is complete. The initial audit below was read-only; a subsequent bounded power/restoration trial is recorded in the latest-result section. **The uncontested ownership gate remains incomplete because a shared helper's role was not verified in the initial preflight. Its process name alone does not establish competition.** Existing USB SSH through iproxy PID 39484 / port 2222 was reused. Lockdown pairing was not retried.
 

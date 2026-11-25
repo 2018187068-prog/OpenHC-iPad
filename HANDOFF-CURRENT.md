@@ -7,7 +7,7 @@
 - 工程：`D:\OpenHC-iPad`
 - GitHub：`2018187068-prog/OpenHC-iPad`，私有仓库
 - 分支：`stage0-auth-validation`，变更持续推送到远程 `main`，未强推
-- 最新代码提交：`dddd437`（本轮诊断与 transport 元数据读取层；后续交接文档提交以 git log 为准）
+- 最新已验证二进制来源：`dddd437` / CI `45683689513`；本轮新增 rootless 交付布局，最新提交以 git log 为准。
 - 参考仓库只读：`D:\OpenHC-iPad-ref\OpenHC`、`D:\OpenHC-iPad-ref\showcase`
 
 ## 设备
@@ -16,7 +16,7 @@
 - iPadOS 15.8.8，Dopamine rootless，Sileo
 - Windows 已安装 USB 工具：`D:\OpenHC-iPad\tools\libimobiledevice\`
 - `iproxy.exe` 已存在
-- 历史：Windows 曾发现设备 UDID、USB SSH 曾可用；当时 lockdown 配对验证失败：`Invalid HostID (-21)` / `is not paired with this host`。当前通道不可用，以本轮状态为准。
+- 当前：用户报告 SSH 恢复后，主机确认 OpenSSH 9.7 banner，复用已认证的原生 SSH console 完成 root 只读诊断。未读取密码、私钥或配对记录。历史 lockdown 错误仍无恢复验证，不重测 trust。
 - USB SSH 曾成功：
   - `USB_SSH_OK`
   - `iPad5,1`
@@ -67,18 +67,26 @@
 
 ## 当前阻塞
 
-最新复查：**本轮用户已明确确认管理员重启 Apple Mobile Device Service 成功**。随后仅做一次主机通道检查：`idevice_id -l` 退出 0、设备数仍为 0；复用 2222 转发，SSH banner 字节数 0。未重做 `idevicepair validate`，没有设备 shell，不能判断新配对是否成功；不要再次要求重置信任或重复服务重启。目前没有证据支持另一个管理员命令。
+最新复查：**用户随后报告 SSH 已连接，现已确认 banner 和 root shell 恢复**。设备为 iPad5,1 / 15.8.8，未重做设备列表、配对验证、信任操作或旧功能测试。当前阻塞已从 SSH/owner PID 转为更完整的 helper 会话状态、installed BTdaemon 兼容性和 live runner。无需管理员命令。
 
-0. **当前 USB SSH 已中断（2026-11-26 最新状态）**：历史 PnP 可见 Apple iPad 和 Apple USB 设备且状态 OK，但 usbmux 列表为空。原 iproxy PID `39484` 曾监听 2222。本轮用户已成功执行唯一要求的管理员服务重启命令；其后设备数仍为 0、SSH banner 仍为空。该操作没有恢复通道，不再把“等待管理员重启”记为待办；不杀 iproxy、不卸载 USB 驱动、不重复重置信任或读取配对记录。下文 SSH 可用的描述为历史状态。
-   共享 helper 工具 CI `45680397016` 产物已下载至 `artifacts/ci-run-45680397016/helper-role-5b4ee733d4a1a320ac41c4186bbe7958e3031e7b/`，已上传 `/var/root/Library/OpenHCStage0Tools/showcase-role-probe`，远端 SHA-256 与本地相同：`f5e6565974e35cec2480ceba1d3b24d704c044230debbdea46f31a065f5f10b7`。启动被系统 `Killed: 9`，退出 137；一次仅注册该工具 CDHash 后仍为 137，尚未得到 owner PID，不能放行 ownership。日志：`broker-endpoint-owner-20261126.log`、`broker-tool-launch-diagnostic.log`、`broker-endpoint-owner-trusted-20261126.log`、`usbmux-device-list-status.log`（位于本日 device-validation 目录）。终止原因未证实；恢复 SSH 后优先检查该工具的兼容性/执行环境元数据，不重跑上电。
+0. **SSH 与工具启动问题已取得新证据**：此前服务重启后设备数 0/banner 空是历史结果；后来 SSH 恢复的具体原因未建立。新 baseline 在 `/var/root/Library/OpenHCStage0Tools/showcase-role-probe-baseline-dacf5f82` 自检仍被 SIGKILL/137，补登记它自身 SHA-1 CDHash 后仍失败；legacy-fixups 自检也为 137。保持同一 baseline 字节和签名，复制至 `/var/jb/usr/bin/openhc-role-probe-dacf5f82` 后，`ROLE_PROBE_MAIN_ENTERED`、`ROLE_PROBE_SELF_CHECK_OK`、退出 0。两份 SHA-256 均为 `dacf5f82545ac5e67b32c34fe992dab9e4f804fdc65bd73bc86c9b526b12c445`、mode 700。前者位于 `/private/var`，后者 `/private/preboot`，设备号不同。**已验证 rootless 存放路径可修复本工具启动；未取得内核 termination namespace/code，不能把 mount 的 protect 标志称为已证实 noexec，也不能归因为单独的签名算法或 fixups。** 旧失败文件保留，未覆盖系统程序。
 
-1. **共享 helper 角色未最终核实，不是已证实的活动会话**：用户明确表示并未启动 Showcase。最新只读快照仅见 `CarPlay Simulator` PID `27078`，启动时间为设备报告的 `2026-11-25 10:43:00`；此前 Showcase 主进程 PID `27255` 已不在，未见 `CarDisplaySim`/`carplay_bt`。`/tmp/showcase_baa.sock` 存在，`/tmp/showcase_bt_owned` 不存在。源码 `Showcase.m:3500–3516,3613` 与 `carplay_services.m:6369–6372` 表明相同可执行文件还以 `--baa-broker` 模式长期驻留，退出 app 后可保留；进程名称不能证明蓝牙竞争。先前要求用户 Stop 是过早推断，现已撤回；无需为此打开 Showcase，也不要 kill。设备没有已发现的 lsof/Python 等工具，`launchctl procinfo` 返回 45，因此尚未取得该 PID 与 broker socket 的归属对应。不得读取认证日志、证书/密钥、进程参数或请求 broker 认证数据来确认。
-2. 独立恢复守护和有界 power-only 驱动已经实现并执行一次真机闭环（见下方）。首轮驱动遗漏无路径 comm 已修正；当前驱动对共享 executable 报 `SHARED_HELPER_ROLE_UNVERIFIED`，不再仅凭名称报活动竞争。下一步用不读取认证数据的进程/socket 归属元数据确认 broker 与活动服务角色，或增加只输出角色与 PID 的只读平台工具，再决定放行；不能简单以 socket 存在作为白名单。当前 0.3.2 没有无线 peer 测试选项，仍需独立 live transport probe；不得用 `--btstack-services` 冒充无线验证。Honor 手机准备状态尚未确认。
-3. lockdown 配对未获恢复证据，且当前 USB SSH 不可用，已阻塞设备只读诊断。用户已完成解锁、拔插及信任；不要重复请求。历史 ACL/文件替换推断未证实，本轮不修复、不读取配对记录或扩大权限。
+1. **broker endpoint owner PID 已确认，完整无竞争会话 gate 未通过**：rootless 工具正常模式一次执行返回 `BROKER_ENDPOINT_OWNER_PID=27078`、`BROKER_APPLICATION_BYTES_SENT=0`、`BROKER_APPLICATION_BYTES_READ=0`、`BROKER_ENDPOINT_OWNER_QUERY_OK`，退出 0。随后 comm-only 快照确认 `27078 1 S CarPlay Simulator`；新见 Showcase 主进程 PID `37681`，未见 `CarDisplaySim`/`carplay_bt`，`/tmp/showcase_bt_owned` 不存在。源码 broker 分支在网络会话初始化前进入 broker loop。这支持 PID 27078 的持久 broker 解释，并直接确认 socket 归属；不能仅凭该归属或 marker 缺失证明没有并发蓝牙会话。未读 argv、认证日志或 broker 应用数据，不要要求用户 Stop 或 kill。
+2. 独立恢复守护和有界 power-only 驱动已经实现并执行一次真机闭环（见下方）。首轮驱动遗漏无路径 comm 已修正；当前驱动对共享 executable 报 `SHARED_HELPER_ROLE_UNVERIFIED`，不再仅凭名称报活动竞争。broker owner 归属已补齐，但未自动将其加入放行白名单；下一步独立推进会话状态 gate 与 live runner，不重复 owner 查询或上电。当前 0.3.2 没有无线 peer 测试选项，不得用 `--btstack-services` 冒充无线验证。Honor 手机准备状态尚未确认。
+3. lockdown 配对仍未获恢复证据，但当前已恢复的 SSH 能支持只读工作。用户已完成解锁、拔插及信任；不要重复请求。历史 ACL/文件替换推断未证实，本轮不修复、不读取配对记录或扩大权限。
 
-## 本轮本地修复与 CI（2026-11-26）
+## SSH 恢复后的最新真机进展（2026-11-26）
 
-完整说明：`docs/ROLE-PROBE-DIAGNOSTIC.md`。本轮没有设备执行，没有上电、卸载、kill、读取真实认证数据，也没有重复旧真机测试。
+- 复用 Windows 上已认证的 SSH console，主机只读取当前提示符及本轮命令 marker 之间的新输出；没有读取终端历史、密码或私钥。临时 console bridge 是本地 artifacts 调试工具，包含本轮 console PID，**不要在新会话盲目复用或提交为通用执行器**。
+- 原生工具元数据及上传/路径对照/owner 查询日志：`artifacts/device-validation-20261126/console-metadata-bridge.py.log`；归纳证据：`ssh-resumed-role-evidence.json`（同目录）。
+- baseline/legacy 分别上传到 root-only 独立文件，SHA-256 与 CI 一致；没有替换 DEB、没有改变二进制签名。仅补登记 baseline 自身一个 SHA-1 CDHash，返回 0 但未修复其 `/var/root` 启动。没有清除 trustcache、全目录信任、标记 debugged 或扩展 entitlement。
+- 同一 baseline 复制到 rootless 已验证执行路径后，无 socket 自检与 owner 查询成功；后者固定连接 broker 仅取 peer PID，零应用字节收发。不要重复这两个已完成真机检查。
+- 已实现 `scripts/package-role-probe.py`，将审计通过的 baseline 输出为 `rootless/var/jb/usr/bin/openhc-role-probe-<sha8>` 和明确执行路径 manifest，避免再次默认从 `/var/root` 执行。已用既有 CI 产物在本地验证最终副本哈希/签名；workflow 已加入打包步骤，但这个新增步骤尚未在 CI 执行，没有为仅布局变化重跑旧 22 项测试。
+- 仍不上电、不卸载蓝牙、不停止或杀 helper。power driver 的 `SHARED_HELPER_ROLE_UNVERIFIED` gate 未自动放宽；无线 SDP、双通道 I/O、独占 ownership 和 HiCar 握手仍未验证。
+
+## SSH 恢复前的本地修复与 CI（2026-11-26，历史）
+
+以下仅反映 SSH 恢复前的证据边界；工具启动和 owner PID 的后续验证见上节。完整说明：`docs/ROLE-PROBE-DIAGNOSTIC.md`。恢复前没有设备执行、上电、卸载、kill、读取真实认证数据或重复旧真机测试。
 
 **已验证**：
 
@@ -99,7 +107,7 @@
 
 ## 有界上电与恢复闭环（2026-11-26，已执行一次）
 
-共享 helper 元数据工具已完成 CI 构建：`scripts/showcase-role-probe.c`，独立手动 workflow `stage0-helper-role.yml`；最新模拟/产物证据见上节。正常模式固定连接 `/tmp/showcase_baa.sock`，只用 `LOCAL_PEERPID` 获取 PID 后关闭，不发送或读取应用字节；不请求认证操作。模拟测试检查真实合成 socket 的 PID、零应用字节、缺失/残留/非 socket/符号链接拒绝及 release 不能改 endpoint。CI 产物独立保存，不替换 DEB；新版尚未上传设备。
+共享 helper 元数据工具已完成 CI 构建：`scripts/showcase-role-probe.c`，独立手动 workflow `stage0-helper-role.yml`。正常模式固定连接 `/tmp/showcase_baa.sock`，只用 `LOCAL_PEERPID` 获取 PID 后关闭，不发送或读取应用字节；不请求认证操作。模拟测试检查合成 socket 的 PID、零应用字节、缺失/残留/非 socket/符号链接拒绝及 release 不能改 endpoint。后续新版已上传独立文件，并从 rootless 路径成功查询 owner；最新证据以上节 SSH 恢复后的进展为准，没有替换 DEB。
 
 - 新脚本：`scripts/btstack-power-trial.py`、`scripts/btstack-power-recovery.sh`；模拟测试：`scripts/test-btstack-power.py`。主机仅经 SSH 转发固定 `/tmp/BTstack`，不依赖额外 CI 构建或安装。
 - 初次真机试验前 12 项模拟测试通过；名称解析修复后的最终 13 项全部通过（含无路径 BTdaemon 阻止恢复、无路径带空格 helper 识别），日志：`artifacts/device-validation-20261126/power-mock-tests.log`。修复后未再次执行上电。
@@ -114,9 +122,9 @@
 ## 通道恢复后的只读顺序
 
 ```powershell
-# 仅在出现新的通道恢复证据后，检查设备数量和现有转发 banner。
-# 复用原 iproxy；不重做配对验证，不盲目启动或杀转发进程。
-# banner 恢复后按 docs/ROLE-PROBE-DIAGNOSTIC.md 先运行无 socket 自检。
+# 当前通道已恢复，无需重复设备列表、配对、启动自检或 owner 查询。
+# 后续复用可确认的已认证会话；不要盲用 artifacts 中旧 console PID。
+# 不上电、不卸载、不杀 helper；继续 live runner/会话 gate 的独立代码工作。
 ```
 
 安装、二进制检查、外部快照和首轮有界上电/恢复均已完成，无需重复。不要再要求用户停止其未启动的 Showcase；先核实共享 helper 的 broker/会话角色，避免误杀驻留 broker。再补齐 live transport probe 及已知手机准备状态，按 `docs/BTSTACK-OWNERSHIP.md` 安排后续受控验证。手机通道需按 SDP/协商结果决定，不能固定使用历史本地 16/17，也不能将普通设置配对当成 HiCar 握手。

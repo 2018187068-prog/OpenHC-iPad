@@ -39,6 +39,11 @@ jobs:
             python3 scripts/audit-role-binary.py "$output" | tee "$output.audit.json"
             shasum -a 256 "$output" | tee "$output.sha256.txt"
           done
+          # /private/var staging and /private/preboot rootless execution gave
+          # different physical results with identical bytes. Ship the verified
+          # rootless layout; packaging never installs or executes on a device.
+          python3 scripts/package-role-probe.py \
+            artifacts/helper-role/showcase-role-probe-baseline artifacts/helper-role
           {
             echo "source_commit=$GITHUB_SHA"
             xcodebuild -version

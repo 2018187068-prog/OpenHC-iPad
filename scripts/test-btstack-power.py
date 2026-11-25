@@ -285,7 +285,9 @@ class GuardTests(unittest.TestCase):
             guard.write_text((ROOT / 'scripts/btstack-power-recovery.sh').read_text(),
                              encoding='utf-8', newline='\n')
             for kind in ('timer', 'clock', 'sleeper', 'ps', 'ctl'):
-                (d / (kind + '.sh')).write_text(MOCK, encoding='utf-8', newline='\n')
+                helper = d / (kind + '.sh')
+                helper.write_text(MOCK, encoding='utf-8', newline='\n')
+                helper.chmod(0o755)
             for f in ('ch.ringwald.BTstack', 'stack-process', 'com.apple.BTServer.le'):
                 (d / f).touch()
             (d / 'now').write_text('100\n', newline='\n')

@@ -364,11 +364,6 @@ def run_scan_case(args, case):
                 conn.settimeout(6)
                 read_command(conn, 1, b"")
                 send_event(conn, 0x60, bytes([2]))
-                read_command(conn, 0x42, bytes([16, 0, 2]))
-                if case == "rfcomm_failure":
-                    send_event(conn, 0x85, bytes([4, 16]))
-                    check(conn.recv(1) == b"", "failed RFCOMM owns no resources")
-                    return
                 if case in ("stop_rfcomm_wait", "deadline_wait"):
                     # Synchronize on the actual registration request so simulator
                     # launch latency cannot turn this into cancellation during the
@@ -380,6 +375,11 @@ def run_scan_case(args, case):
                     check(conn.recv(1) == b"", "cancelled pending registration closes socket cleanly")
                     check(trace_has("EVENT=CLEAR_PAIRING\nEVENT=CLOSE_CONTROL_TRANSPORT"),
                           "pending registration cancellation revokes before socket close")
+                    return
+                read_command(conn, 0x42, bytes([16, 0, 2]))
+                if case == "rfcomm_failure":
+                    send_event(conn, 0x85, bytes([4, 16]))
+                    check(conn.recv(1) == b"", "failed RFCOMM owns no resources")
                     return
                 send_event(conn, 0x85, bytes([0, 16]))
                 kind, channel, record = read_packet(conn)

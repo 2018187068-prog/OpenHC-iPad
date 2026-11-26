@@ -63,6 +63,12 @@ jobs:
           grep -q 'listenerReadyChannel:' "$header"
           grep -q 'tickNowMillis:' "$header"
           grep -q 'close' "$header"
+          grep -q '@interface OHCBScanReceiverSession' "$header"
+          grep -q '@interface OHCBScanReceiverConfig' "$header"
+          grep -q '@interface OHCBScanReceiverEvent' "$header"
+          grep -q 'onControlRfcommReadyGeneration:' "$header"
+          grep -q 'onControlSdpReadyGeneration:' "$header"
+          grep -q 'takeAuthHandoffGeneration:' "$header"
           cp "$header" artifacts/iosArm64/OpenHCBridge-ObjC-API.h
           cp -R bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework artifacts/iosArm64/
           bash scripts/verify-apple-artifact.sh artifacts/iosArm64/OpenHCBridge.framework 2>&1 | tee artifacts/logs/framework-inspection.log

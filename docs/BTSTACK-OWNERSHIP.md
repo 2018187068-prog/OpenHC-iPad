@@ -24,7 +24,7 @@
 | `CLEAR_SNAPSHOT` | 固定检查集完整、已知 helper 的活动状态 metadata 未报活动、shared helper 均未出现、无恢复 job、marker 明确 absent、无未解释 broker owner | 只表示该时点的限定检查集未见竞争；进程名不单独证明活动或空闲，不声称绝对不存在并发或消除后续竞态 |
 | `UNKNOWN` | 快照不全、shared helper 角色未明、socket owner 与 comm 不匹配、恢复 job 活跃、marker 残留/无法读取或 owner/marker 元数据缺失 | 阻断；只补造成 UNKNOWN 的最小 metadata，不追加泛化探针 |
 
-Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。真实 C/ObjC/Kotlin-Native inbound session 已在固定 CI 合成 socket peer 中贯通；本地 identity-to-FD provider 已实现，真机仍无新鲜 metadata 快照，也没有本机 Bluetooth address 的受控 FD 来源。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
+Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。真实 C/ObjC/Kotlin-Native inbound session 已在固定 CI 合成 socket peer 中贯通；本地 identity-to-FD provider 已实现，真机仍需新鲜 metadata 快照；本机 Bluetooth address 已由 WORKING 内 HCI Read BD_ADDR 自动获取并经受控 FD 交给 provider，见当前 checkpoint。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
 
 ## 离线实现与明确阻塞
 
@@ -32,7 +32,7 @@ FE35 控制协商仍由 `bridge/src/commonMain/.../Fe35ControlNegotiator.kt` 负
 
 未验证工作树中有统一 common Kotlin 入口 `Fe35NearbyControlSession.start/feed/onAuthListenerReady/close`，测试源贯穿固定合成 `PHONE_FIRST` 握手帧和 command-3 RFCOMM request，产生 listener UUID，并在模拟 channel 回调后构造完整加密 command-4 frame。测试还覆盖分片/粘帧、CRC 错误、握手前请求与 negotiator 的重复 UUID/protocol bit/reconnect UUID 规则。此处仅能确认源码存在：当前 Windows 无 JDK 编译器，JVM 测试未运行；Native 测试、framework 编译、ObjC 导出均未验证，源码中也未找到 `OHCBFe35NearbyControlSession` 或对外 session wrapper。
 
-这还不是端到端传输：当前 `--btstack-control-inbound` 仍只做 socket accept/close，不读取 RFCOMM 数据，也没有 C 调用 Kotlin/Native framework 的代码。唯一下一项实现依赖是先添加并在 macOS CI 验证 public ObjC session wrapper，再由 C adapter 将有界 read bytes 与 Open/Send/Close/listener-ready 动作接入该 wrapper，同时保留 Trial WORKING lease 和恢复顺序。此后才可用合成 C socket peer 验收实际 adapter 路径；真实手机模式绝不发送 synthetic 数据，HiCar auth 握手、DMSDP、媒体仍未实现。
+历史 accept/close-only 阶段已被 b4c66242 的 C/ObjC/Kotlin-Native 控制桥和190断言合成集成证据取代；不再把 wrapper/接线列为待实现。当前缺口是下方扫码启动入口及完整auth/session/网络/媒体，不是再重跑这些离线验证。
 
 `scripts/btstack-transport-runner.py` 现在只消费显式 session plan，不解析 SDP 也不从 SDP 虚构 direction：`WirelessReceiverSession.start()` 是 FE35 本机 listen；`startReconnect()` 才是 FE35 本机 connect。正常 `SocketRequested` 事件触发本机开 auth listener，监听完成后再将本地 channel/UUID 回报；`AuthChannelReady` 是 reconnect flow 的 peer channel/UUID，才触发本机 auth connect。证据来自只读参考 `WirelessReceiverSession.kt` 的 `start/startReconnect`、`onSocketRequest/onAuthListening/onAuthChannelReady` 及 `NearbySession.acceptRfcommSocket`。同一个数字只有在两条本机 listener 同时占用时才冲突；peer connect 的 channel 与本机 listener channel 不在同一 namespace。
 
@@ -40,32 +40,44 @@ FE35 控制协商仍由 `bridge/src/commonMain/.../Fe35ControlNegotiator.kt` 负
 
 兼容证据分两类：静态可离线确认的是 socket packet header、RFCOMM create/disconnect opcode、event 字段 offsets、`rfcomm.c` 成功 callback 的 17-byte 实际长度/16 声明，以及 daemon 读取 byte 13 routing 的源码事实；只读参考文件分别是 `platform/daemon/src/socket_connection.c`、`platform/daemon/src/daemon.c`、`src/classic/rfcomm.c` 与 `src/btstack_event.h`。reference daemon 在 `DAEMON_EVENT_RFCOMM_CREDITS` 中调用 `daemon_retry_parked()` 并消费内部 credits event，不把该事件转给 socket client；adapter 因而发送标准 `RFCOMM_DATA_PACKET`，不自行发放 credits，合成对端 echo 和 deadline 是该单次发送的应用层确认。若 installed daemon 将未识别事件路由到 client，adapter 立即拒绝并关闭连接。installed BTdaemon 是否同源、opened event 是否真的送达本 client、运行时采用 strict 还是 reference 格式，只能在首个受控连接读取 bounded metadata 时得知，不是 adapter 实现前置条件。新 CLI 的 `auto` 在首次受控连接内检测 `strict-17` 或 `reference-17-len16`；未知 shape、异常状态或超时均不发应用字节，若成功 CID 可解析则尝试有界 disconnect，否则关闭 client 清理。若 daemon 不路由该事件，现有静态源码不能证明装机行为；当前最小观测就是这次可选 synthetic 连接的 profile/timeout 结果，不要求独立 metadata-only 探针。
 
-## 真机 FE35 控制协商验收卡（准备中，待另行安排窗口）
+## 扫码启动卡：当前不具备真实手机验收入口（2026-11-26）
 
-### 当前构建与设备状态
+用户过去的成功方式是接收端显示二维码后手机扫码。此前“WORKING 后由用户打开 HiCar 发起”的指引错误，已撤回；现在不运行 headless inbound 等待真实来机。BTSTACK_POWER_WORKING 仅代表控制器状态，不是 PairingReady、二维码有效或接收会话启动。
 
-- 当前 checkout `f61843e47648ea625737f53f025fc8ff7eacfbbc`；本功能验收 revision `fe29b49a0a020a14e1dc087d3e5894ce084f88b1`，macOS CI `45765343940` 成功。产物为 `com.gcbond.openhc-bridge-check` 0.3.5 arm64 DEB，CI artifact 已核对 SHA-256 `5A33A0B5B91CD3133930346BC2F912A51B9A6C5F367800406B37305878FA3004`。设备最近一次有记录的安装是 2026-11-26 的 0.3.2；0.3.5 是否已安装未知，安排窗口前需只读核对包版本/hash，不可把 CI 出包当成安装证据。
-- 当前真机前置证据缺失：新的 `snapshot_complete=true` ownership/session 快照（最多 60 秒）、独立恢复 guard 当前 ready 状态、目标 iPad 当前安装版本/二进制与本次 0.3.5 对应、Honor 手机现有正常配对/HiCar 可启动状态。旧 PID、旧快照和历史 WORKING/OFF 闭环不可复用；collector 没有正向 active-session-state 来源，空列表不构成无活动证明。
-- 本地 provider 复用固定上游 identity schema：`host.modelId/subModelId` 是本机型号标识输入，`nearbyKeys.rootKey/constA/constB` 是本机现有 nearby 加密材料；上游未将它们定义为协议固定常量，本实现不要求用户另行填写。device ID 按上游 `DeviceId` 从型号字段与无线使用的本机 Bluetooth address 计算；address 不在 identity JSON。provider 接受显式 identity 文件或 `OPENHC_IDENTITY_DIR/openhc-identity.json`，地址仅从继承 FD 读取，生成原有版本化 bridge bytes 并经匿名 pipe 交给当前进程，Trial 再按现有 bounded stdin 传到固定远端入口。内容不放 argv/env/log，输入只在进程内短暂存在并尽力清零。
-- 唯一仍需外部提供的软件输入是本机无线 Bluetooth address 的 bounded FD 来源；当前仓库未实现从目标环境 Bluetooth property 读取并安全转成此 FD 的 provider，不能用 synthetic address 运行真机。另需每次窗口新鲜 ownership snapshot、guard ready 和安装 revision/hash 只读核对；这些是现场状态门槛，不是缺少 identity schema。
+### 固定上游依据
 
-### 允许的最小验收范围
+以下均为只读参考 D:/OpenHC-iPad-ref/OpenHC，commit 8132399bea6aa86d68da6d3e1d9e3e001c0a7643：
 
-范围仅为真实 FE35 控制协商：目标手机正常发起其现有 HiCar 连接后，观察 inbound listener/transport 是否收到合法控制帧、bridge 是否发出 `OPEN_AUTH_LISTENER` 并完成 listener-ready channel/UUID 回调，以及是否收到真实对端后续控制帧。不得记录/输出 device ID、UUID 原值、帧 payload、密钥或认证 transcript；只记录非敏感阶段标签、事件类别、长度、channel、超时/退出状态与恢复结果。这里不验证认证握手、HiCar/DMSDP 完整连接或媒体。
+- README.md:38–41：接收端首页无线连接点开始，手机扫接收端二维码；成功过的手机自动回连是另一条路径，不能假定安卓成功记录已成为 iPad 的配对记录。
+- core/session/src/main/kotlin/io/github/gcbond/openhc/core/session/WirelessReceiverSession.kt:105–106、169–177、225–235：创建本次随机 PIN，start 发出 FE35 ListenRfcomm，实际 onListening 才发 PairingReady(config.qrCode(pinCode), pinCode)。core/session/README.md:102–111、133–158：手机扫码后按真实经典蓝牙地址查 SDP/连 RFCOMM，随后控制协商、认证子通道；认证成功才请求开热点；BLE/GATT 是可选发现/回连能力。
+- core/nearby/src/main/kotlin/io/github/gcbond/openhc/core/nearby/PairingQrCode.kt:36–49；core/session/src/main/kotlin/io/github/gcbond/openhc/core/session/WirelessReceiverConfig.kt:53–65、90–91：QR 内容由身份中的名称/型号、本机真实蓝牙地址、本次六位连接码和实际支持能力生成；地址与 deviceId 同源，认证使用同一 PIN。此为已读源码字段关系，不输出实际内容、不把 JSON 或其示例冒充二维码、不猜有效参数。
+- app/src/main/kotlin/io/github/gcbond/openhc/ui/WirelessScreen.kt:64–79、84–108 与 ui/QrCode.kt:22–58：WAITING_FOR_SCAN 显示二维码与连接码；上游编码/渲染使用 ZXing 和 Android Compose/Bitmap，这些 UI 依赖未迁移到 iPad。
+- app/src/main/kotlin/io/github/gcbond/openhc/wireless/WirelessController.kt:237–240、516–561、935–975、1045–1056：用户开始，创建配置、WirelessReceiverSession、WirelessPlatformExecutor、WirelessRunnerBridge、SocketRunner，PairingReady 进入界面状态。584–588 明确手动扫码不发 BLE 广播，只有被动 AUTO 才选择 beacon；不能把未迁移 BLE 当作手动扫码必需前置。
 
-未满足上述前置时可执行的唯一现场动作是经用户另行安排后的只读 capture：
+### 当前移植的真实边界
 
-```powershell
-python scripts\capture-btstack-session-evidence.py --capture --output artifacts\session-evidence.json
-```
+| 部分 | 已有/缺失 |
+|---|---|
+| 身份与地址 | 原 identity provider 字段兼容；WORKING 内 HCI 本机地址查询已实现，但未接到二维码/完整会话配置。真实值保持本机内存使用。 |
+| FE35 控制桥 | b4c66242 / CI45775185368 的真实 CLI/C/ObjC/Kotlin-Native 合成链路已验收190断言；iPad安装0.3.5 hash匹配。不能外推为真实手机握手。 |
+| 扫码启动 | 无 PairingQrCode 迁移、QR 编码/显示、屏幕 UI、每会话 PIN 生命周期或 PairingReady 对应接线。Theos Makefile:7–15 是 Foundation tool.mk；main.m:46–53 仅有有界 stdin 的命令行入口。 |
+| 接收会话 | 无完整 WirelessReceiverConfig/Session、runner/platform executor 启动编排；当前 Fe35ControlBridge.kt:31–53 只有 deviceId/nearby材料及 start/feed/listenerReady/tick/close，未拥有 QR/PIN/auth/session 生命周期。 |
+| BLE/GATT | 未实现；仅为后续可选发现/被动回连，不是扫码最小链路。 |
+| 后续链路 | 完整 auth/TrustStore 会话、Wi-Fi/TCP 接管、DMSDP、媒体仍未迁移，标准认证向量不代表会话实现。 |
 
-只有 capture 完整、分类明确、距运行不超过 60 秒，当前 shared-helper PID 集一致，recovery guard ready，安装包与待测 revision 核对一致，且授权操作者已通过安全渠道准备真实 FE35 bridge config FD，才可由协调者单独批准以下 bounded trial。下面的 FD 必须由专用秘密注入器创建并继承；不能改用文件明文、命令行参数、日志或 synthetic fixture；当前 repo 没有该注入器，所以此命令现阶段不可直接执行：
+当前 C 的 transport_inbound（theos/btstack-probe.c:622–679、733–777）能注册 FE35 SDP/监听、限时等待 incoming，并处理控制帧和认证 listener 回调；它没有给手机提供扫码启动入口。控制层来机等待25秒与外层45秒是测试边界，不能当作用户操作方案。此前64 KiB collector快照的 BROKER 分类只说明有限点时判据满足，不补齐这些缺口；不重做探针。
 
-```powershell
-python scripts\btstack-power-trial.py --execute --mode inbound --bridge-config-fd <inherited-fd> --session-evidence artifacts\session-evidence.json
-```
+### 最小下一软件任务与阶段
 
-成功需要同时出现 `BTSTACK_POWER_WORKING`、`BTSTACK_FE35_BRIDGE_SESSION_OK`、`TRANSPORT_RESULT=PASSED`、`BTSTACK_POWER_OFF_OBSERVED`、`RESTORATION_RESULT=VERIFIED`；所有事件/阶段都不得包含 payload 或身份字段。`TRANSPORT_RESULT=FAILED` 时，只有远端退出已确认才允许 Trial 按既定唯一顺序发 OFF 并恢复；若 SSH loss、deadline 或 exit status 未确认，必须看到 `EXIT_UNCONFIRMED` 与 `DELEGATED_TO_GUARD`，不手工并行恢复、不重试。恢复 guard 从 arm 起的 deadline 是 240 秒，inbound 子命令上限 45 秒；超时后等待 guard 对原 run-dir 的结果并独立只读核验恢复，不启动第二个恢复者。手机侧仅由用户正常打开目标 HiCar 连接，不重新配对、不改热点。
+静态依赖定界已完成，见 [扫码启动实现审计](SCAN-STARTUP-IMPLEMENTATION.md)。本次已新增 Native QR/PIN/会话核心源码与合成测试，验收状态见当前checkpoint；下一任务补齐真实 listening-ready/stop，之后是UIKit 前台 app及有界 supervisor IPC；各任务的mock验收及root/mobile权限未决点均已列明。新增部件尚未实现，不启动设备、广播、配对或热点，不以重跑控制桥/collector替代实现。
+
+依赖明确后的最小实现是接收端 Start/Stop → 实际 FE35 listener/SDP ready → 屏幕二维码及同一会话PIN → 扫码可定位当前接收端。UI关闭、监听失败或会话结束立即撤销该码，并保留向后续认证交同一PIN的接口。之后另行迁移auth与完整无线会话，再处理Wi-Fi/TCP/DMSDP/媒体；单有二维码只代表扫码入口，不代表能配对、认证或投屏。
+
+真实手机动作只能在已实现且实际显示当前有效二维码之后，由用户扫描该码；当前不要求用户操作手机。将来窗口仍使用既有 fresh evidence、guard ready、单一lease及恢复设计；UNKNOWN即停，SSH退出不明只交独立guard恢复。既有这些底层约束是保留的设计，不授权当前Trial，也不新增测试门槛。
+
+扫码启动实现边界审计已完成：见 [四项实施任务](SCAN-STARTUP-IMPLEMENTATION.md)。下一软件动作是实时 transport listening-ready/stop 接线；UIKit app 与 IPC 尚需实现。前台页面常驻不延长有界 power lease，不启动真实手机试验。
+
+### 历史底层 transport 设计与证据（当前不是手机操作卡）
 
 ### A. 可选的受控 synthetic peer 工程回环
 
@@ -75,7 +87,7 @@ python scripts\btstack-power-trial.py --execute --mode inbound --bridge-config-f
 
 ### 精确命令与成功标志
 
-本地合成验收命令（可在设备任务前执行）：
+以下是已完成的历史合成验收入口；本次不重跑：
 
 ```powershell
 python scripts\test-btstack-session-gate.py
@@ -85,7 +97,7 @@ python scripts\test-btstack-power.py
 python scripts\test-btstack-transport-socket.py
 ```
 
-已新增 C `--btstack-control-inbound RUN_DIR` API：在本地 RFCOMM channel 16..23 中按 busy 状态选择 listener，注册 FE35 SDP record，白名单解析 `RFCOMM_EVENT_INCOMING_CONNECTION (0x82)` 的 channel/CID（读取并丢弃地址），发 `RFCOMM_ACCEPT_CONNECTION (OCF 0x44)`，校验 incoming `CHANNEL_OPENED` 后有界 disconnect。该 API 完全不读取 RFCOMM data packet，不执行 OpenHC 控制握手，不发送应用数据；accept/open/timeout/disconnect 异常时尝试移除本次拥有的 SDP/service，再关闭 daemon client 作为 pending CID 的清理兜底。它只证明 listener/accept/close 的 transport 层，不证明真实 HiCar 端到端可用。
+已新增 C `--btstack-control-inbound RUN_DIR` API：在本地 RFCOMM channel 16..23 中按 busy 状态选择 listener，注册 FE35 SDP record，白名单解析 `RFCOMM_EVENT_INCOMING_CONNECTION (0x82)` 的 channel/CID（读取并丢弃地址），发 `RFCOMM_ACCEPT_CONNECTION (OCF 0x44)`，校验 incoming `CHANNEL_OPENED` 后有界 disconnect。当前该入口已接入生产 C/ObjC/Kotlin-Native 控制桥并处理真实 FE35 控制帧；以下 accept/close 清理说明保留为 transport 层行为记录：accept/open/timeout/disconnect 异常时尝试移除本次拥有的 SDP/service，再关闭 daemon client 作为 pending CID 的清理兜底。历史 listener/accept/close 证据不证明真实 HiCar 端到端可用；当前控制桥的真机协商仍待本次窗口验证。
 
 `scripts/btstack-power-trial.py` 的 host CLI 现在接受 `--execute --mode inbound`，并在 `Trial.run()` 的 WORKING callback 中通过独立 Paramiko SSH session 调用固定 `/var/jb/usr/bin/openhc-bridge-check --btstack-control-inbound <run-dir>`。路径和参数由代码常量及 Trial 生成的 run-dir 提供，不接受任意远端命令；timeout 包装为固定 45 秒并合并 stdout/stderr，最多保留 64 KiB。只有收到远端 exit status 才确认子命令退出，之后 PowerProtocol 才发送 OFF；远端非零退出也属于已确认退出，随后照常 OFF 并由同一 Trial 请求 guard restore。timeout、SSH loss、取消或输出超限等导致退出状态未知时，跳过 OFF 与 host restore-request，停止 heartbeat，让独立 guard 在 heartbeat age 超过 20 秒时恢复；输出 `TRANSPORT_RESULT=EXIT_UNCONFIRMED` 与 `RESTORATION_RESULT=DELEGATED_TO_GUARD`，不声称恢复已完成。常规路径下 Trial 是唯一 heartbeat writer 和 restore-request 发起者；PowerProtocol 是唯一 power lease client。Guard deadline 从 arm 开始计 240 秒，覆盖 takeover、最多约 45 秒 transport、15 秒 OFF 等待和最多 65 秒 host restore 观察时间，留有执行余量；不确定路径不等待 transport 来决定恢复 actor。
 

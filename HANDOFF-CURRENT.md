@@ -1,6 +1,27 @@
 # OpenHC-iPad 当前交接
 
+## Scan session core implementation (2026-11-26)
+
+Task 1 now has common Kotlin source: ScanReceiverSession.start emits OPEN_CONTROL_LISTENER; separate initial-FE35 onControlRfcommReady and onControlSdpReady callbacks must both succeed in the same generation before PAIRING_READY(QR,PIN). Accept revokes QR and permits a one-shot same-PIN AUTH_HANDOFF; Stop, transport failure, reversed clock and deadline emit CLEAR_PAIRING then CLOSE_CONTROL_TRANSPORT. Old-generation callbacks are ignored. Platform callers must execute returned actions in order and schedule tick using deadlineMillis; the model itself performs no I/O or timer scheduling. The existing Fe35ControlBridge.listenerReady remains exclusively the later auth listener callback.
+
+The QR builder/address/host rules follow fixed upstream 8132399bea6aa86d68da6d3e1d9e3e001c0a7643; PIN uses the existing secure entropy source with bounded unbiased 20-bit rejection sampling. Inputs are memory-only and diagnostics redact QR/PIN/host/address. Ten new common tests cover synthetic exact QR/UTF-8, leading zero, rejection boundaries, partial startup, stale events, expiration, cleanup and same-PIN handoff. Local Gradle JVM execution was blocked by the existing JRE lacking JAVA_COMPILER/JDK tools; diff whitespace check passed. macOS CI validation is pending, so source existence is not yet a Native test PASS.
+
+This implements only the session model. No screen QR/scan-capable app, real FE35 start/stop integration, root supervisor or IPC exists yet. Next is task 2: wire actual transport listener/SDP readiness and stop/cleanup to this model, using a synthetic BTdaemon boundary. No device/radio/identity-file access occurred. Real-phone scanning remains unavailable; FE36 auth/session, Wi-Fi/TCP, DMSDP/media remain outside this change.
+
+
 更新时间：2026-11-26
+
+## 当前结论：先补扫码启动入口（2026-11-26）
+
+用户已知工作流程是接收端显示二维码后手机扫码。已撤销先前的手机主动发起指引；当前不能启动 headless Trial 等待真实来机。固定上游 8132399bea6aa86d68da6d3e1d9e3e001c0a7643 的 README:41 与 WirelessReceiverSession.kt:169–177、225–235 明确：接收端开始 → FE35 监听实际就绪 → PairingReady → 显示二维码及同一会话连接码 → 手机扫码按真实地址查 SDP 并连接。
+
+已具备：原 identity 的本地 provider 字段兼容；iPad5,1 已安装 CI45775185368 / b4c66242 的 0.3.5 且二进制 hash 匹配；64 KiB collector 一次完整快照分类 BROKER。后者仅为有限点时分类，不证明绝对无并发，也不证明接收端可扫码或真机 HiCar 可测。
+
+当前运行入口仍只有 Theos 命令行控制桥；本次新增扫码模型与 PairingQrCode 纯逻辑，尚缺二维码编码/显示、真实监听到模型及 UI 的接线、完整 WirelessReceiverSession/runner/认证与网络编排。BLE/GATT 也未迁移，但上游手动扫码不依赖它，不能列为扫码必需条件。认证、DMSDP、媒体仍未实现。本次仅查源码和改文档，无设备/无线操作。
+
+最小下一软件任务：将真实 transport listener-ready/stop 接到本次新增 Native 会话核心，之后实现 UIKit 前台 app及有界 supervisor IPC。四项验收和平台未决点见 docs/SCAN-STARTUP-IMPLEMENTATION.md；本轮只完成审计，未实现这些新增部件，不安排手机试验。
+
+扫码启动实现边界审计已完成：见 [四项实施任务](docs/SCAN-STARTUP-IMPLEMENTATION.md)。下一软件动作是实时 transport listening-ready/stop 接线；UIKit app 与 IPC 尚需实现。前台页面常驻不延长有界 power lease，不启动真实手机试验。
 
 ## 当前状态
 
@@ -14,18 +35,16 @@
 - 当前会话结论：broker endpoint owner PID 曾与 comm-only `CarPlay Simulator` PID 27078 匹配，且 broker 源码分支在网络会话初始化前进入 broker loop，属已证实 broker 证据；这不代表没有并发活动会话。另有已知活动 helper 的正向观测才分类为活动会话；信息缺失、未解释 shared helper、残留 marker 或恢复活动均为 UNKNOWN。marker、进程名和进程不存在单独不构成放行条件。`CLEAR_SNAPSHOT` 仅表示这组限定指标在该次快照未见，不声称绝对无并发或没有未来竞争。
 - 本轮限制：仅本地代码、合成测试及文档；未连接设备、未上电/卸载/配对/改热点/kill、未读取身份或认证材料、未作新签名信任操作，也未启用收费 runner。
 - 最近一次代码验收：SHA `fe29b49a0a020a14e1dc087d3e5894ce084f88b1`，macOS workflow `45765343940` 于 2026-11-26 全绿。JVM 35/35、iOS Simulator 33/33；同一真实 CLI/C/ObjC/Kotlin-Native integration 3/3、190 assertions；framework/header 检查与 Theos rootless arm64 DEB 通过。
-- 本机地址 provider 当前 tested SHA `b4c66242c775af7470504fb365cba3a02d8d9fc6`，macOS CI `45775185368` 全绿；新增 C socket 地址查询3/3（valid HCI completion、controller error、timeout），Trial 26/26、provider 3/3、simulator、JVM/Native、framework/header 与 Theos rootless arm64 DEB均通过。固定上游依据：`hci.c:2062` 反转 Command Complete 的 BD_ADDR 写入本机 `local_bd_addr`；`daemon.c:1340` 转发普通 HCI command，普通 Command Complete 经 `daemon_emit_packet(NULL, ...)` 广播；`Showcase/source/carplay_bt.m:404` 发送 `hci_read_bd_addr`。Trial 仅在既有 WORKING callback 内查询本机地址，二进制六字节经过匿名 pipe 与现有 identity provider；无手填地址、argv/env/log 输出，不使用 peer address。现场命令：`python scripts/btstack-power-trial.py --execute --mode inbound --identity-file <现有 openhc-identity.json 路径>`，或使用现有 `OPENHC_IDENTITY_DIR`；缺失配置返回 `IDENTITY_CONFIG_UNAVAILABLE`。必须另行安排用户窗口并满足当前 ownership/session evidence、guard 和安装核对；本轮未作设备动作。认证握手、HiCar/DMSDP、媒体仍未实现。
+- 本机地址 provider 当前 tested SHA `b4c66242c775af7470504fb365cba3a02d8d9fc6`，macOS CI `45775185368` 全绿；新增 C socket 地址查询3/3（valid HCI completion、controller error、timeout），Trial 26/26、provider 3/3、simulator、JVM/Native、framework/header 与 Theos rootless arm64 DEB均通过。固定上游依据：`hci.c:2062` 反转 Command Complete 的 BD_ADDR 写入本机 `local_bd_addr`；`daemon.c:1340` 转发普通 HCI command，普通 Command Complete 经 `daemon_emit_packet(NULL, ...)` 广播；`Showcase/source/carplay_bt.m:404` 发送 `hci_read_bd_addr`。Trial 仅在既有 WORKING callback 内查询本机地址，二进制六字节经过匿名 pipe 与现有 identity provider；无手填地址、argv/env/log 输出，不使用 peer address。现有 CLI 接受 identity 文件或 OPENHC_IDENTITY_DIR，缺失配置返回 IDENTITY_CONFIG_UNAVAILABLE；该接口不生成/显示扫码入口，当前不能作为真实手机验收步骤。认证握手、HiCar/DMSDP、媒体仍未实现。
 - 本地配置 provider 已验收：源码 SHA `8e7ccf357155460c2237a7e50de9c42726937322`，macOS workflow `45769151355` 全绿；provider 3/3、Trial/guard 25/25、Native socket integration 190 assertions、JVM/Native suite 与 framework/Theos package 检查通过。当前 HEAD `7c9cf6339394364508c3ca2ce06b468e35430a26` 仅包含后续交接文字校正，provider 代码测试以 `8e7ccf3` 为准。测试使用 synthetic identity fixture；未读真实配置或操作设备。
 
 ## 下一步路径
 
-固定上游来源为只读 `D:\OpenHC-iPad-ref` revision `8132399bea6aa86d68da6d3e1d9e3e001c0a7643`；协议实现与测试对应 `OpenHC/core/common`、`core/nearby`、`WirelessSessionTest.kt` 和 `RealWirelessFlowTest.kt`。离线控制协商已由真实 CLI/C/ObjC/Kotlin-Native 与 synthetic socket peer 端到端验收。后续需另行安排真机条件：当前会话 ownership/transport gate、无线 SDP、双通道 RFCOMM 与 installed BTdaemon 事件兼容证据；不得重跑历史 probe。认证握手、HiCar/DMSDP、媒体仍未实现；本次无真实身份或认证材料，也未发送合成字节到设备。
+按扫码启动实现审计的四项任务补齐接收端 UI/会话入口；当前不安排 Honor 扫码或手机主动连接，不运行 Trial 等真实来机。方向仍是接收端扫码启动 → 蓝牙控制 → auth → Wi-Fi/TCP → DMSDP/媒体。二维码显示不代表认证或投屏实现完成。
 
-真实 Honor 手机用户操作须另行安排；本轮不执行，也不发送 synthetic 测试数据。当前可达范围是 FE35 控制协商/控制帧 listener callback，不含认证握手、HiCar/DMSDP 完整会话或媒体。
+## 扫码启动卡
 
-## 真机验收卡
-
-完整前置、命令、判定、恢复和用户手机步骤见 `docs/BTSTACK-OWNERSHIP.md` 中的“真机 transport 验收卡”。当前卡片是后续任务，不表示本轮已经执行或要求用户现在操作。热点最小验证方案同文列为独立后续任务。
+固定上游顺序、已实现/缺失边界和下一软件任务见 docs/BTSTACK-OWNERSHIP.md；历史 guarded inbound 参数与恢复设计仅为底层控制测试基础，不是当前可执行的手机验收卡。既有探针证据保留，不重做。
 
 ## 历史证据索引
 

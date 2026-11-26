@@ -1,6 +1,23 @@
 # FE35 Bridge Checkpoint
 
+## Scan session core implementation (2026-11-26)
+
+Task 1 now has common Kotlin source: ScanReceiverSession.start emits OPEN_CONTROL_LISTENER; separate initial-FE35 onControlRfcommReady and onControlSdpReady callbacks must both succeed in the same generation before PAIRING_READY(QR,PIN). Accept revokes QR and permits a one-shot same-PIN AUTH_HANDOFF; Stop, transport failure, reversed clock and deadline emit CLEAR_PAIRING then CLOSE_CONTROL_TRANSPORT. Old-generation callbacks are ignored. Platform callers must execute returned actions in order and schedule tick using deadlineMillis; the model itself performs no I/O or timer scheduling. The existing Fe35ControlBridge.listenerReady remains exclusively the later auth listener callback.
+
+The QR builder/address/host rules follow fixed upstream 8132399bea6aa86d68da6d3e1d9e3e001c0a7643; PIN uses the existing secure entropy source with bounded unbiased 20-bit rejection sampling. Inputs are memory-only and diagnostics redact QR/PIN/host/address. Ten new common tests cover synthetic exact QR/UTF-8, leading zero, rejection boundaries, partial startup, stale events, expiration, cleanup and same-PIN handoff. Local Gradle JVM execution was blocked by the existing JRE lacking JAVA_COMPILER/JDK tools; diff whitespace check passed. macOS CI validation is pending, so source existence is not yet a Native test PASS.
+
+This implements only the session model. No screen QR/scan-capable app, real FE35 start/stop integration, root supervisor or IPC exists yet. Next is task 2: wire actual transport listener/SDP readiness and stop/cleanup to this model, using a synthetic BTdaemon boundary. No device/radio/identity-file access occurred. Real-phone scanning remains unavailable; FE36 auth/session, Wi-Fi/TCP, DMSDP/media remain outside this change.
+
+
 Updated 2026-11-26. Repo: `D:\OpenHC-iPad`, branch `stage0-auth-validation`.
+
+## Current Scan Direction (2026-11-26)
+
+User correction: the known working OpenHC wireless flow is receiver Start → real FE35 listener-ready → PairingReady QR/PIN display → phone scans. The prior phone trigger and current headless-phone-acceptance plan are withdrawn. Fixed reference commit 8132399bea6aa86d68da6d3e1d9e3e001c0a7643 confirms this sequence; see the source map in docs/BTSTACK-OWNERSHIP.md.
+
+The port has FE35 control plumbing and local provider/address support, but no PairingQrCode generator, QR renderer/iPad receiver UI, session PIN lifecycle or full WirelessReceiverSession/runner/platform startup. BLE/GATT is absent but optional for manual scan in upstream; auth, Wi-Fi/TCP session, DMSDP/media are unfinished. Complete BROKER metadata or installed binary matching is not a phone initiation path.
+
+Next software task: delimit the Native scan-startup dependencies and foreground-UI/guarded-rootless-transport boundary, then implement source-equivalent QR/PIN lifecycle tied to actual listener-ready. Current real-phone acceptance is not executable. This correction only read source/edited docs; no device command, Trial, radio operation, secret read or CI. Historical evidence below remains historical.
 
 ## Verified Revision
 
@@ -21,4 +38,50 @@ No device, radio, pairing, real identity file, or real authentication data was u
 ## Local FE35 Config Provider
 
 - Provider source/test SHA `8e7ccf357155460c2237a7e50de9c42726937322` and current automatic-address path are validated by `45775185368`. Provider reuses the upstream `IdentityAssets` schema and `DeviceId` algorithm; existing `nearbyKeys` are consumed without treating them as protocol constants. Synthetic C fixtures verify HCI `Read BD_ADDR` opcode, wire byte order, status rejection, and bounded timeout. No address or identity values are logged. No device operation was performed.
-- Exact local command after a user schedules the real-device window: `python scripts/btstack-power-trial.py --execute --mode inbound --identity-file <existing openhc-identity.json path>`; alternatively set the existing `OPENHC_IDENTITY_DIR` and omit `--identity-file`. A missing/unavailable identity file fails as `IDENTITY_CONFIG_UNAVAILABLE` before SSH/device work. Trial still requires its existing fresh session evidence where applicable, ownership preflight, and ready independent guard; don't reuse historical evidence as current.
+- Existing inbound CLI accepts the local identity source and automatic runtime address, but it has no QR/PIN/UI receiver startup. It is not currently an executable real-phone acceptance step; see Current Scan Direction above.
+
+## Current Device Preparation (2026-11-26)
+
+- Configuration is now available: the coordinator extracted the unmodified asset from the user's USB/ADB-authorized Android device that previously ran OpenHC successfully, to `artifacts/local-identity/openhc-identity.json`. The earlier “user has no confirmed configuration” conclusion is superseded. APK/configuration and downloaded artifacts remain git-ignored; no values were displayed or entered in argv/environment/reports.
+- Controlled local check: `SCHEMA_PROVIDER_COMPATIBLE`. The existing provider's actual validation code accepted the original file; a local placeholder address was used solely to reach schema validation, with execution stopped before SHA-256/deviceId derivation. No real controller address, bridge payload, fixture, authentication or phone interoperability was tested or claimed.
+- Existing successful CI: run `45775185368`, source `b4c66242c775af7470504fb365cba3a02d8d9fc6`. Downloaded artifact `15095482801` (`openhc-ipad-stage0-b4c66242c775af7470504fb365cba3a02d8d9fc6`); its ZIP SHA-256 matches GitHub metadata: `65B70FB6088F831C9D13CE4D9CB7174F87819C19655F969A08F2A3438351E6E1`. BUILD.txt source matches, and ZIP DEB bytes match the extracted DEB.
+- Ready package: `artifacts/ci-run-45775185368/deb/com.gcbond.openhc-bridge-check_0.3.5_iphoneos-arm64.deb`; package `com.gcbond.openhc-bridge-check`, version `0.3.5`, architecture `iphoneos-arm64`. DEB SHA-256: `835121E43FCA4A1362FFBAAD254594A1FAB044F9442FC08A0C27EA17B3C4301B`. Packaged executable SHA-256: `AF58D23EB0C19E7CFD739D3BEA4CE33F374C390B251D4D482D9C106A2159DAF0`; use this hash because version alone does not distinguish newer 0.3.5 builds.
+- Prior SSH preparation state below is superseded by SSH Read-only Confirmation: automatic authorized login succeeded; the target is iPad5,1. The subsequent installation result below supersedes the old 0.3.2 snapshot.
+
+Historical installation/preparation evidence is retained below. The earlier proposal to schedule headless phone inbound is superseded by the scan-startup gap recorded in Current Scan Direction; do not execute that proposal.
+
+## Historical SSH Read-only Confirmation — before installation (2026-11-26)
+
+- Authorized password authentication succeeded against the existing 127.0.0.1:2222 endpoint using Paramiko with known_hosts + RejectPolicy. Credentials were supplied through process stdin, never shell argv/env, files, output, logs or reports; no password search or host-key change occurred.
+- Fixed read-only results: system `Darwin`; model `iPad5,1`; installed `com.gcbond.openhc-bridge-check` version `0.3.2`; installed executable SHA-256 `4DA228BD68B64D77AB8540EB2EE86E2F163A2CB32C052786B6FD910650FD7203`.
+- Installed binary does NOT match the downloaded CI45775185368 / b4c66242 artifact executable `AF58D23EB0C19E7CFD739D3BEA4CE33F374C390B251D4D482D9C106A2159DAF0`. The ready 0.3.5 DEB remains at `artifacts/ci-run-45775185368/deb/com.gcbond.openhc-bridge-check_0.3.5_iphoneos-arm64.deb`.
+- Initial absolute/default command lookup returned 127; the same fixed checks succeeded with a per-command rootless PATH prefix. This changed no device configuration. No terminal input is now required; the attempted Orca terminal create was refused before creation because this checkout is not a registered Orca workspace.
+- Historical next-step proposal superseded: installation subsequently completed, but real-phone inbound remains blocked by the missing receiver scan-startup entry. No power/service/pairing/hotspot operation ran in this read-only confirmation.
+
+## Current Installation And Next Action (2026-11-26)
+
+- Authorized installation completed on `Darwin/iPad5,1`: standard `dpkg -i` exited 0; package version is `0.3.5`; installed executable SHA-256 is `AF58D23EB0C19E7CFD739D3BEA4CE33F374C390B251D4D482D9C106A2159DAF0`, matching CI45775185368 / b4c66242. The uploaded DEB hash matched `835121E43FCA4A1362FFBAAD254594A1FAB044F9442FC08A0C27EA17B3C4301B`.
+- New DEB has no maintainer scripts/triggers or service files; it contains the tool and license documents only. Installed old package also had no maintainer scripts. SSH retained known_hosts + RejectPolicy; SFTP used a private temporary directory/file, and the exact uploaded DEB and its empty directory were removed after verification. No credentials were saved or displayed. No bridge start, power/service change, pairing, hotspot or HiCar operation occurred.
+- Historical execution-environment issue, subsequently fixed locally (not a new task): the earlier fixed read-only commands returned exit 127 with the SSH default PATH, and succeeded with a per-command rootless PATH. The current Trial preflight uses bare `id`/`uname` and its SSH execute path adds no PATH. Therefore a preflight command-lookup failure is a concrete risk inferred from those observations, not a new Trial result. Coordinator should arrange the minimal per-command execution-environment adaptation; do not change the system PATH or repeat physical probes.
+- The earlier phone trigger proposal is withdrawn after the user clarified their successful QR-scan flow. Controller WORKING does not provide PairingReady or an active QR; this CLI has no QR/session-start UI. Do not start Trial waiting for a user-initiated phone connection. Authentication, DMSDP and media remain unimplemented.
+
+## Guarded Inbound Attempt — stopped before arm (2026-11-26)
+
+- Minimal local fix: fixed SSH commands in Trial (execute/upload/local-address/inbound channels) and the collector now receive an explicit restricted rootless PATH per command; no device-global environment change. Two focused fake-SSH tests passed, including simulated default-path exit 127 versus corrected preflight/upload and fixed inbound argv/bounded output. No CI or historical suite rerun.
+- Authorized read-only preparation confirmed the original identity path exists (contents not inspected), installed executable hash matches CI45775185368, required fixed executable paths exist, and root/model command preconditions succeed with the correction.
+- Exactly one fresh collector invocation raised RuntimeError; its more specific stable code was not retained by the preparation wrapper, so the exact failing collector component is unknown. No complete snapshot or classifier clearance was obtained. `artifacts/device-validation-20261126/session-evidence-stopped.json` records an explicitly incomplete UNKNOWN result, never usable as fresh clearance. No collector retry occurred.
+- Stopped before Trial preflight/guard arm/takeover/power. Guard readiness was not established or claimed; no new guard or listener/CID was created, no WORKING event, Nearby frame, FE35 parse/handshake, OFF or restoration cycle occurred in this attempt. Installed version remains 0.3.5; no device changes occurred in this task.
+- Next minimal action requires coordinator direction: one bounded read-only diagnosis of the collector failure that preserves only its stable failure code/component (no raw identity/frame/auth data), then resume existing fresh-evidence/guard requirements without relaxing the classifier. Do not initiate a phone/power window while evidence is UNKNOWN. Real-time coordinator messaging exists, but no phone trigger notification was sent because the attempt never became eligible. Authentication, DMSDP and media remain unimplemented.
+
+## Single Read-only Collector Diagnosis (2026-11-26)
+
+- Error-detail loss was local: both the preparation wrapper and collector CLI exception handler retained only `type(error).__name__`. The collector now returns internally constructed stable component/field/exit codes and discards arbitrary exception messages; numeric parse failures no longer copy input into reports. Seven focused synthetic collector tests passed (including command exit codes, missing fields, output-limit component and exception-message suppression); no CI or historical probe rerun.
+- Exactly one authorized bounded read-only capture produced `CAPTURE_OUTPUT_LIMIT_PROCESS_SNAPSHOT`: more than 16,384 bytes were received while inside the process snapshot block before its end marker. This establishes the present collector buffer limit as the failure component. It does not retrospectively prove the cause of the earlier unclassified RuntimeError. Raw collector output stayed in memory only.
+- Result remains UNKNOWN / snapshot incomplete (`artifacts/device-validation-20261126/session-evidence-diagnostic.json`). Socket-owner/helper classification, extra helper explanation, ownership marker and recovery state cannot be established from a truncated snapshot; default UNKNOWN fields are not observations of an active recovery job. No PID was invented, no classifier changed, and no guard arm/Trial/power/service/phone action occurred.
+- Feasible minimal read-only fix for coordinator review: increase the collector total-output bound from 16 KiB to a still-finite 64 KiB, preserving the existing deadline, complete process rows, owner mapping, capture-window check and classifier. Total required size is not known, so 64 KiB success is not claimed. The limit was NOT changed and no second capture was made in this diagnostic task. Next step is that bounded collector fix and a separately authorized fresh capture; inbound is not eligible now.
+
+## 64 KiB Collector Fix And One Fresh Capture (2026-11-26)
+
+- Approved local change: collector total-output cap is now `MAX_OUTPUT = 64 * 1024`; the 8-second SSH deadline, original capture-window check, parsing and ownership classifier remain unchanged. Eight collector synthetic tests passed, including a complete snapshot above 16 KiB and stable rejection above 64 KiB. No CI was run.
+- Exactly one fresh read-only capture: bytes bucket `GT_16_LE_64_KIB`; complete snapshot; classifier `BROKER`; no capture error. This is a bounded point-in-time classification, not proof of absolute absence of concurrent sessions. Raw process output remained only in memory; the retained artifact is a sanitized summary (`artifacts/device-validation-20261126/collector-64k-summary.json`), not a reusable Trial evidence file.
+- No additional device commands, guard arm, Trial, power/service transition or phone operation occurred. The collector size blocker is resolved; this does not establish guard readiness or real FE35/listener/Nearby/HiCar success. The prior suggestion to schedule inbound is superseded by the missing scan-startup entry above.

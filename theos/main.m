@@ -12,7 +12,7 @@ int openhc_btstack_ownership_probe(void);
 int openhc_session_owner_probe(void);
 int openhc_fe35_bridge_smoke(void);
 
-int main(int argc, const char *argv[]) {
+int openhc_cli_main(int argc, const char *argv[]) {
     @autoreleasepool {
         OHCBBridgeSelfCheck *bridge = [[OHCBBridgeSelfCheck alloc] init];
         if (argc == 1) {
@@ -53,3 +53,9 @@ int main(int argc, const char *argv[]) {
     }
     return 0;
 }
+
+#ifndef OPENHC_CLI_NO_MAIN
+int main(int argc, const char *argv[]) {
+    return openhc_cli_main(argc, argv);
+}
+#endif

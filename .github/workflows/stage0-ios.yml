@@ -74,6 +74,12 @@ jobs:
             java -version 2>&1
             gradle --version
           } | tee artifacts/BUILD.txt
+      - name: Exercise the public FE35 CLI against Kotlin/Native in iOS Simulator
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :bridge:linkReleaseFrameworkIosSimulatorArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/ios-simulator-framework.log
+          bash scripts/test-fe35-cli-smoke-simulator.sh 2>&1 | tee artifacts/logs/fe35-cli-simulator-smoke.log
       - name: Run shared JVM and Native simulator tests
         shell: bash
         run: |

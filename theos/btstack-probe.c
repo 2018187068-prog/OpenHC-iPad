@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -357,6 +359,35 @@ static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned
 
 static int connect_daemon(const char *path) {
     int fd = -1;
+#ifdef OPENHC_FE35_SIMULATOR_TEST
+    if (strncmp(path, "tcp:", 4) == 0) {
+        char *end = NULL;
+        long port = strtol(path + 4, &end, 10);
+        if (!end || *end || port < 1 || port > 65535) return -1;
+        struct sockaddr_in tcp_addr;
+        memset(&tcp_addr, 0, sizeof(tcp_addr));
+        tcp_addr.sin_family = AF_INET;
+        tcp_addr.sin_port = htons((uint16_t)port);
+        tcp_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        int one = 1;
+        if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))) goto tcp_failed;
+        if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto tcp_failed;
+        if (connect(fd, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) != 0) {
+            if (errno != EINPROGRESS) goto tcp_failed;
+            struct pollfd p = {fd, POLLOUT, 0};
+            if (poll(&p, 1, 2000) <= 0 || !(p.revents & POLLOUT)) goto tcp_failed;
+            int error = 0;
+            socklen_t error_size = sizeof(error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size) || error) goto tcp_failed;
+        }
+        return fd;
+tcp_failed:
+        close(fd);
+        return -1;
+    }
+#endif
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;

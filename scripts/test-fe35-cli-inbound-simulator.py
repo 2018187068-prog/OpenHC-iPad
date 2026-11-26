@@ -8,7 +8,6 @@ import shutil
 import socket
 import struct
 import subprocess
-import tempfile
 import threading
 import time
 
@@ -250,11 +249,6 @@ def run_case(args, case):
     started_assertions = ASSERTIONS
     data_dir = Path(args.data_dir)
     documents = data_dir / "Documents"
-    alias_root = Path(tempfile.mkdtemp(prefix="f35-", dir="/tmp"))
-    alias_dir = alias_root / "d"
-    alias_dir.symlink_to(documents, target_is_directory=True)
-    endpoint_abs = alias_dir / "s"
-    check(len(str(endpoint_abs).encode("utf-8")) < 100, "Unix socket path bound")
     guard = documents / ("fe35-guard-" + case)
     guard.mkdir(parents=True, exist_ok=True)
     (guard / "ready").write_text("READY\n", encoding="ascii")
@@ -262,11 +256,11 @@ def run_case(args, case):
     (guard / "heartbeat").write_text("POWER_DRIVER_OWNS_THIS\n", encoding="ascii")
     result_file = documents / "fe35-cli-result"
     result_file.unlink(missing_ok=True)
-    endpoint_abs.unlink(missing_ok=True)
-
     errors = []
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(endpoint_abs))
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    endpoint = "tcp:" + str(server.getsockname()[1])
     server.listen(1)
     server.settimeout(8)
 
@@ -283,7 +277,7 @@ def run_case(args, case):
     started = time.monotonic()
     launch = subprocess.run([
         "xcrun", "simctl", "launch", args.udid, args.bundle_id,
-        str(endpoint_abs), guard_rel,
+        endpoint, guard_rel,
     ], capture_output=True, text=True, timeout=12)
     check(launch.returncode == 0, "simulator CLI process launched")
     expected_status = 0 if case == "success" else 1
@@ -295,7 +289,6 @@ def run_case(args, case):
     actual_status = result_file.read_text(encoding="ascii").strip()
     worker.join(8)
     server.close()
-    endpoint_abs.unlink(missing_ok=True)
     check(not worker.is_alive(), "synthetic peer completed")
     cli_log = documents / "fe35-cli-status.log"
     cli_status = cli_log.read_text(encoding="ascii", errors="replace") if cli_log.exists() else "missing"
@@ -306,7 +299,6 @@ def run_case(args, case):
     check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
           "Trial remains heartbeat owner")
     shutil.rmtree(guard)
-    shutil.rmtree(alias_root)
     elapsed = time.monotonic() - started
     check(elapsed < 10, "bounded CLI scenario completion")
     print("FE35_KN_INBOUND_CASE_OK=" + case)

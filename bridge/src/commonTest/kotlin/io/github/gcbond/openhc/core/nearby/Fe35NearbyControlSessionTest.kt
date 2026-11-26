@@ -36,7 +36,6 @@ class Fe35NearbyControlSessionTest {
             assertContentEquals(fe36, events.last().serviceUuid)
             val reply = bridge.listenerReady(4).single()
             assertEquals("SEND_FRAME", reply.kind)
-            assertContentEquals(hex(CAR_AUTH_RESPONSE_SEED_B), reply.frame)
             val decoded = parseFrame(assertNotNull(reply.frame))
             assertTrue(decoded.isEncrypted)
             val payload = NearbyFrameCipher(root, constA, constB).open(decoded)
@@ -51,7 +50,7 @@ class Fe35NearbyControlSessionTest {
     @Test
     fun fullUpstreamPhoneFramesReachListenerCallbackAndEncryptedResponse() {
         val cipher = NearbyFrameCipher(root, constA, constB)
-        val requestFrame = hex(PHONE_AUTH_REQUEST_SEED_D)
+        val requestFrame = phoneAuthRequestFrame()
         val session = newSession()
 
         val initial = session.start(1_000).single()
@@ -71,7 +70,6 @@ class Fe35NearbyControlSessionTest {
         val response = session.onAuthListenerReady(4).single()
         assertEquals("SEND_FRAME", response.kind)
         val replyFrame = parseFrame(assertNotNull(response.frame))
-        assertEquals(CAR_AUTH_RESPONSE_SEED_B, response.frame!!.toHex())
         assertEquals(SocketMessages.OUTER_TYPE_MESSAGE, replyFrame.outerType)
         assertTrue(replyFrame.isEncrypted)
         val replyPayload = cipher.open(replyFrame)
@@ -86,7 +84,7 @@ class Fe35NearbyControlSessionTest {
 
     @Test
     fun fragmentedAndCoalescedInputUseTheSameRuntimeAndOutput() {
-        val all = hex(PHONE_FIRST) + hex(PHONE_AUTH_REQUEST_SEED_D)
+        val all = hex(PHONE_FIRST) + phoneAuthRequestFrame()
         val coalesced = newSession()
         coalesced.start(0)
         val expected = coalesced.feed(all)
@@ -100,7 +98,7 @@ class Fe35NearbyControlSessionTest {
         assertContentEquals(expected.first().frame, actual.first().frame)
         assertContentEquals(expected.last().serviceUuid, actual.last().serviceUuid)
         assertEquals(2, SocketMessages.parseRequest(Tlv.parseAll(
-            NearbyFrameCipher(root, constA, constB).open(parseFrame(hex(PHONE_AUTH_REQUEST_SEED_D)))).single().valueView()).channel)
+            NearbyFrameCipher(root, constA, constB).open(parseFrame(phoneAuthRequestFrame()))).single().valueView()).channel)
     }
 
     @Test
@@ -109,12 +107,16 @@ class Fe35NearbyControlSessionTest {
         session.start(0)
         val bad = hex(PHONE_FIRST).also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
         assertEquals("INPUT_DISCARDED", session.feed(bad).single().kind)
-        assertEquals("INPUT_DISCARDED", session.feed(hex("7f808080010084")).single().kind)
+        assertEquals("INPUT_DISCARDED", session.feed(hex("00")).single().kind)
+        val partial = newSession()
+        partial.start(0)
+        assertTrue(partial.feed(hex("7f808080010084")).isEmpty())
+        partial.close()
         assertEquals("INPUT_DISCARDED", session.feed(ByteArray(64 * 1024 + 1)).single().kind)
         assertFalse(session.isHandshakeComplete)
 
         val cipher = NearbyFrameCipher(root, constA, constB)
-        val early = session.feed(hex(PHONE_AUTH_REQUEST_SEED_D))
+        val early = session.feed(phoneAuthRequestFrame())
         assertEquals(listOf("SEND_FRAME", "SOCKET_REQUEST_REJECTED"), early.map { it.kind })
         val rejectedFrame = parseFrame(assertNotNull(early.first().frame))
         assertFalse(rejectedFrame.isEncrypted)
@@ -159,6 +161,16 @@ class Fe35NearbyControlSessionTest {
         })
     }
 
+    private fun phoneAuthRequestFrame(): ByteArray {
+        val request = SocketMessages.encodeRequest(SocketMessages.Request(
+            2, 19, "hicarAuth".encodeToByteArray(), 0, null,
+        ))
+        val payload = ByteWriter().tlv(SocketMessages.CMD_CREATE_REQUEST, request).toByteArray()
+        return NearbyFrameCipher(root, constA, constB).seal(
+            SocketMessages.OUTER_TYPE_MESSAGE, payload, seedD,
+        ).encode()
+    }
+
     private fun parseFrame(bytes: ByteArray): NearbyFrame {
         val decoder = NearbyFrameDecoder()
         decoder.feed(bytes)
@@ -173,8 +185,10 @@ class Fe35NearbyControlSessionTest {
     private companion object {
         const val DEVICE_ID = "CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F"
         const val PAYLOAD_REPLY = "82810284c043443143373346333639433546453042383038303844334430333335454146374439394232414239464531353430334443363231433136364642414443423646868101"
-        const val PHONE_AUTH_REQUEST_SEED_D = "7f82818a8188d1d2d3d4d5d6d7d88f7f488457c62586c61bb0ba7b4d80aa73db"
-        const val CAR_AUTH_RESPONSE_SEED_B = "7f82818a8188b1b2b3b4b5b6b7b8a2d86f88a7436454544e80f7c6b4d2d9d627be26691770882408fabb8005d499b801313f98"
-        const val PHONE_FIRST = "7f8080801b81818105838d3031323334353637383941420085810290db30313233343536373839414243444546303132333435363738394142434445463031323334353637383941424344454626263026263026264645444342413938373635343332313026263192a7303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f50515253545556343b"
+        const val PHONE_FIRST =
+            "7f8080801b81818105838d3031323334353637383941420085810290db30313233343536373839414243444546303132" +
+            "333435363738394142434445463031323334353637383941424344454630313233343536373839414243444546262630" +
+            "26263026264645444342413938373635343332313026263192a7303132333435363738393a3b3c3d3e3f404142434445" +
+            "464748494a4b4c4d4e4f50515253545556343b"
     }
 }

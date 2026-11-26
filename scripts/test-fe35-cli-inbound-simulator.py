@@ -158,7 +158,7 @@ def encrypted_command_request():
 def assert_service_record(params, uuid, channel):
     check(uuid in params, "SDP UUID bytes")
     check(bytes([0x08, channel]) in params, "SDP RFCOMM channel bytes")
-    check(b"\x19\x00\x04\x35\x0c" in params, "SDP protocol descriptor")
+    check(b"\x09\x00\x04\x35\x0c" in params, "SDP protocol descriptor")
 
 
 def register_channel(conn, channel, status):

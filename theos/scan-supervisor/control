@@ -1,0 +1,9 @@
+Package: com.gcbond.openhc-scan-ping-helper
+Name: OpenHC Scan Ping Helper (Prototype)
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Fixed PING/PONG launchd IPC prototype for OpenHC scan UI
+Maintainer: OpenHC-iPad validation
+Author: OpenHC-iPad validation
+Section: Development
+Depends: firmware (>= 15.0)

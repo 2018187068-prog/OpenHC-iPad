@@ -150,6 +150,13 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/check-scan-ui.sh 2>&1 | tee artifacts/logs/scan-ui-check.log
+      - name: Validate independent scan helper and package
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/logs
+          bash scripts/check-scan-supervisor-helper.sh 2>&1 | tee artifacts/logs/scan-supervisor-check.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -74,6 +74,13 @@ static void qrTests(void) {
             isEqualToData:[text dataUsingEncoding:NSUTF8StringEncoding]], "UTF8 byte equality");
     }
     check(!OHCScanQRCode(@"", 3, NULL) && !OHCScanQRCode(text, 0, NULL), "invalid render inputs fail closed");
+    NSString *tooLong = [@"a" stringByPaddingToLength:1025 withString:@"a" startingAtIndex:0];
+    check(!OHCScanQRCode(tooLong, 3, NULL) && !OHCScanQRCode(text, 13, NULL),
+        "UTF8 byte and scale bounds fail closed");
+    for (int repeat = 0; repeat < 20; repeat++) @autoreleasepool {
+        check(OHCScanQRCode(text, 3, NULL) != nil, "repeated CPU QR generation retains image storage");
+    }
+    puts("SCAN_UI_CPU_QR_REPEAT_OK=20");
     puts("SCAN_UI_QR_UTF8_INTEGER_SCALE_CASES_OK=3");
 }
 

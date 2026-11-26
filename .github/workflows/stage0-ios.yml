@@ -13,8 +13,8 @@ on:
       - '.github/workflows/stage0-ios.yml'
 
 jobs:
-  build:
-    runs-on: macos-15
+  host-validation:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,20 +29,41 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Test bounded BTstack query and service clients with synthetic local server
+      - name: Run host synthetic suites and JVM tests
         shell: bash
         run: |
-          set -o pipefail
+          set -uo pipefail
           mkdir -p artifacts/logs
-          python3 scripts/test-fe35-bridge-config.py 2>&1 | tee artifacts/logs/fe35-bridge-config-tests.log
-          python3 scripts/test-btstack-probe.py 2>&1 | tee artifacts/logs/btstack-mock-tests.log
-          python3 scripts/test-btstack-transport-socket.py 2>&1 | tee artifacts/logs/btstack-transport-socket-tests.log
-          python3 scripts/test-btstack-session-gate.py 2>&1 | tee artifacts/logs/btstack-session-gate-tests.log
-          python3 scripts/test-btstack-transport-runner.py 2>&1 | tee artifacts/logs/btstack-transport-runner-tests.log
-          python3 scripts/test-btstack-transport-metadata.py 2>&1 | tee artifacts/logs/btstack-transport-metadata-tests.log
-          python3 scripts/test-capture-btstack-session-evidence.py 2>&1 | tee artifacts/logs/session-evidence-capture-tests.log
-          python3 scripts/test-session-owner-probe.py 2>&1 | tee artifacts/logs/session-owner-probe-tests.log
-          python3 scripts/test-btstack-power.py 2>&1 | tee artifacts/logs/btstack-power-trial-tests.log
+          failed=0
+          for suite in fe35-bridge-config btstack-probe btstack-transport-socket btstack-session-gate btstack-transport-runner btstack-transport-metadata capture-btstack-session-evidence session-owner-probe btstack-power scan-demo-archive scan-qr-cpu install-scan-demo; do
+            python3 "scripts/test-$suite.py" >"artifacts/logs/host-$suite.log" 2>&1 || failed=1
+            cat "artifacts/logs/host-$suite.log"
+          done
+          gradle :bridge:jvmTest --no-daemon --stacktrace >artifacts/logs/host-jvm.log 2>&1 || failed=1
+          cat artifacts/logs/host-jvm.log
+          exit "$failed"
+      - name: Upload host validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhc-host-validation-${{ github.sha }}
+          path: artifacts/logs/host-*.log
+          if-no-files-found: error
+
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
       - name: Build candidate static crypto backend
         shell: bash
         run: bash scripts/build-crypto-backend.sh
@@ -53,7 +74,7 @@ jobs:
           mkdir -p artifacts/logs
           shasum -a 256 -c scripts/source-slices.sha256 | tee artifacts/logs/source-slices.log
           python3 scripts/verify-speke-oracle.py | tee artifacts/logs/speke-oracle.log
-          gradle :bridge:linkReleaseFrameworkIosArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/kotlin-native-build.log
+          gradle :bridge:linkReleaseFrameworkIosArm64 :bridge:linkReleaseFrameworkIosSimulatorArm64 :bridge:iosSimulatorArm64Test --no-daemon --stacktrace 2>&1 | tee artifacts/logs/apple-gradle-validation.log
           mkdir -p artifacts/iosArm64
           header=bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework/Headers/OpenHCBridge.h
           grep -q '@interface OHCBFe35ControlBridge' "$header"
@@ -83,17 +104,11 @@ jobs:
             gradle --version
           } | tee artifacts/BUILD.txt
       - name: Run FE35 CLI against a synthetic BTdaemon peer in iOS Simulator
-        shell: bash
-        run: |
-          set -o pipefail
-          gradle :bridge:linkReleaseFrameworkIosSimulatorArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/ios-simulator-framework.log
-          bash scripts/test-fe35-cli-smoke-simulator.sh 2>&1 | tee artifacts/logs/fe35-cli-simulator-smoke.log
-      - name: Run shared JVM and Native simulator tests
         if: always()
         shell: bash
         run: |
           set -o pipefail
-          gradle :bridge:jvmTest :bridge:iosSimulatorArm64Test --no-daemon --stacktrace 2>&1 | tee artifacts/logs/shared-tests.log
+          bash scripts/test-fe35-cli-smoke-simulator.sh 2>&1 | tee artifacts/logs/fe35-cli-simulator-smoke.log
       - name: Collect test reports
         if: always()
         shell: bash
@@ -171,3 +186,16 @@ jobs:
           name: openhc-ipad-stage0-${{ github.sha }}
           path: artifacts/
           if-no-files-found: error
+
+  required-checks:
+    if: always()
+    needs: [host-validation, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Preserve combined workflow failure semantics
+        env:
+          HOST_RESULT: ${{ needs.host-validation.result }}
+          APPLE_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$HOST_RESULT" = success
+          test "$APPLE_RESULT" = success

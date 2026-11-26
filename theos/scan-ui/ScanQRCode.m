@@ -1,34 +1,29 @@
 #import "ScanQRCode.h"
-#import <CoreImage/CoreImage.h>
+#import "ScanQRBitmap.h"
+#include <stdlib.h>
+
+static void releasePixels(void *info, const void *data, size_t size) {
+    (void)info; (void)size;
+    free((void *)data);
+}
 
 UIImage *OHCScanQRCode(NSString *text, NSInteger scale, NSInteger *moduleWidth) {
+    if (moduleWidth) *moduleWidth = 0;
     if (!text.length || scale < 1 || scale > 12) return nil;
-    CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
-    [filter setValue:[text dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
-    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-    CIImage *matrix = filter.outputImage;
-    if (!matrix || CGRectIsEmpty(matrix.extent)) return nil;
-    size_t modules = (size_t)CGRectGetWidth(matrix.extent);
-    if (modules > 177 || CGRectGetHeight(matrix.extent) != modules) return nil;
-    if (moduleWidth) *moduleWidth = (NSInteger)modules;
-    CIContext *ci = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
-    CGImageRef code = [ci createCGImage:matrix fromRect:matrix.extent];
-    if (!code) return nil;
-    // Four white modules on each side; scale the modules by an integer only.
-    size_t edge = (modules + 8) * (size_t)scale;
-    CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
-    CGContextRef bitmap = CGBitmapContextCreate(NULL, edge, edge, 8, edge * 4, colors,
-        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-    CGColorSpaceRelease(colors);
-    if (!bitmap) { CGImageRelease(code); return nil; }
-    CGContextSetRGBFillColor(bitmap, 1, 1, 1, 1);
-    CGContextFillRect(bitmap, CGRectMake(0, 0, edge, edge));
-    CGContextSetInterpolationQuality(bitmap, kCGInterpolationNone);
-    CGContextDrawImage(bitmap, CGRectMake(4 * scale, 4 * scale, modules * scale, modules * scale), code);
-    CGImageRef output = CGBitmapContextCreateImage(bitmap);
+    NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+    OHCScanQRBitmap bitmap;
+    if (!OHCScanQRCreate(utf8.bytes, utf8.length, (int)scale, &bitmap)) return nil;
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, bitmap.pixels,
+        bitmap.edge * bitmap.edge, releasePixels);
+    if (!provider) { free(bitmap.pixels); return nil; }
+    CGColorSpaceRef colors = CGColorSpaceCreateDeviceGray();
+    if (!colors) { CGDataProviderRelease(provider); return nil; }
+    CGImageRef output = CGImageCreate(bitmap.edge, bitmap.edge, 8, 8, bitmap.edge,
+        colors, kCGImageAlphaNone, provider, NULL, false, kCGRenderingIntentDefault);
     UIImage *image = output ? [UIImage imageWithCGImage:output scale:1 orientation:UIImageOrientationUp] : nil;
+    if (image && moduleWidth) *moduleWidth = bitmap.modules;
     if (output) CGImageRelease(output);
-    CGImageRelease(code);
-    CGContextRelease(bitmap);
+    CGColorSpaceRelease(colors);
+    CGDataProviderRelease(provider);
     return image;
 }

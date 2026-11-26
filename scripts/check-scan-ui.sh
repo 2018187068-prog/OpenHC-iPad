@@ -7,13 +7,20 @@ test_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/openhc-scan-ui-check"
 app="$test_root/OpenHCScanDemo.app"
 bundle_id="com.gcbond.openhc-scan-demo"
 mkdir -p "$app" "$repo_root/artifacts/scan-ui"
+python3 "$repo_root/scripts/test-scan-qr-cpu.py"
 cp "$repo_root/theos/scan-ui/Resources/Info.plist" "$app/Info.plist"
+for source in ScanQRBitmap vendor/qrcodegen/qrcodegen; do
+  xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
+    -std=c11 -O2 -Wall -Wextra -Werror -c "$repo_root/theos/scan-ui/$source.c" \
+    -o "$test_root/$(basename "$source").o"
+done
 xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-sign-compare -DOPENHC_SCAN_UI_TEST \
   -F"$(dirname "$framework")" -framework OpenHCBridge -framework UIKit \
   -framework Foundation -framework CoreImage -framework CoreGraphics -framework QuartzCore \
   "$repo_root/theos/scan-ui/main.m" "$repo_root/theos/scan-ui/ScanDemo.m" \
   "$repo_root/theos/scan-ui/ScanQRCode.m" \
+  "$test_root/ScanQRBitmap.o" "$test_root/qrcodegen.o" \
   "$repo_root/theos/scan-supervisor/ScanHelperClient.m" \
   "$repo_root/scripts/scan-ui-tests.m" \
   -o "$app/OpenHCScanDemo"
@@ -75,5 +82,9 @@ binary="$test_root/device-package/var/jb/Applications/OpenHCScanDemo.app/OpenHCS
 test -f "$binary"
 lipo "$binary" -verify_arch arm64
 otool -L "$binary"
+if otool -L "$binary" | grep -E 'CoreImage|OpenGLES'; then
+  echo 'Production QR generation must not link CoreImage or OpenGLES' >&2
+  exit 1
+fi
 ldid -h "$binary" 2>&1 | grep CodeDirectory
 echo SCAN_UI_ROOTLESS_ARM64_PACKAGE_OK

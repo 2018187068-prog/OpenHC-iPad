@@ -20,6 +20,7 @@ LAYOUTS = {
     'com.gcbond.openhc-scan-demo': {
         'var': 0o755, 'var/jb': 0o755, 'var/jb/Applications': 0o755,
         APP: 0o755, APP+'/Info.plist': 0o644, APP+'/OpenHCScanDemo': 0o755,
+        APP+'/QR-Code-generator-LICENSE.txt': 0o644,
     },
     'com.gcbond.openhc-scan-ping-helper': {
         'var': 0o755, 'var/jb': 0o755, 'var/jb/usr': 0o755,
@@ -29,7 +30,8 @@ LAYOUTS = {
         RUNTIME+'/README.txt': 0o644,
     },
 }
-FILES = {APP+'/Info.plist', APP+'/OpenHCScanDemo', HELPER, JOB, RUNTIME+'/README.txt'}
+FILES = {APP+'/Info.plist', APP+'/OpenHCScanDemo', APP+'/QR-Code-generator-LICENSE.txt',
+         HELPER, JOB, RUNTIME+'/README.txt'}
 
 
 def require(condition, message):

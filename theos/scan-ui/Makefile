@@ -10,8 +10,8 @@ include $(THEOS)/makefiles/common.mk
 override _THEOS_PLATFORM_DPKG_DEB := $(THEOS_PROJECT_DIR)/../../scripts/scan-demo-dpkg-deb.sh
 
 APPLICATION_NAME = OpenHCScanDemo
-OpenHCScanDemo_FILES = main.m ScanDemo.m ScanQRCode.m ../scan-supervisor/ScanHelperClient.m
-OpenHCScanDemo_FRAMEWORKS = UIKit Foundation CoreImage CoreGraphics QuartzCore OpenHCBridge
+OpenHCScanDemo_FILES = main.m ScanDemo.m ScanQRCode.m ScanQRBitmap.c vendor/qrcodegen/qrcodegen.c ../scan-supervisor/ScanHelperClient.m
+OpenHCScanDemo_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore OpenHCBridge
 OpenHCScanDemo_CFLAGS = -F$(THEOS_PROJECT_DIR)/../../artifacts/iosArm64
 OpenHCScanDemo_LDFLAGS = -F$(THEOS_PROJECT_DIR)/../../artifacts/iosArm64
 OpenHCScanDemo_OBJCFLAGS = -fobjc-arc

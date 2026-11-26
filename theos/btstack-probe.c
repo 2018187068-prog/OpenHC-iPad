@@ -23,6 +23,23 @@ static int64_t now_ms(void);
 static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
                             int64_t deadline, const char *run_dir);
 
+static int read_bounded(int fd, uint8_t *buf, size_t size, int64_t deadline) {
+    while (size) {
+        int64_t now = now_ms();
+        if (now < 0 || now >= deadline) return -1;
+        struct pollfd p = {fd, POLLIN, 0};
+        int ready_count = poll(&p, 1, (int)(deadline - now));
+        if (ready_count < 0 && errno == EINTR) continue;
+        if (ready_count <= 0 || !(p.revents & (POLLIN | POLLHUP))) return -1;
+        ssize_t n = read(fd, buf, size);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        buf += n;
+        size -= (size_t)n;
+    }
+    return 0;
+}
+
 static int require_input_eof(int fd, int64_t deadline) {
     for (;;) {
         int64_t now = now_ms();
@@ -44,15 +61,15 @@ static int read_bridge_input(fe35_bridge_input *input) {
     size_t *sizes[] = {NULL, &input->root_key_size, &input->const_a_size, &input->const_b_size};
     memset(input, 0, sizeof(*input));
     int64_t deadline = now_ms() + 3000;
-    if (transfer_guarded(STDIN_FILENO, header, sizeof(header), 0, deadline, NULL)) return -1;
+    if (read_bounded(STDIN_FILENO, header, sizeof(header), deadline)) return -1;
     if (header[0] != 1 || header[1] == 0 || header[1] > sizeof(input->device_id) - 1) return -1;
-    if (transfer_guarded(STDIN_FILENO, (uint8_t *)input->device_id, header[1], 0, deadline, NULL)) return -1;
+    if (read_bounded(STDIN_FILENO, (uint8_t *)input->device_id, header[1], deadline)) return -1;
     if (memchr(input->device_id, 0, header[1])) return -1;
     input->device_id[header[1]] = 0;
     for (unsigned i = 1; i <= 3; ++i) {
-        if (transfer_guarded(STDIN_FILENO, &length, 1, 0, deadline, NULL) ||
+        if (read_bounded(STDIN_FILENO, &length, 1, deadline) ||
             length == 0 || length > 64 ||
-            transfer_guarded(STDIN_FILENO, parts[i], length, 0, deadline, NULL)) return -1;
+            read_bounded(STDIN_FILENO, parts[i], length, deadline)) return -1;
         *sizes[i] = length;
     }
     return require_input_eof(STDIN_FILENO, deadline);

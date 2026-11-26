@@ -65,7 +65,9 @@ def send_event(conn, code, params):
 
 def read_command(conn, ocf, params):
     kind, channel, size = struct.unpack("<HHH", exact(conn, 6))
-    check((kind, channel, size) == (1, 0, len(params) + 3), "command header")
+    check((kind, channel, size) == (1, 0, len(params) + 3),
+          "command header expected_ocf=" + hex(0xF400 | ocf) +
+          " actual=(kind=" + str(kind) + ",channel=" + str(channel) + ",size=" + str(size) + ")")
     packet = exact(conn, size)
     opcode, length = struct.unpack("<HB", packet[:3])
     body = packet[3:]
@@ -181,12 +183,15 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
     send_event(conn, 0x60, bytes([2]))
 
 
-def drive_peer(conn, case):
+def drive_peer(conn, case, set_step):
+    set_step("initial_state")
     conn.settimeout(4)
     read_command(conn, 1, b"")
     send_event(conn, 0x60, bytes([2]))
+    set_step("register_control_channel")
     register_channel(conn, 16, 0)
 
+    set_step("register_fe35_sdp")
     kind, channel, sdp = read_packet(conn)
     check((kind, channel, sdp[:3]) == (1, 0, bytes([0x30, 0xf4, len(sdp) - 3])), "control SDP command")
     check(b"\x19\xfe\x35" in sdp[3:], "FE35 service registration")
@@ -198,27 +203,33 @@ def drive_peer(conn, case):
         return
 
     cid = 0x2345
+    set_step("incoming_and_open")
     send_event(conn, 0x82, bytes.fromhex("a1a2a3a4a5a6") + bytes([16]) + struct.pack("<H", cid))
     read_command(conn, 0x44, struct.pack("<H", cid))
     send_event(conn, 0x80, bytes([0]) + bytes.fromhex("010203040506") +
                struct.pack("<H", 0x5678) + bytes([16]) + struct.pack("<HHB", cid, 512, 1))
 
     kind, channel, start = read_packet(conn)
+    set_step("bridge_start")
     check((kind, channel) == (7, cid), "bridge start transport header")
     start_outer, start_flag, _ = decode_frame(start)
     check((start_outer, start_flag) == (0, 0), "bridge start frame bytes")
 
     request = encrypted_command_request()
     split = len(PHONE_FIRST) // 3
+    set_step("fragmented_phone_first_and_encrypted_request")
     send_packet(conn, 7, cid, PHONE_FIRST[:split])
     send_packet(conn, 7, cid, PHONE_FIRST[split:] + request)
     kind, channel, handshake_reply = read_packet(conn)
+    set_step("encrypted_handshake_response")
     check((kind, channel) == (7, cid), "handshake reply transport header")
     outer, flag, payload = decode_frame(handshake_reply)
     check((outer, flag, payload) == (0, 1, EXPECTED_HANDSHAKE_REPLY), "handshake reply frame bytes")
 
+    set_step("register_auth_listener_channel")
     register_channel(conn, 16, 0x71)
     register_channel(conn, 17, 0)
+    set_step("register_auth_sdp")
     kind, channel, sdp = read_packet(conn)
     check((kind, channel, sdp[:3]) == (1, 0, bytes([0x30, 0xf4, len(sdp) - 3])), "auth SDP command")
     uuid128 = bytes.fromhex("1c0000fe3600001000800000805f9b34fb")
@@ -230,7 +241,9 @@ def drive_peer(conn, case):
         expect_cleanup(conn, expected_auth_channel=17)
         return
 
+    set_step("auth_listener_ready")
     send_event(conn, 0x90, bytes([0]) + struct.pack("<I", 0x10002))
+    set_step("encrypted_command4_response")
     kind, channel, response_frame = read_packet(conn)
     check((kind, channel) == (7, cid), "listener response transport header")
     outer, flag, payload = decode_frame(response_frame)
@@ -240,6 +253,7 @@ def drive_peer(conn, case):
     check(b"\x91\x82\x93" in payload, "command4 channel and business id")
     check(b"\xfe\x36\x00\x00\x10\x00\x80\x00\x00\x80\x5f\x9b\x34\xfb" in payload,
           "command4 UUID bytes")
+    set_step("disconnect_and_cleanup")
     send_event(conn, 0x81, struct.pack("<H", cid))
     expect_cleanup(conn, expected_auth_channel=17, expected_auth_handle=0x10002)
 
@@ -265,11 +279,12 @@ def run_case(args, case):
     server.settimeout(8)
 
     def serve():
+        peer_step = ["accept"]
         try:
             with server.accept()[0] as conn:
-                drive_peer(conn, case)
+                drive_peer(conn, case, lambda value: peer_step.__setitem__(0, value))
         except Exception as exc:
-            errors.append(exc)
+            errors.append((peer_step[0], repr(exc)))
 
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()

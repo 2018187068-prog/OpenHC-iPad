@@ -174,6 +174,8 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
             read_command(conn, 0x31, struct.pack("<I", expected_auth_handle))
         if expected_auth_channel is not None:
             read_command(conn, 0x43, bytes([expected_auth_channel, 0]))
+        read_command(conn, 1, b"")
+        send_event(conn, 0x60, bytes([2]))
     if include_disconnect:
         read_command(conn, 0x41, struct.pack("<HB", 0x2345, 0))
         send_event(conn, 0x81, struct.pack("<H", 0x2345))

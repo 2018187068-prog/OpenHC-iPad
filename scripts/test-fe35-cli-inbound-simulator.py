@@ -293,12 +293,17 @@ def run_case(args, case):
             break
         time.sleep(0.25)
     check(result_file.exists(), "CLI bounded completion result")
-    check(result_file.read_text(encoding="ascii").strip() == str(expected_status), "CLI result status")
+    actual_status = result_file.read_text(encoding="ascii").strip()
     worker.join(8)
     server.close()
     endpoint_abs.unlink(missing_ok=True)
     check(not worker.is_alive(), "synthetic peer completed")
-    check(not errors, "synthetic peer assertions: " + repr(errors))
+    cli_log = documents / "fe35-cli-status.log"
+    cli_status = cli_log.read_text(encoding="ascii", errors="replace") if cli_log.exists() else "missing"
+    check(not errors, "synthetic peer assertions: " + repr(errors) + "; CLI status log: " + cli_status)
+    check(actual_status == str(expected_status),
+          "CLI result status expected=" + str(expected_status) + " actual=" + actual_status +
+          "; CLI status log: " + cli_status)
     check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
           "Trial remains heartbeat owner")
     shutil.rmtree(guard)

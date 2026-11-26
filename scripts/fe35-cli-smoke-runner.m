@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,14 @@ int main(int argc, char *argv[]) {
         } else if (argc == 3) {
             if (chdir(NSHomeDirectory().fileSystemRepresentation) != 0 ||
                 setenv("OPENHC_FE35_TEST_SOCKET", argv[1], 1) != 0 || setup_bridge_input()) return 91;
+            NSString *logPath = [NSHomeDirectory() stringByAppendingPathComponent:
+                @"Documents/fe35-cli-status.log"];
+            int logFD = open(logPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (logFD < 0 || dup2(logFD, STDOUT_FILENO) < 0 || dup2(logFD, STDERR_FILENO) < 0) {
+                if (logFD >= 0) close(logFD);
+                return 91;
+            }
+            close(logFD);
             const char *cli_argv[] = {"openhc-bridge-check", "--btstack-control-inbound", argv[2]};
             result = openhc_cli_main(3, cli_argv);
         } else {

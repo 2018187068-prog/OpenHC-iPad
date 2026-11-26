@@ -74,7 +74,7 @@ jobs:
             java -version 2>&1
             gradle --version
           } | tee artifacts/BUILD.txt
-      - name: Exercise the public FE35 CLI against Kotlin/Native in iOS Simulator
+      - name: Run FE35 CLI against a synthetic BTdaemon peer in iOS Simulator
         shell: bash
         run: |
           set -o pipefail

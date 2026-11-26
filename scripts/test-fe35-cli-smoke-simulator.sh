@@ -24,11 +24,13 @@ with open(sys.argv[1], "wb") as stream:
 PY
 
 xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
-  -fobjc-arc -DOPENHC_CLI_NO_MAIN \
-  -F"$(dirname "$framework")" -framework OpenHCBridge -framework Foundation \
+  -fobjc-arc -DOPENHC_CLI_NO_MAIN -DOPENHC_FE35_SIMULATOR_TEST \
+  -DOPENHC_TRANSPORT_TEST_TIMEOUTS \
+  -F"$(dirname "$framework")" -framework OpenHCBridge -framework Foundation -framework CoreFoundation \
   "$repo_root/theos/main.m" "$repo_root/theos/fe35-bridge-smoke.m" \
+  "$repo_root/theos/fe35-control-bridge.m" "$repo_root/theos/btstack-probe.c" \
   "$repo_root/scripts/fe35-cli-smoke-runner.m" \
-  "$repo_root/scripts/fe35-cli-smoke-probe-stubs.c" \
+  "$repo_root/scripts/fe35-inbound-sim-probe-stubs.c" \
   -o "$app/fe35-cli-smoke"
 codesign --force --sign - "$app"
 
@@ -64,3 +66,5 @@ for _ in $(seq 1 40); do
 done
 test "$(cat "$data_dir/Documents/fe35-cli-result")" = 0
 echo "FE35_PUBLIC_KOTLIN_BRIDGE_CLI_SMOKE_OK"
+python3 "$repo_root/scripts/test-fe35-cli-inbound-simulator.py" \
+  --udid "$udid" --bundle-id "$bundle_id" --data-dir "$data_dir"

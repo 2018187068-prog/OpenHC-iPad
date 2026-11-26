@@ -881,6 +881,12 @@ int openhc_btstack_control_synthetic(const char *address, unsigned channel,
     return transport_synthetic("/tmp/BTstack", address, channel, profile, run_dir);
 }
 int openhc_btstack_control_inbound(const char *run_dir) {
+#ifdef OPENHC_FE35_SIMULATOR_TEST
+    const char *path = getenv("OPENHC_FE35_TEST_SOCKET");
+    if (!path || !*path) path = "/tmp/BTstack";
+    return inbound_with_bridge(path, run_dir);
+#else
     return inbound_with_bridge("/tmp/BTstack", run_dir);
+#endif
 }
 #endif

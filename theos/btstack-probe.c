@@ -22,6 +22,10 @@
 static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned size);
 static int connect_daemon(const char *path);
 static int64_t now_ms(void);
+static int guard_ready(const char *run_dir);
+static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *type,
+                                    uint16_t *channel, uint8_t *body, size_t *size,
+                                    int64_t deadline, const char *run_dir);
 static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
                             int64_t deadline, const char *run_dir);
 
@@ -125,6 +129,9 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
     int64_t start = now_ms();
     if (start < 0) return -1;
     int64_t deadline = start + 4000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+    deadline = start + 150;
+#endif
     if (command(fd, ocf, params, size, deadline)) return -1;
     for (unsigned i = 0; i < 32; ++i) {
         uint8_t header[6], body[1024];
@@ -140,6 +147,53 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
         return 0;
     }
     return -1;
+}
+
+/* Read the controller's own public address while WORKING. The daemon routes
+ * ordinary HCI command-complete events to all clients; never print the result.
+ */
+static int local_bd_addr(const char *path, const char *run_dir, uint8_t address[6]) {
+    uint8_t state[3], request[] = {1, 0, 0, 0, 3, 0, 0x09, 0x10, 0};
+    int fd = -1, result = -1;
+    int64_t start = now_ms();
+    if (start < 0 || guard_ready(run_dir)) return -1;
+    int64_t deadline = start + 4000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+    deadline = start + 150;
+#endif
+    fd = connect_daemon(path);
+    if (fd < 0) goto done;
+    if (query(fd, 1, 0x60, state, sizeof(state)) || state[2] != 2) goto done;
+    if (transfer_guarded(fd, request, sizeof(request), 1, deadline, run_dir)) goto done;
+    for (unsigned i = 0; i < 32; ++i) {
+        uint8_t header[6];
+        uint16_t type, channel, packet_size;
+        uint8_t body[1024];
+        if (transfer_guarded(fd, header, sizeof(header), 0, deadline, run_dir)) goto done;
+        type = (uint16_t)le16(header);
+        channel = (uint16_t)le16(header + 2);
+        packet_size = (uint16_t)le16(header + 4);
+        if (packet_size > sizeof(body) ||
+            transfer_guarded(fd, body, packet_size, 0, deadline, run_dir)) goto done;
+        if (type != 4 || channel != 0 || packet_size < 2 || body[0] != 0x0e) continue;
+        if (packet_size != 12 || body[1] != 10 || le16(body + 3) != 0x1009 || body[5]) goto done;
+        for (unsigned j = 0; j < 6; ++j) address[j] = body[11 - j];
+        if (!memcmp(address, "\0\0\0\0\0\0", 6) ||
+            !memcmp(address, "\xff\xff\xff\xff\xff\xff", 6)) goto done;
+        result = 0;
+        break;
+    }
+done:
+    if (fd >= 0) close(fd);
+    return result;
+}
+
+static int transport_local_address(const char *path, const char *run_dir) {
+    uint8_t address[6] = {0};
+    int result = local_bd_addr(path, run_dir, address);
+    if (!result && fwrite(address, 1, sizeof(address), stdout) != sizeof(address)) result = -1;
+    memset(address, 0, sizeof(address));
+    return result;
 }
 
 static int guard_ready(const char *run_dir) {
@@ -898,6 +952,8 @@ int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[2], "--services") == 0) return services_probe(argv[1]);
     if (argc == 4 && strcmp(argv[2], "--btstack-control-inbound") == 0)
         return inbound_with_bridge(argv[1], argv[3]);
+    if (argc == 4 && strcmp(argv[2], "--btstack-local-address") == 0)
+        return transport_local_address(argv[1], argv[3]);
     if (argc == 7 && strcmp(argv[2], "--transport") == 0) {
         char *end = NULL;
         unsigned long channel = strtoul(argv[4], &end, 10);
@@ -919,5 +975,8 @@ int openhc_btstack_control_inbound(const char *run_dir) {
 #else
     return inbound_with_bridge("/tmp/BTstack", run_dir);
 #endif
+}
+int openhc_btstack_local_address(const char *run_dir) {
+    return transport_local_address("/tmp/BTstack", run_dir);
 }
 #endif

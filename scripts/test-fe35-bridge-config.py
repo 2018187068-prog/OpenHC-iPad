@@ -92,7 +92,6 @@ class ProviderTests(unittest.TestCase):
             root = Path(temp)
             path = root / 'openhc-identity.json'
             path.write_text(identity_json(), encoding='utf-8')
-            address_fd = address_pipe()
             seen = {}
 
             class Client:
@@ -103,9 +102,10 @@ class ProviderTests(unittest.TestCase):
 
             class CapturingTrial:
                 def __init__(self, _client, _log): pass
-                def run(self, mode, session_evidence, bridge_config):
+                def run(self, mode, session_evidence, bridge_config, identity_file=None):
                     seen['mode'] = mode
-                    seen['config'] = bytes(bridge_config)
+                    seen['config'] = bytes(bridge_config) if bridge_config is not None else None
+                    seen['identity_file'] = identity_file
                     return 0
 
             trial.ROOT = root
@@ -114,13 +114,11 @@ class ProviderTests(unittest.TestCase):
                     mock.patch.object(trial.paramiko, 'SSHClient', Client), \
                     mock.patch.object(trial.sys, 'stdin', io.StringIO('synthetic-password\n')), \
                     contextlib.redirect_stdout(stdout):
-                result = trial.main([
-                    '--execute', '--mode', 'inbound', '--identity-file', str(path),
-                    '--bluetooth-address-fd', str(address_fd),
-                ])
+                result = trial.main(['--execute', '--mode', 'inbound', '--identity-file', str(path)])
         self.assertEqual(result, 0)
         self.assertEqual(seen['mode'], 'inbound')
-        self.assertEqual(seen['config'][2:66], expected_id())
+        self.assertIsNone(seen['config'])
+        self.assertEqual(seen['identity_file'], path)
         self.assertNotIn(base64.b64encode(ROOT_KEY).decode('ascii'), stdout.getvalue())
         self.assertNotIn(ADDRESS_TEXT.decode('ascii'), stdout.getvalue())
         self.assertNotIn('synthetic-password', stdout.getvalue())

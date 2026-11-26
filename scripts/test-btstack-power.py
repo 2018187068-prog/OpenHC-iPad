@@ -1,6 +1,7 @@
 """Synthetic protocol and recovery fault tests. No SSH, device or credentials."""
 import importlib.util
 import io
+import os
 import pathlib
 import shutil
 import struct
@@ -165,9 +166,30 @@ class IntegratedModeTests(unittest.TestCase):
 
     def test_inbound_requires_caller_config_before_device_work(self):
         t, _, events = self.make_trial()
-        with self.assertRaisesRegex(ValueError, 'BOUNDED_BRIDGE_INPUT_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'IDENTITY_CONFIG_REQUIRED'):
             t.run(mode='inbound')
         self.assertEqual(events, [])
+
+    def test_controller_address_provider_runs_inside_working_callback(self):
+        t, channel, events = self.make_trial()
+        address = bytearray.fromhex('123456789abc')
+        t.read_local_bluetooth_address = lambda: (events.append('LOCAL_ADDRESS') or bytearray(address))
+        seen = {}
+
+        def provider(identity_path, address_fd):
+            seen['identity_path'] = identity_path
+            seen['address'] = os.read(address_fd, 32)
+            os.close(address_fd)
+            return bridge_input()
+
+        with mock.patch.object(trial.fe35_config, 'load_bridge_config', side_effect=provider):
+            self.assertEqual(t.run(mode='inbound', identity_file=pathlib.Path('synthetic-identity.json')), 0)
+        self.assertEqual(events, ['PREFLIGHT', 'GUARD_READY', 'TAKEOVER',
+                                  'LOCAL_ADDRESS', 'TRANSPORT', 'TRANSPORT_EXIT_CONFIRMED', 'RESTORE'])
+        self.assertEqual(seen['identity_path'], pathlib.Path('synthetic-identity.json'))
+        self.assertEqual(seen['address'], b'12:34:56:78:9A:BC')
+        self.assertEqual(channel.sent[-1], bytes.fromhex('01000000040002f40100'))
+        address[:] = bytes(len(address))
 
     def test_confirmed_transport_failures_release_then_restore_once(self):
         for failure in (RuntimeError('ACCEPT_FAILED'), RuntimeError('CLOSE_FAILED')):

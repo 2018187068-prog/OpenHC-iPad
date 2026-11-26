@@ -31,7 +31,8 @@ def frame(body):
 with tempfile.TemporaryDirectory(prefix="ohbt-", dir="/tmp") as directory:
     executable = str(Path(directory) / "query")
     subprocess.run(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                    "-DOPENHC_BTSTACK_TEST", str(root / "theos/btstack-probe.c"),
+                    "-DOPENHC_BTSTACK_TEST", "-DOPENHC_TRANSPORT_TEST_TIMEOUTS",
+                    str(root / "theos/btstack-probe.c"),
                     str(root / "scripts/fe35-control-bridge-test-stub.c"),
                     "-o", executable], check=True)
     cases = ["fragmented", "unrelated", "eof", "oversize", "bad_length",
@@ -100,6 +101,58 @@ with tempfile.TemporaryDirectory(prefix="ohbt-", dir="/tmp") as directory:
     assert missing.returncode == 1 and "BTSTACK_QUERY_FAILED=CONNECT" in missing.stdout
     print("BTSTACK_MOCK_CASE_OK=missing_socket")
     print("BTSTACK_MOCK_TESTS_OK=9")
+
+    # Read the local controller address only from HCI Read BD_ADDR completion;
+    # the synthetic peer asserts opcode, byte order, timeout, and failure paths.
+    address_cases = ("success", "controller_error", "timeout")
+    for case in address_cases:
+        endpoint = str(Path(directory) / "addr-s")
+        guard = Path(directory) / "guard"
+        guard.mkdir(exist_ok=True)
+        (guard / "ready").write_text("READY\n", encoding="ascii")
+        (guard / "deadline").write_text(str(int(time.time()) + 120), encoding="ascii")
+        errors = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(endpoint)
+            server.listen(1)
+            server.settimeout(8)
+
+            def address_server():
+                try:
+                    with server.accept()[0] as conn:
+                        conn.settimeout(6)
+                        header = exact(conn, 6)
+                        assert struct.unpack("<HHH", header) == (1, 0, 3)
+                        assert exact(conn, 3) == bytes([1, 0xf4, 0])
+                        conn.sendall(frame(bytes([0x60, 1, 2])))
+                        assert struct.unpack("<HHH", exact(conn, 6)) == (1, 0, 3)
+                        assert exact(conn, 3) == bytes([0x09, 0x10, 0])
+                        if case == "timeout":
+                            time.sleep(.4)
+                            return
+                        status = 1 if case == "controller_error" else 0
+                        # HCI stores BD_ADDR least-significant octet first.
+                        conn.sendall(frame(bytes([0x0e, 10, 1, 0x09, 0x10, status,
+                                                  0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12])))
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=address_server, daemon=True)
+            worker.start()
+            completed = subprocess.run([executable, endpoint, "--btstack-local-address", str(guard)],
+                                       capture_output=True, timeout=8)
+            worker.join(7)
+            assert not worker.is_alive(), "address peer did not finish"
+            assert not errors, errors
+            if case == "success":
+                assert completed.returncode == 0
+                assert completed.stdout == bytes.fromhex("123456789abc")
+            else:
+                assert completed.returncode == 1
+                assert completed.stdout == b""
+            print("BTSTACK_LOCAL_ADDRESS_CASE_OK=" + case)
+        os.unlink(endpoint)
+    print("BTSTACK_LOCAL_ADDRESS_TESTS_OK=3")
 
     def element(data, offset=0):
         """Independent minimal SDP DataElement decoder for emitted attributes."""

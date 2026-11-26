@@ -1,8 +1,9 @@
 """One guarded power trial over existing USB SSH; no peer operations.
 
 Inbound mode accepts either a bounded bridge config FD or an existing OpenHC
-identity file plus a Bluetooth address FD. Password input is read from stdin,
-never stored in artifacts.
+identity file. In the WORKING callback it reads local BD_ADDR through BTstack
+HCI Read BD_ADDR, then builds the bounded bridge config. Password input is read
+from stdin, never stored in artifacts.
 The independent device guard owns restoration, including on host/SSH failure.
 """
 import argparse
@@ -248,6 +249,50 @@ class Trial:
             self.heartbeat_failed.set()
             self.emit('HEARTBEAT_CHANNEL_FAILED_GUARD_WILL_RESTORE')
 
+    def read_local_bluetooth_address(self):
+        if self.heartbeat_failed.is_set():
+            raise LeaseUncertain('HEARTBEAT_FAILED_BEFORE_ADDRESS_QUERY')
+        command = shlex.join([TIMER, '-k', '2', '6',
+                              '/var/jb/usr/bin/openhc-bridge-check',
+                              '--btstack-local-address', self.state])
+        channel = None
+        data = bytearray()
+        deadline = time.monotonic() + 8
+        try:
+            channel = self.client.get_transport().open_session(timeout=4)
+            channel.settimeout(.5)
+            channel.exec_command(command)
+            while not channel.exit_status_ready():
+                if channel.recv_ready():
+                    data.extend(channel.recv(7 - len(data)))
+                    if len(data) > 6:
+                        raise RuntimeError('LOCAL_ADDRESS_RESPONSE_INVALID')
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('LOCAL_ADDRESS_QUERY_TIMEOUT')
+                time.sleep(.02)
+            while channel.recv_ready():
+                data.extend(channel.recv(7 - len(data)))
+            status = channel.recv_exit_status()
+            if status or len(data) != 6:
+                raise RuntimeError('LOCAL_ADDRESS_QUERY_FAILED')
+            if self.heartbeat_failed.is_set():
+                raise LeaseUncertain('HEARTBEAT_FAILED_AFTER_ADDRESS_QUERY')
+            return bytearray(data)
+        except (LeaseUncertain, RuntimeError):
+            raise
+        except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            raise RuntimeError('LOCAL_ADDRESS_QUERY_FAILED') from None
+        finally:
+            for index in range(len(data)):
+                data[index] = 0
+            if channel is not None:
+                try:
+                    channel.close()
+                except Exception:
+                    pass
+
     def run_inbound_transport(self, bridge_config):
         """Run only the fixed rootless inbound adapter in its own SSH channel."""
         if self.heartbeat_failed.is_set():
@@ -483,11 +528,14 @@ class Trial:
         self.emit('RESTORATION_VERIFIED_GUARD_DISARMED')
         return True
 
-    def run(self, mode='power-only', session_evidence=None, bridge_config=None):
+    def run(self, mode='power-only', session_evidence=None, bridge_config=None,
+            identity_file=None):
         if mode not in ('power-only', 'inbound'):
             raise ValueError('INVALID_MODE')
-        if mode == 'inbound' and (not isinstance(bridge_config, bytearray) or
-                                  not 1 <= len(bridge_config) <= 327):
+        if mode == 'inbound' and bridge_config is None and identity_file is None:
+            raise ValueError('IDENTITY_CONFIG_REQUIRED')
+        if mode == 'inbound' and bridge_config is not None and (
+                not isinstance(bridge_config, bytearray) or not 1 <= len(bridge_config) <= 327):
             raise ValueError('BOUNDED_BRIDGE_INPUT_REQUIRED')
         self.session_evidence = session_evidence
         powered = False
@@ -499,7 +547,31 @@ class Trial:
             self.takeover()
             channel = self.client.get_transport().open_channel('direct-streamlocal@openssh.com', timeout=4)
             try:
-                callback = (lambda: self.run_inbound_transport(bridge_config)) if mode == 'inbound' else None
+                if mode == 'inbound' and bridge_config is None:
+                    def callback():
+                        address = self.read_local_bluetooth_address()
+                        address_read, address_write = os.pipe()
+                        try:
+                            encoded_address = ':'.join('%02X' % b for b in address).encode('ascii')
+                            offset = 0
+                            while offset < len(encoded_address):
+                                offset += os.write(address_write, encoded_address[offset:])
+                            os.close(address_write)
+                            address_write = -1
+                            config = fe35_config.load_bridge_config(identity_file, address_read)
+                            address_read = -1
+                            try:
+                                self.run_inbound_transport(config)
+                            finally:
+                                config[:] = bytes(len(config))
+                        finally:
+                            for index in range(len(address)):
+                                address[index] = 0
+                            encoded_address = b''
+                            if address_write >= 0: os.close(address_write)
+                            if address_read >= 0: os.close(address_read)
+                else:
+                    callback = (lambda: self.run_inbound_transport(bridge_config)) if mode == 'inbound' else None
                 try:
                     PowerProtocol(channel, self.emit).run(on_working=callback)
                     transport = 'PASSED' if mode == 'inbound' else 'NOT_APPLICABLE'
@@ -545,8 +617,6 @@ def main(argv=None):
                         help='Read the already encoded bounded bridge input from an inherited file descriptor')
     parser.add_argument('--identity-file', type=pathlib.Path,
                         help='Read the existing openhc-identity.json schema; otherwise OPENHC_IDENTITY_DIR is used')
-    parser.add_argument('--bluetooth-address-fd', type=int,
-                        help='Read the runtime Bluetooth address from an inherited FD, never argv or environment')
     parser.add_argument('--session-evidence', type=pathlib.Path,
                         help='Fresh JSON metadata snapshot required when shared helpers are present')
     args = parser.parse_args(argv)
@@ -558,7 +628,7 @@ def main(argv=None):
         if args.bridge_config_fd is not None:
             if args.bridge_config_fd <= 2:
                 parser.error('--bridge-config-fd must be an inherited FD greater than 2')
-            if args.identity_file is not None or args.bluetooth_address_fd is not None:
+            if args.identity_file is not None:
                 parser.error('choose one inbound config source')
             try:
                 bridge_config = _read_bounded_input_fd(args.bridge_config_fd, 327, 'BRIDGE_CONFIG')
@@ -569,22 +639,21 @@ def main(argv=None):
             if identity_file is None:
                 identity_dir = os.environ.get('OPENHC_IDENTITY_DIR')
                 identity_file = pathlib.Path(identity_dir) / 'openhc-identity.json' if identity_dir else None
-            if args.bluetooth_address_fd is None or args.bluetooth_address_fd <= 2 or identity_file is None:
-                if args.bluetooth_address_fd is not None and args.bluetooth_address_fd > 2:
-                    os.close(args.bluetooth_address_fd)
-                parser.error('--mode inbound requires identity config and bluetooth address FD, or bridge config FD')
+            if identity_file is None:
+                parser.error('IDENTITY_CONFIG_UNAVAILABLE')
             try:
-                bridge_config = fe35_config.load_bridge_config(identity_file, args.bluetooth_address_fd)
+                if not identity_file.is_file():
+                    parser.error('IDENTITY_CONFIG_UNAVAILABLE')
             except fe35_config.ConfigError as error:
                 parser.error(str(error))
     try:
-        return _run_trial(args, bridge_config)
+        return _run_trial(args, bridge_config, identity_file if args.mode == 'inbound' and args.bridge_config_fd is None else None)
     finally:
         if isinstance(bridge_config, bytearray):
             bridge_config[:] = bytes(len(bridge_config))
 
 
-def _run_trial(args, bridge_config):
+def _run_trial(args, bridge_config, identity_file=None):
     evidence = None
     if args.session_evidence:
         evidence = json.loads(args.session_evidence.read_text(encoding='utf-8'))
@@ -607,7 +676,7 @@ def _run_trial(args, bridge_config):
         password = None
         with logfile.open('w', encoding='utf-8') as log:
             result = Trial(client, log).run(mode=args.mode, session_evidence=evidence,
-                                           bridge_config=bridge_config)
+                                           bridge_config=bridge_config, identity_file=identity_file)
         print('LOG_PATH=' + str(logfile), flush=True)
         return result
     finally:

@@ -1,0 +1,9 @@
+Package: com.gcbond.openhc-scan-demo
+Name: OpenHC Scan Demo
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Synthetic scan UI demonstration; no phone connectivity
+Maintainer: OpenHC-iPad validation
+Author: OpenHC-iPad validation
+Section: Development
+Depends: firmware (>= 15.0)

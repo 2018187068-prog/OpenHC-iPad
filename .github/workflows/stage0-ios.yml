@@ -141,6 +141,11 @@ jobs:
           grep -q 'var/jb/usr/bin/openhc-bridge-check' ../artifacts/logs/deb-layout.log
           grep -q 'iphoneos-arm64' ../artifacts/logs/deb-control.log
           bash ../scripts/verify-device-binary.sh "$binary"
+      - name: Validate UIKit scan demo and rootless application package
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/check-scan-ui.sh 2>&1 | tee artifacts/logs/scan-ui-check.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

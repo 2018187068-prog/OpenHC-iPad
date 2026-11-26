@@ -278,12 +278,14 @@ def run_case(args, case):
     server.bind(("127.0.0.1", 0))
     endpoint = "tcp:" + str(server.getsockname()[1])
     server.listen(1)
-    server.settimeout(8)
+    # Allow bounded Simulator launch latency before refusing an unconnected client.
+    server.settimeout(45)
 
     def serve():
         peer_step = ["accept"]
         try:
             with server.accept()[0] as conn:
+                conn.settimeout(6)
                 drive_peer(conn, case, lambda value: peer_step.__setitem__(0, value))
         except Exception as exc:
             errors.append((peer_step[0], repr(exc)))
@@ -291,12 +293,12 @@ def run_case(args, case):
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()
     guard_rel = "Documents/" + guard.name
-    started = time.monotonic()
     launch = subprocess.run([
         "xcrun", "simctl", "launch", args.udid, args.bundle_id,
         endpoint, guard_rel,
     ], capture_output=True, text=True, timeout=30)
     check(launch.returncode == 0, "simulator CLI process launched")
+    cli_started = time.monotonic()
     expected_status = 0 if case == "success" else 1
     for _ in range(60):
         if result_file.exists():
@@ -316,8 +318,8 @@ def run_case(args, case):
     check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
           "Trial remains heartbeat owner")
     shutil.rmtree(guard)
-    elapsed = time.monotonic() - started
-    check(elapsed < 10, "bounded CLI scenario completion")
+    elapsed = time.monotonic() - cli_started
+    check(elapsed < 10, "bounded CLI scenario completion after launch")
     print("FE35_KN_INBOUND_CASE_OK=" + case)
     print("FE35_KN_INBOUND_CASE_ASSERTIONS=" + str(ASSERTIONS - started_assertions))
 

@@ -107,6 +107,14 @@ jobs:
           brew install ldid dpkg
           git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+      - name: Validate demo archive writer before either demo package build
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/logs
+          python3 scripts/test-scan-demo-archive.py 2>&1 | tee artifacts/logs/scan-demo-archive-tests.log
+          python3 scripts/test-scan-demo-archive.py --native-writer scripts/scan-demo-dpkg-deb.sh 2>&1 | tee artifacts/logs/scan-demo-native-writer.log
       - name: Build rootless Theos package
         if: always()
         shell: bash
@@ -156,7 +164,6 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/logs
-          python3 scripts/test-scan-demo-archive.py 2>&1 | tee artifacts/logs/scan-demo-archive-tests.log
           bash scripts/check-scan-supervisor-helper.sh 2>&1 | tee artifacts/logs/scan-supervisor-check.log
       - uses: actions/upload-artifact@v4
         if: always()

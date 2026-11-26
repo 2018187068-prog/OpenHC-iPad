@@ -1,5 +1,12 @@
 # FE35 Bridge Checkpoint
 
+## Native dpkg compression compatibility repair (2026-11-27)
+
+- Run `45855259305` / `c3054e4f37cbdee0b394694a773faa9d3ae0b4e2` completed with failure: both demo packaging steps rejected Theos' default `-Zlzma` with `dpkg-deb: obsolete compression type lzma; use xz instead`. The runner installed Homebrew dpkg `1.23.12`. The Simulator app (including the newly committed client wiring) compiled and passed 41 UIKit assertions plus three system QR decoder cases, but no accepted demo DEBs were produced; those step results do not make the overall run green.
+- Both demo Makefiles now set the documented `THEOS_PLATFORM_DEB_COMPRESSION_TYPE = xz`, which Theos `makefiles/package/deb.mk` passes to the selected writer as `-Zxz`. The existing native writer continues to use `--root-owner-group`; no root/peer/mode check is loosened. `--require-xz` now rejects non-xz data archives in both real package validation paths.
+- Local archive suite: 15/15 passed (the original 13 ownership/path/mode/link/script checks plus xz positive and incompatible-format negative tests). Windows has no native dpkg and no installed WSL environment; no local same-version native read/write pass is claimed. A required CI preflight, before either demo package build, now invokes the real runner writer and real `dpkg-deb --info`, `--contents`, `--ctrl-tarfile` and `--fsys-tarfile` against both synthetic package layouts. It records the actual dpkg version and rechecks numeric tar UID/GID, permissions and link/script boundaries; the subsequent actual app/helper DEBs must independently pass the archive checker before publication.
+- This is one focused compression compatibility candidate; new CI/package acceptance and digests remain pending actual execution. Old artifact `15133189055` remains forbidden for installation. No device login, installation, identity or Bluetooth operation occurred.
+
 ## Demo archive ownership repair — local checks (2026-11-27)
 
 - Both demo package targets select native `dpkg-deb --root-owner-group` through a dedicated Theos writer wrapper. Only archived metadata is normalized; no staging or rootless host directory is recursively chowned. Production runtime root ownership and `getpeereid` checks remain intact. `scripts/check-scan-demo-archive.py` requires numeric `0:0`, exact `0755`/`0644` modes, expected layouts and fixed launchd configuration, and rejects links/special files/traversal/maintainer scripts before publishing the packages.

@@ -11,7 +11,7 @@ make -C "$project" package FINALPACKAGE=1 THEOS="$THEOS" \
   TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S
 package="$(find "$project/packages" -name '*.deb' -print -quit)"
 test -n "$package"
-python3 "$repo_root/scripts/check-scan-demo-archive.py" "$package"
+python3 "$repo_root/scripts/check-scan-demo-archive.py" --require-xz "$package"
 dpkg-deb -f "$package" Package Architecture | tee "$test_root/control.txt"
 dpkg-deb -x "$package" "$test_root/root"
 helper="$test_root/root/var/jb/usr/libexec/openhc-scan-ping-helper"

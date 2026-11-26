@@ -4,7 +4,10 @@ import importlib.util
 import io
 import pathlib
 import plistlib
+import subprocess
+import sys
 import tarfile
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location('archive_check', pathlib.Path(__file__).with_name('check-scan-demo-archive.py'))
@@ -12,15 +15,15 @@ checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 
 
-def tar(entries):
+def tar(entries, compression='gz'):
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode='w:gz') as out:
+    with tarfile.open(fileobj=buffer, mode='w:'+compression) as out:
         for info, content in entries:
             out.addfile(info, io.BytesIO(content) if content is not None else None)
     return buffer.getvalue()
 
 
-def fixture(package, mutate=None, mutate_control=None):
+def fixture(package, mutate=None, mutate_control=None, compression='gz'):
     entries = []
     for name, mode in checker.LAYOUTS[package].items():
         info = tarfile.TarInfo(name)
@@ -47,12 +50,14 @@ def fixture(package, mutate=None, mutate_control=None):
     control = tarfile.TarInfo('./control')
     control.mode = 0o644
     content = (f'Package: {package}\nVersion: 0.1.0\nArchitecture: iphoneos-arm64\n'
-               'Depends: firmware (>= 15.0)\n').encode()
+               'Depends: firmware (>= 15.0)\nDescription: Synthetic archive test\n'
+               'Maintainer: OpenHC validation\n').encode()
     control.size = len(content)
     controls = [(control, content)]
     if mutate_control:
         mutate_control(controls)
-    parts = [('debian-binary', b'2.0\n'), ('control.tar.gz', tar(controls)), ('data.tar.gz', tar(entries))]
+    parts = [('debian-binary', b'2.0\n'), ('control.tar.'+compression, tar(controls, compression)),
+             ('data.tar.'+compression, tar(entries, compression))]
     raw = b'!<arch>\n'
     for name, payload in parts:
         header = f'{name+"/":<16}{0:<12}{0:<6}{0:<6}{"100644":<8}{len(payload):<10}`\n'.encode()
@@ -71,6 +76,15 @@ class ArchiveTests(unittest.TestCase):
     def test_root_owned_packages_pass(self):
         for package in checker.LAYOUTS:
             self.assertEqual(checker.check(fixture(package)), package)
+
+    def test_xz_packages_preserve_archive_checks(self):
+        for package in checker.LAYOUTS:
+            self.assertEqual(checker.check(fixture(package, compression='xz'), require_xz=True), package)
+
+    def test_required_xz_rejects_other_compression(self):
+        for package in checker.LAYOUTS:
+            with self.assertRaisesRegex(checker.InvalidArchive, 'DATA_COMPRESSION_NOT_XZ'):
+                checker.check(fixture(package), require_xz=True)
 
     def test_old_builder_uid_gid_rejected(self):
         def change(entries):
@@ -132,5 +146,40 @@ class ArchiveTests(unittest.TestCase):
                 checker.check(fixture(package, mutate_control=change))
 
 
+def native_writer_roundtrip(writer):
+    """Use the runner's actual dpkg for both package writing and reading."""
+    version = subprocess.check_output(['dpkg-deb', '--version'], text=True).splitlines()[0]
+    print('SCAN_DEMO_NATIVE_DPKG_VERSION='+version, flush=True)
+    with tempfile.TemporaryDirectory(prefix='openhc-demo-deb-roundtrip-') as directory:
+        for package in checker.LAYOUTS:
+            stage = pathlib.Path(directory)/package
+            stage.mkdir(mode=0o755)
+            stage.chmod(0o755)
+            control, data = checker.read_deb(fixture(package))
+            # These entries come only from the fixed internal positive fixture.
+            for archive, prefix in ((control, 'DEBIAN'), (data, '')):
+                for name, (info, content) in checker.read_tar(archive).items():
+                    target = stage/prefix/name
+                    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    if info.isdir():
+                        target.mkdir(mode=info.mode, exist_ok=True)
+                    else:
+                        target.write_bytes(content)
+                    target.chmod(info.mode)
+            output = pathlib.Path(directory)/(package+'.deb')
+            subprocess.run([str(pathlib.Path(writer).resolve()), '-Zxz', '-b', str(stage), str(output)], check=True)
+            raw = output.read_bytes()
+            assert checker.check(raw, require_xz=True) == package
+            subprocess.run(['dpkg-deb', '--info', str(output)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(['dpkg-deb', '--contents', str(output)], check=True, stdout=subprocess.DEVNULL)
+            # Check numeric uid/gid/modes and reject links in dpkg's decoded tars too.
+            for option in ('--ctrl-tarfile', '--fsys-tarfile'):
+                checker.read_tar(subprocess.check_output(['dpkg-deb', option, str(output)]))
+            print('SCAN_DEMO_NATIVE_DPKG_ROUNDTRIP_OK='+package, flush=True)
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    if len(sys.argv) == 3 and sys.argv[1] == '--native-writer':
+        native_writer_roundtrip(sys.argv[2])
+    else:
+        unittest.main(verbosity=2)

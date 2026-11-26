@@ -83,8 +83,10 @@ def read_tar(raw):
     return entries
 
 
-def check(raw):
+def check(raw, require_xz=False):
     control_raw, data_raw = read_deb(raw)
+    if require_xz:
+        require(data_raw.startswith(b'\xfd7zXZ\x00'), 'DATA_COMPRESSION_NOT_XZ')
     control = read_tar(control_raw)
     require(set(control) == {'control'}, 'CONTROL_SCRIPTS_OR_UNEXPECTED_FILES')
     require(control['control'][0].isreg() and control['control'][0].mode == 0o644, 'CONTROL_MODE')
@@ -117,11 +119,12 @@ def check(raw):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--require-xz', action='store_true')
     parser.add_argument('packages', nargs='+', type=pathlib.Path)
     args = parser.parse_args()
     for package in args.packages:
         raw = package.read_bytes()
-        name = check(raw)
+        name = check(raw, require_xz=args.require_xz)
         print(f'SCAN_DEMO_ARCHIVE_OK package={name} version=0.1.0 sha256={hashlib.sha256(raw).hexdigest()}')
 
 

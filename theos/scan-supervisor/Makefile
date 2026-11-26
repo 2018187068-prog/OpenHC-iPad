@@ -1,6 +1,8 @@
 ARCHS = arm64
 TARGET = iphone:clang:latest:15.0
 THEOS_PACKAGE_SCHEME = rootless
+# Match the app target; native dpkg no longer accepts Theos' lzma default.
+THEOS_PLATFORM_DEB_COMPRESSION_TYPE = xz
 
 include $(THEOS)/makefiles/common.mk
 

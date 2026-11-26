@@ -66,7 +66,7 @@ echo SCAN_UI_SIMULATOR_ACCEPTANCE_OK
 make -C "$repo_root/theos/scan-ui" package FINALPACKAGE=1 THEOS="$THEOS" \
   TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S
 package="$(find "$repo_root/theos/scan-ui/packages" -name '*.deb' -print -quit)"
-python3 "$repo_root/scripts/check-scan-demo-archive.py" "$package"
+python3 "$repo_root/scripts/check-scan-demo-archive.py" --require-xz "$package"
 cp "$package" "$repo_root/artifacts/scan-ui/"
 dpkg-deb -c "$package"
 dpkg-deb -f "$package" Package Architecture

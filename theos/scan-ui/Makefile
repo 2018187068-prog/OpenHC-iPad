@@ -1,6 +1,8 @@
 ARCHS = arm64
 TARGET = iphone:clang:latest:15.0
 THEOS_PACKAGE_SCHEME = rootless
+# Native dpkg removed lzma output; Theos deb.mk exposes this compression knob.
+THEOS_PLATFORM_DEB_COMPRESSION_TYPE = xz
 
 include $(THEOS)/makefiles/common.mk
 

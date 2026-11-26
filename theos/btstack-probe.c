@@ -439,7 +439,7 @@ static size_t service_record_uuid128(uint8_t *out, const uint8_t uuid[16], uint8
         0x35, 3, 0x19, 1, 0, 0x35, 5, 0x19, 0, 3, 0x08, channel,
         0x09, 0, 5, 0x35, 3, 0x19, 0x10, 2
     };
-    memcpy(record + 7, uuid, 16);
+    memcpy(record + 8, uuid, 16);
     memcpy(out, record, sizeof(record));
     return sizeof(record);
 }

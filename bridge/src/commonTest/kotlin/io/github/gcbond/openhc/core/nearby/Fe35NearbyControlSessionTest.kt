@@ -110,7 +110,7 @@ class Fe35NearbyControlSessionTest {
         assertEquals("INPUT_DISCARDED", session.feed(hex("00")).single().kind)
         val partial = newSession()
         partial.start(0)
-        assertTrue(partial.feed(hex("7f808080010084")).isEmpty())
+        assertTrue(partial.feed(hex("7f8080808180")).isEmpty())
         partial.close()
         assertEquals("INPUT_DISCARDED", session.feed(ByteArray(64 * 1024 + 1)).single().kind)
         assertFalse(session.isHandshakeComplete)

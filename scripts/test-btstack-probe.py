@@ -148,8 +148,8 @@ with tempfile.TemporaryDirectory(prefix="ohbt-", dir="/tmp") as directory:
                 assert completed.returncode == 0
                 assert completed.stdout == bytes.fromhex("123456789abc")
             else:
-                assert completed.returncode == 1
-                assert completed.stdout == b""
+                assert completed.returncode == 1, (case, completed.returncode, completed.stdout)
+                assert completed.stdout == b"", (case, completed.stdout)
             print("BTSTACK_LOCAL_ADDRESS_CASE_OK=" + case)
         os.unlink(endpoint)
     print("BTSTACK_LOCAL_ADDRESS_TESTS_OK=3")

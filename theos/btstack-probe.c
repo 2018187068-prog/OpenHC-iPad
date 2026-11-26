@@ -185,7 +185,7 @@ static int local_bd_addr(const char *path, const char *run_dir, uint8_t address[
     }
 done:
     if (fd >= 0) close(fd);
-    return result;
+    return result ? 1 : 0;
 }
 
 static int transport_local_address(const char *path, const char *run_dir) {

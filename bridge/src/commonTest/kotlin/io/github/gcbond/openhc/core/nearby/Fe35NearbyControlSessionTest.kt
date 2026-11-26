@@ -31,7 +31,7 @@ class Fe35NearbyControlSessionTest {
         })
         try {
             assertEquals("SEND_FRAME", bridge.start(1_000).single().kind)
-            val events = bridge.feed(hex(PHONE_FIRST) + hex(PHONE_AUTH_REQUEST_SEED_D))
+            val events = bridge.feed(hex(PHONE_FIRST) + phoneAuthRequestFrame())
             assertEquals(listOf("SEND_FRAME", "HANDSHAKE_COMPLETED", "OPEN_AUTH_LISTENER"), events.map { it.kind })
             assertContentEquals(fe36, events.last().serviceUuid)
             val reply = bridge.listenerReady(4).single()

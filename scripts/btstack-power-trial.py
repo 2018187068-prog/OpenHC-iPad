@@ -1,6 +1,7 @@
-"""One guarded power-only trial over existing USB SSH; no peer operations.
+"""One guarded power trial over existing USB SSH; no peer operations.
 
-Requires Paramiko. Password input is read from stdin, never stored in artifacts.
+Inbound mode requires a caller-supplied bounded bridge config FD. Password input
+is read from stdin, never stored in artifacts.
 The independent device guard owns restoration, including on host/SSH failure.
 """
 import argparse
@@ -8,8 +9,10 @@ import datetime
 import getpass
 import importlib.util
 import json
+import os
 import pathlib
 import plistlib
+import select
 import shlex
 import socket
 import struct
@@ -241,10 +244,12 @@ class Trial:
             self.heartbeat_failed.set()
             self.emit('HEARTBEAT_CHANNEL_FAILED_GUARD_WILL_RESTORE')
 
-    def run_inbound_transport(self):
+    def run_inbound_transport(self, bridge_config):
         """Run only the fixed rootless inbound adapter in its own SSH channel."""
         if self.heartbeat_failed.is_set():
             raise LeaseUncertain('HEARTBEAT_FAILED_BEFORE_TRANSPORT')
+        if not isinstance(bridge_config, bytearray) or not 1 <= len(bridge_config) <= 327:
+            raise RuntimeError('BOUNDED_BRIDGE_INPUT_REQUIRED')
         command = shlex.join([TIMER, '-k', '2', str(INBOUND_RUN_SECONDS),
                               '/var/jb/usr/bin/openhc-bridge-check',
                               '--btstack-control-inbound', self.state])
@@ -256,6 +261,9 @@ class Trial:
             channel.settimeout(1)
             channel.set_combine_stderr(True)
             channel.exec_command(command)
+            channel.sendall(bridge_config)
+            channel.shutdown_write()
+            bridge_config[:] = bytes(len(bridge_config))
             while True:
                 if channel.recv_ready():
                     chunk = channel.recv(min(4096, 65537 - len(output)))
@@ -471,9 +479,12 @@ class Trial:
         self.emit('RESTORATION_VERIFIED_GUARD_DISARMED')
         return True
 
-    def run(self, mode='power-only', session_evidence=None):
+    def run(self, mode='power-only', session_evidence=None, bridge_config=None):
         if mode not in ('power-only', 'inbound'):
             raise ValueError('INVALID_MODE')
+        if mode == 'inbound' and (not isinstance(bridge_config, bytearray) or
+                                  not 1 <= len(bridge_config) <= 327):
+            raise ValueError('BOUNDED_BRIDGE_INPUT_REQUIRED')
         self.session_evidence = session_evidence
         powered = False
         restored = False
@@ -484,7 +495,7 @@ class Trial:
             self.takeover()
             channel = self.client.get_transport().open_channel('direct-streamlocal@openssh.com', timeout=4)
             try:
-                callback = self.run_inbound_transport if mode == 'inbound' else None
+                callback = (lambda: self.run_inbound_transport(bridge_config)) if mode == 'inbound' else None
                 try:
                     PowerProtocol(channel, self.emit).run(on_working=callback)
                     transport = 'PASSED' if mode == 'inbound' else 'NOT_APPLICABLE'
@@ -501,6 +512,8 @@ class Trial:
         except Exception as error:
             self.emit('POWER_TRIAL_FAILED=' + type(error).__name__ + ':' + str(error))
         finally:
+            if isinstance(bridge_config, bytearray):
+                bridge_config[:] = bytes(len(bridge_config))
             self.stop_heartbeat.set()
             if self.heartbeat_thread:
                 self.heartbeat_thread.join(timeout=3)
@@ -524,12 +537,37 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true', help='Perform exactly one guarded device trial')
     parser.add_argument('--mode', choices=('power-only', 'inbound'), default='power-only')
+    parser.add_argument('--bridge-config-fd', type=int,
+                        help='Read the bounded caller-supplied bridge input from this inherited file descriptor')
     parser.add_argument('--session-evidence', type=pathlib.Path,
                         help='Fresh JSON metadata snapshot required when shared helpers are present')
     args = parser.parse_args()
     if not args.execute:
         print('NO_DEVICE_ACTION: pass --execute explicitly')
         return 2
+    bridge_config = None
+    if args.mode == 'inbound':
+        if args.bridge_config_fd is None or args.bridge_config_fd <= 2:
+            parser.error('--mode inbound requires an inherited config FD greater than 2')
+        bridge_config = bytearray()
+        deadline = time.monotonic() + 3
+        while len(bridge_config) <= 327:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                bridge_config[:] = bytes(len(bridge_config))
+                parser.error('bridge config input deadline exceeded')
+            ready, _, _ = select.select([args.bridge_config_fd], [], [], remaining)
+            if not ready:
+                bridge_config[:] = bytes(len(bridge_config))
+                parser.error('bridge config input deadline exceeded')
+            chunk = os.read(args.bridge_config_fd, 328 - len(bridge_config))
+            if not chunk:
+                break
+            bridge_config.extend(chunk)
+        os.close(args.bridge_config_fd)
+        if not 1 <= len(bridge_config) <= 327:
+            bridge_config[:] = bytes(len(bridge_config))
+            parser.error('bridge config input must be 1..327 bytes')
     evidence = None
     if args.session_evidence:
         evidence = json.loads(args.session_evidence.read_text(encoding='utf-8'))
@@ -551,10 +589,13 @@ def main():
                        auth_timeout=30, banner_timeout=15, transport_factory=FixedStreamlocalTransport)
         password = None
         with logfile.open('w', encoding='utf-8') as log:
-            result = Trial(client, log).run(mode=args.mode, session_evidence=evidence)
+            result = Trial(client, log).run(mode=args.mode, session_evidence=evidence,
+                                           bridge_config=bridge_config)
         print('LOG_PATH=' + str(logfile), flush=True)
         return result
     finally:
+        if isinstance(bridge_config, bytearray):
+            bridge_config[:] = bytes(len(bridge_config))
         password = None
         client.close()
 

@@ -47,7 +47,7 @@ int main(int argc, const char *argv[]) {
         } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
             puts("OPENHC_STAGE0_VERSION=0.3.5");
         } else {
-            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--session-owner|--fe35-bridge-smoke|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--btstack-control-inbound RUN_DIR|--version]\n", stderr);
+            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--session-owner|--fe35-bridge-smoke|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--btstack-control-inbound RUN_DIR <binary bridge config on stdin>|--version]\n", stderr);
             return 2;
         }
     }

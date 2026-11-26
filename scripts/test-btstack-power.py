@@ -22,6 +22,11 @@ def event(state):
     return struct.pack('<HHHBBB', 4, 0, 3, 0x60, 1, state)
 
 
+def bridge_input():
+    return bytearray(bytes([1, 1]) + b'x' + bytes([16]) + bytes(16) +
+                     bytes([16]) + bytes(16) + bytes([16]) + bytes(16))
+
+
 class Channel:
     def __init__(self, data):
         self.data = data
@@ -81,6 +86,8 @@ class FakeRemoteChannel:
         self.error = error
         self.exit_ready = exit_ready
         self.command = None
+        self.stdin_data = bytearray()
+        self.write_shutdown = False
 
     def settimeout(self, _):
         pass
@@ -92,6 +99,14 @@ class FakeRemoteChannel:
         self.command = command
         if self.error:
             raise self.error
+
+    def sendall(self, data):
+        if self.error:
+            raise self.error
+        self.stdin_data.extend(data)
+
+    def shutdown_write(self):
+        self.write_shutdown = True
 
     def recv_ready(self):
         if self.error:
@@ -130,7 +145,7 @@ class IntegratedModeTests(unittest.TestCase):
         t.arm = lambda: events.append('GUARD_READY')
         t.takeover = lambda: events.append('TAKEOVER')
         t.restore = lambda: (events.append('RESTORE') or True)
-        def run_transport():
+        def run_transport(_bridge_config):
             events.append('TRANSPORT')
             if callback_result:
                 raise callback_result
@@ -140,17 +155,25 @@ class IntegratedModeTests(unittest.TestCase):
 
     def test_inbound_order_is_working_transport_exit_off_restore(self):
         t, channel, events = self.make_trial()
-        self.assertEqual(t.run(mode='inbound'), 0)
+        config = bridge_input()
+        self.assertEqual(t.run(mode='inbound', bridge_config=config), 0)
+        self.assertTrue(all(byte == 0 for byte in config))
         self.assertEqual(events, ['PREFLIGHT', 'GUARD_READY', 'TAKEOVER',
                                   'TRANSPORT', 'TRANSPORT_EXIT_CONFIRMED', 'RESTORE'])
         self.assertEqual(len(channel.sent), 3)
         self.assertEqual(channel.sent[-1], bytes.fromhex('01000000040002f40100'))
 
+    def test_inbound_requires_caller_config_before_device_work(self):
+        t, _, events = self.make_trial()
+        with self.assertRaisesRegex(ValueError, 'BOUNDED_BRIDGE_INPUT_REQUIRED'):
+            t.run(mode='inbound')
+        self.assertEqual(events, [])
+
     def test_confirmed_transport_failures_release_then_restore_once(self):
         for failure in (RuntimeError('ACCEPT_FAILED'), RuntimeError('CLOSE_FAILED')):
             with self.subTest(failure=failure):
                 t, channel, events = self.make_trial(failure)
-                self.assertEqual(t.run(mode='inbound'), 1)
+                self.assertEqual(t.run(mode='inbound', bridge_config=bridge_input()), 1)
                 self.assertEqual(events.count('RESTORE'), 1)
                 self.assertEqual(channel.sent[-1], bytes.fromhex('01000000040002f40100'))
 
@@ -158,7 +181,7 @@ class IntegratedModeTests(unittest.TestCase):
         for failure in (trial.LeaseUncertain('TIMEOUT'), trial.LeaseUncertain('SSH_LOSS')):
             with self.subTest(failure=failure):
                 t, channel, events = self.make_trial(failure)
-                self.assertEqual(t.run(mode='inbound'), 1)
+                self.assertEqual(t.run(mode='inbound', bridge_config=bridge_input()), 1)
                 self.assertEqual(events.count('RESTORE'), 0)
                 self.assertEqual(len(channel.sent), 2)
                 self.assertTrue(t.guard_owns_recovery)
@@ -175,24 +198,29 @@ class IntegratedModeTests(unittest.TestCase):
         t.client = FakeSSH(Channel(b''))
         t.client.transport = FakeCommandTransport(Channel(b''), remote)
         t.state = trial.REMOTE_BASE + '/generated-run-id'
-        t.run_inbound_transport()
+        config = bridge_input()
+        original_config = bytes(config)
+        t.run_inbound_transport(config)
         import shlex
         self.assertEqual(shlex.split(remote.command), [trial.TIMER, '-k', '2',
             str(trial.INBOUND_RUN_SECONDS), '/var/jb/usr/bin/openhc-bridge-check',
             '--btstack-control-inbound', t.state])
         self.assertIn('INCOMING=1', t.log.getvalue())
+        self.assertTrue(remote.write_shutdown)
+        self.assertTrue(all(byte == 0 for byte in config))
+        self.assertEqual(bytes(remote.stdin_data), original_config)
 
     def test_ssh_loss_timeout_and_cancel_are_unconfirmed(self):
         lost = FakeRemoteChannel(error=OSError('SSH_LOST'))
         t = trial.Trial(FakeSSH(Channel(b'')), io.StringIO())
         t.client.transport = FakeCommandTransport(Channel(b''), lost)
         with self.assertRaisesRegex(trial.LeaseUncertain, 'OSError'):
-            t.run_inbound_transport()
+            t.run_inbound_transport(bridge_input())
 
         cancel = FakeRemoteChannel(error=KeyboardInterrupt())
         t.client.transport = FakeCommandTransport(Channel(b''), cancel)
         with self.assertRaisesRegex(trial.LeaseUncertain, 'KeyboardInterrupt'):
-            t.run_inbound_transport()
+            t.run_inbound_transport(bridge_input())
 
         hung = FakeRemoteChannel(output=b'', exit_ready=False)
         t.client.transport = FakeCommandTransport(Channel(b''), hung)
@@ -200,7 +228,7 @@ class IntegratedModeTests(unittest.TestCase):
         with mock.patch.object(trial.time, 'monotonic', side_effect=lambda: next(ticks)), \
              mock.patch.object(trial.time, 'sleep'):
             with self.assertRaisesRegex(trial.LeaseUncertain, 'TIMEOUT'):
-                t.run_inbound_transport()
+                t.run_inbound_transport(bridge_input())
 
     def test_working_callback_failure_still_releases_once(self):
         c = Channel(event(0) + event(1) + event(2) + event(3) + event(0))

@@ -15,9 +15,48 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#include "fe35-control-bridge.h"
 
 static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned size);
 static int connect_daemon(const char *path);
+static int64_t now_ms(void);
+static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
+                            int64_t deadline, const char *run_dir);
+
+static int require_input_eof(int fd, int64_t deadline) {
+    for (;;) {
+        int64_t now = now_ms();
+        if (now < 0 || now >= deadline) return -1;
+        struct pollfd p = {fd, POLLIN, 0};
+        int ready_count = poll(&p, 1, (int)(deadline - now));
+        if (ready_count < 0 && errno == EINTR) continue;
+        if (ready_count <= 0 || !(p.revents & (POLLIN | POLLHUP))) return -1;
+        uint8_t extra;
+        ssize_t n = read(fd, &extra, 1);
+        if (n < 0 && errno == EINTR) continue;
+        return n == 0 ? 0 : -1;
+    }
+}
+
+static int read_bridge_input(fe35_bridge_input *input) {
+    uint8_t header[2], length;
+    uint8_t *parts[] = {NULL, input->root_key, input->const_a, input->const_b};
+    size_t *sizes[] = {NULL, &input->root_key_size, &input->const_a_size, &input->const_b_size};
+    memset(input, 0, sizeof(*input));
+    int64_t deadline = now_ms() + 3000;
+    if (transfer_guarded(STDIN_FILENO, header, sizeof(header), 0, deadline, NULL)) return -1;
+    if (header[0] != 1 || header[1] == 0 || header[1] > sizeof(input->device_id) - 1) return -1;
+    if (transfer_guarded(STDIN_FILENO, (uint8_t *)input->device_id, header[1], 0, deadline, NULL)) return -1;
+    if (memchr(input->device_id, 0, header[1])) return -1;
+    input->device_id[header[1]] = 0;
+    for (unsigned i = 1; i <= 3; ++i) {
+        if (transfer_guarded(STDIN_FILENO, &length, 1, 0, deadline, NULL) ||
+            length == 0 || length > 64 ||
+            transfer_guarded(STDIN_FILENO, parts[i], length, 0, deadline, NULL)) return -1;
+        *sizes[i] = length;
+    }
+    return require_input_eof(STDIN_FILENO, deadline);
+}
 
 static int64_t now_ms(void) {
     struct timespec t;
@@ -374,20 +413,125 @@ static size_t service_record(uint8_t *out, uint16_t uuid, uint8_t channel) {
     return sizeof(record);
 }
 
-/* Passive FE35 milestone: register the local SDP/RFCOMM listener, accept one
- * incoming request, validate the opened event, then close without reading the
- * RFCOMM data channel. Addresses and data payloads are never retained/logged.
+static size_t service_record_uuid128(uint8_t *out, const uint8_t uuid[16], uint8_t channel) {
+    uint8_t record[] = {
+        0x35, 47,
+        0x09, 0, 1, 0x35, 17, 0x1c,
+        0, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0x80, 0x5f, 0x9b, 0x34, 0xfb,
+        0x09, 0, 4, 0x35, 12,
+        0x35, 3, 0x19, 1, 0, 0x35, 5, 0x19, 0, 3, 0x08, channel,
+        0x09, 0, 5, 0x35, 3, 0x19, 0x10, 2
+    };
+    memcpy(record + 7, uuid, 16);
+    memcpy(out, record, sizeof(record));
+    return sizeof(record);
+}
+
+static int open_auth_listener(int fd, const uint8_t uuid[16], uint8_t *channel_out,
+                              uint32_t *handle_out) {
+    uint8_t reply[7];
+    for (uint8_t channel = 16; channel <= 23; ++channel) {
+        uint8_t params[] = {channel, 0, 2};
+        if (exchange(fd, 0x42, params, sizeof(params), 0x85, reply, 4) || reply[3] != channel) return -1;
+        if (reply[2] == 0) {
+            *channel_out = channel;
+            break;
+        }
+        if (reply[2] != 0x71) return -1;
+    }
+    if (!*channel_out) return -1;
+    uint8_t record[64];
+    size_t record_size = service_record_uuid128(record, uuid, *channel_out);
+    if (exchange(fd, 0x30, record, record_size, 0x90, reply, 7) || reply[2]) return -1;
+    *handle_out = le32(reply + 3);
+    return *handle_out >= 0x10000 ? 0 : -1;
+}
+
+static int close_auth_listener(int fd, uint8_t channel, uint32_t handle) {
+    int64_t deadline = now_ms() + 4000;
+    if (handle) {
+        uint8_t params[] = {(uint8_t)handle, (uint8_t)(handle >> 8),
+                            (uint8_t)(handle >> 16), (uint8_t)(handle >> 24)};
+        if (command(fd, 0x31, params, sizeof(params), deadline)) return -1;
+    }
+    if (channel) {
+        uint8_t params[] = {channel, 0};
+        if (command(fd, 0x43, params, sizeof(params), deadline)) return -1;
+    }
+    if (channel || handle) {
+        uint8_t barrier[3];
+        if (query(fd, 1, 0x60, barrier, sizeof(barrier))) return -1;
+    }
+    return 0;
+}
+
+static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge,
+                                 fe35_bridge_batch batch, uint8_t *auth_channel,
+                                 uint32_t *auth_handle, uint8_t auth_uuid[16],
+                                 int64_t deadline, const char *run_dir) {
+    size_t count = fe35_bridge_event_count(batch);
+    int result = 0;
+    if (count > FE35_BRIDGE_MAX_EVENTS) result = -1;
+    for (size_t i = 0; !result && i < count; ++i) {
+        fe35_bridge_event event;
+        if (fe35_bridge_copy_event(batch, i, &event)) { result = -1; break; }
+        if (strcmp(event.kind, "SEND_FRAME") == 0) {
+            if (!event.frame_size || event.frame_size > FE35_BRIDGE_MAX_FRAME) result = -1;
+            for (size_t offset = 0; !result && offset < event.frame_size;) {
+                size_t part = event.frame_size - offset;
+                if (part > 512) part = 512;
+                if (send_btstack_packet(fd, 7, cid, event.frame + offset, part, deadline, run_dir)) result = -1;
+                offset += part;
+            }
+        } else if (strcmp(event.kind, "OPEN_AUTH_LISTENER") == 0) {
+            if (event.uuid_size != sizeof(auth_uuid) || *auth_channel || *auth_handle) { result = -1; }
+            else {
+                memcpy(auth_uuid, event.uuid, sizeof(auth_uuid));
+                if (open_auth_listener(fd, auth_uuid, auth_channel, auth_handle)) result = -1;
+                else {
+                    fe35_bridge_batch ready = fe35_bridge_listener_ready(bridge, *auth_channel);
+                    if (!ready) result = -1;
+                    else {
+                        result = dispatch_bridge_batch(fd, cid, bridge, ready, auth_channel,
+                            auth_handle, auth_uuid, deadline, run_dir);
+                        fe35_bridge_release_batch(ready);
+                    }
+                }
+            }
+        } else if (strcmp(event.kind, "CLOSE_AUTH_LISTENER") == 0) {
+            if (close_auth_listener(fd, *auth_channel, *auth_handle)) result = -1;
+            else { *auth_channel = 0; *auth_handle = 0; memset(auth_uuid, 0, 16); }
+        } else if (strncmp(event.kind, "ERROR", 5) == 0 ||
+                   strcmp(event.kind, "CONTROL_ABORTED") == 0 ||
+                   strcmp(event.kind, "CLOSED") == 0) {
+            result = -1;
+        } else if (strcmp(event.kind, "HANDSHAKE_COMPLETED") != 0 &&
+                   strcmp(event.kind, "IGNORED") != 0 &&
+                   strcmp(event.kind, "INPUT_DISCARDED") != 0 &&
+                   strcmp(event.kind, "SOCKET_REQUEST_REJECTED") != 0) {
+            result = -1;
+        }
+        memset(&event, 0, sizeof(event));
+    }
+    return result;
+}
+
+/* Bounded FE35 control path: accept one RFCOMM stream, pass data through the
+ * public Kotlin/Native bridge, then explicitly release owned services/CID.
+ * Peer addresses, session bytes, UUIDs, and key material are never logged.
  */
-static int transport_inbound(const char *path, const char *run_dir) {
+static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge) {
     uint8_t state[3], reply[7], owned_channel = 0;
     uint32_t handle = 0;
     uint16_t cid = 0, packet_type = 0, packet_channel = 0;
-    uint8_t body[32];
+    uint8_t body[1024], auth_channel = 0, auth_uuid[16] = {0};
+    uint32_t auth_handle = 0;
     size_t size = 0;
     int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
+    int listener_ready = 0, session_started = 0;
     unsigned status = 0;
     const char *stage = "GUARD";
-    if (guard_ready(run_dir)) goto done;
+    if (guard_ready(run_dir) || !bridge) goto done;
     fd = connect_daemon(path);
     if (fd < 0) { stage = "CONNECT"; goto done; }
     stage = "STATE";
@@ -469,34 +613,99 @@ static int transport_inbound(const char *path, const char *run_dir) {
         if (!found) goto done;
     }
 
-    stage = "RFCOMM_DISCONNECT";
+    stage = "BRIDGE_START";
     {
-        uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
-        if (command(fd, 0x41, params, sizeof(params), now_ms() + 4000)) goto done;
+        fe35_bridge_batch batch = fe35_bridge_start(bridge, now_ms());
+        if (!batch) goto done;
+        session_started = 1;
+        int64_t deadline = now_ms() + 4000;
+        int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
+            &auth_handle, auth_uuid, deadline, run_dir);
+        fe35_bridge_release_batch(batch);
+        if (dispatched) goto done;
     }
-    stage = "DISCONNECT_UNCONFIRMED";
+
+    stage = "CONTROL_STREAM";
     {
-        int64_t deadline = now_ms() + 5000;
+        int64_t session_deadline = now_ms() + 30000;
 #ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
-        deadline = now_ms() + 150;
+        session_deadline = now_ms() + 2500;
 #endif
-        for (unsigned n = 0; n < 64; ++n) {
-            if (receive_transport_packet(fd, cid, &packet_type, &packet_channel,
-                                         body, &size, deadline, run_dir)) break;
+        for (unsigned n = 0; n < 512 && now_ms() < session_deadline; ++n) {
+            int64_t receive_deadline = now_ms() + 1000;
+            if (receive_deadline > session_deadline) receive_deadline = session_deadline;
+            int received = receive_transport_packet(fd, cid, &packet_type, &packet_channel,
+                                                    body, &size, receive_deadline, run_dir);
+            if (received == -1) {
+                fe35_bridge_batch tick = fe35_bridge_tick(bridge, now_ms());
+                if (!tick) { stage = "BRIDGE_TICK_FAILED"; goto done; }
+                int timed_out = 0;
+                for (size_t i = 0; i < fe35_bridge_event_count(tick); ++i) {
+                    fe35_bridge_event event;
+                    if (fe35_bridge_copy_event(tick, i, &event)) { timed_out = 1; break; }
+                    if (strcmp(event.kind, "HANDSHAKE_TIMED_OUT") == 0) timed_out = 1;
+                    memset(&event, 0, sizeof(event));
+                }
+                fe35_bridge_release_batch(tick);
+                if (timed_out) { stage = "HANDSHAKE_TIMEOUT"; goto done; }
+                continue;
+            }
+            if (received) { stage = received == -2 ? "CONTROL_PACKET_REJECTED" : "CONTROL_IO"; goto done; }
             if (packet_type == 4 && body[0] == 0x81 && le16(body + 2) == cid) {
                 disconnected = 1;
                 break;
             }
+            if (packet_type != 7 || packet_channel != cid) { stage = "CONTROL_PACKET_SHAPE"; goto done; }
+            fe35_bridge_batch batch = fe35_bridge_feed(bridge, body, size);
+            if (!batch) { stage = "BRIDGE_FEED_FAILED"; goto done; }
+            for (size_t i = 0; i < fe35_bridge_event_count(batch); ++i) {
+                fe35_bridge_event event;
+                if (fe35_bridge_copy_event(batch, i, &event)) { stage = "BRIDGE_EVENT_INVALID"; result = 1; break; }
+                if (strcmp(event.kind, "HANDSHAKE_COMPLETED") == 0) listener_ready = 1;
+                if (strcmp(event.kind, "OPEN_AUTH_LISTENER") == 0) listener_ready = 0;
+                memset(&event, 0, sizeof(event));
+            }
+            if (strcmp(stage, "BRIDGE_EVENT_INVALID") == 0) { fe35_bridge_release_batch(batch); goto done; }
+            int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
+                &auth_handle, auth_uuid, now_ms() + 4000, run_dir);
+            fe35_bridge_release_batch(batch);
+            if (dispatched) { stage = "BRIDGE_EVENT_DISPATCH"; goto done; }
+            if (auth_channel) listener_ready = 1;
         }
     }
-    if (!disconnected) goto done;
-    puts("BTSTACK_FE35_INCOMING_ACCEPT_OK");
-    result = 0;
-    stage = "CLEANUP";
+    if (session_started && listener_ready) {
+        result = 0;
+    } else stage = disconnected ? "CONTROL_DISCONNECTED_EARLY" : "SESSION_DEADLINE";
 done:
     if (fd >= 0) {
         int cleanup_ok = 1;
         int64_t deadline = now_ms() + 4000;
+        if (auth_channel || auth_handle) {
+            if (close_auth_listener(fd, auth_channel, auth_handle)) cleanup_ok = 0;
+            auth_channel = 0;
+            auth_handle = 0;
+        }
+        if (opened && cid) {
+            uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
+            if (command(fd, 0x41, params, sizeof(params), deadline)) cleanup_ok = 0;
+            else {
+                int64_t close_deadline = now_ms() + 5000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+                close_deadline = now_ms() + 150;
+#endif
+                int confirmed = 0;
+                for (unsigned i = 0; i < 64; ++i) {
+                    if (receive_transport_packet(fd, cid, &packet_type, &packet_channel,
+                                                 body, &size, close_deadline, run_dir)) break;
+                    if (packet_type == 4 && body[0] == 0x81 && le16(body + 2) == cid) {
+                        confirmed = 1;
+                        break;
+                    }
+                }
+                if (!confirmed) cleanup_ok = 0;
+                else disconnected = 1;
+            }
+        }
         if (handle) {
             uint8_t params[] = {(uint8_t)handle, (uint8_t)(handle >> 8),
                                 (uint8_t)(handle >> 16), (uint8_t)(handle >> 24)};
@@ -514,10 +723,33 @@ done:
         close(fd); /* daemon client teardown also releases any pending CID */
     }
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
-    else if (disconnected) puts("BTSTACK_FE35_DISCONNECT_CONFIRMED");
+    else {
+        puts("BTSTACK_FE35_BRIDGE_SESSION_OK");
+        if (disconnected) puts("BTSTACK_FE35_DISCONNECT_CONFIRMED");
+    }
+    if (bridge) fe35_bridge_close(bridge);
     (void)accepted;
-    (void)opened;
     return result;
+}
+
+static int inbound_with_bridge(const char *path, const char *run_dir) {
+    fe35_bridge_input input;
+    if (guard_ready(run_dir)) {
+        puts("BTSTACK_FE35_INBOUND_FAILED=GUARD");
+        return 1;
+    }
+    if (read_bridge_input(&input)) {
+        memset(&input, 0, sizeof(input));
+        puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_INPUT");
+        return 1;
+    }
+    fe35_bridge_handle bridge = fe35_bridge_create(&input);
+    memset(&input, 0, sizeof(input));
+    if (!bridge) {
+        puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_CREATE");
+        return 1;
+    }
+    return transport_inbound(path, run_dir, bridge);
 }
 
 static int remove_services(int fd, uint8_t channels[2], uint32_t handles[2]) {
@@ -616,7 +848,8 @@ done:
 int main(int argc, char **argv) {
     if (argc == 2) return probe(argv[1]);
     if (argc == 3 && strcmp(argv[2], "--services") == 0) return services_probe(argv[1]);
-    if (argc == 4 && strcmp(argv[2], "--inbound") == 0) return transport_inbound(argv[1], argv[3]);
+    if (argc == 4 && strcmp(argv[2], "--btstack-control-inbound") == 0)
+        return inbound_with_bridge(argv[1], argv[3]);
     if (argc == 7 && strcmp(argv[2], "--transport") == 0) {
         char *end = NULL;
         unsigned long channel = strtoul(argv[4], &end, 10);
@@ -631,6 +864,6 @@ int openhc_btstack_control_synthetic(const char *address, unsigned channel,
     return transport_synthetic("/tmp/BTstack", address, channel, profile, run_dir);
 }
 int openhc_btstack_control_inbound(const char *run_dir) {
-    return transport_inbound("/tmp/BTstack", run_dir);
+    return inbound_with_bridge("/tmp/BTstack", run_dir);
 }
 #endif

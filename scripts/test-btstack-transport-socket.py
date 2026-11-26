@@ -13,6 +13,20 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = b'OPENHC-SYNTHETIC-CONTROL-v1'
+UPSTREAM_PHONE_FIRST = (
+    '7f8080801b81818105838d3031323334353637383941420085810290db30313233343536373839414243444546303132'
+    '333435363738394142434445463031323334353637383941424344454630313233343536373839414243444546262630'
+    '26263026264645444342413938373635343332313026263192a7303132333435363738393a3b3c3d3e3f404142434445'
+    '464748494a4b4c4d4e4f50515253545556343b'
+)
+WIRE_ASSERTIONS = 0
+
+
+def wire_check(condition, context):
+    global WIRE_ASSERTIONS
+    WIRE_ASSERTIONS += 1
+    if not condition:
+        raise AssertionError(context)
 
 
 def exact(conn, size):
@@ -36,12 +50,17 @@ def recv_frame(conn):
 
 def command(conn, expected_ocf, expected_params):
     packet_type, channel, size = struct.unpack('<HHH', exact(conn, 6))
-    assert (packet_type, channel, size) == (1, 0, 3 + len(expected_params))
+    wire_check((packet_type, channel, size) == (1, 0, 3 + len(expected_params)), 'command_header')
     packet = exact(conn, size)
     opcode, length = struct.unpack('<HB', packet[:3])
-    assert opcode == 0xF400 | expected_ocf
-    assert length == len(expected_params)
-    assert packet[3:] == expected_params
+    wire_check(opcode == 0xF400 | expected_ocf, 'command_opcode')
+    wire_check(length == len(expected_params), 'command_length')
+    wire_check(packet[3:] == expected_params, 'command_payload')
+
+
+def bridge_config(device_id='synthetic-device'):
+    encoded = device_id.encode('ascii')
+    return bytes([1, len(encoded)]) + encoded + bytes([16]) + bytes(16) + bytes([16]) + bytes(16) + bytes([16]) + bytes(16)
 
 
 def opened(cid, profile='strict', status=0):
@@ -171,9 +190,9 @@ def run_inbound_case(executable, case):
                     packet_type, channel, size = struct.unpack('<HHH', exact(conn, 6))
                     packet = exact(conn, size)
                     opcode, length = struct.unpack('<HB', packet[:3])
-                    assert (packet_type, channel, opcode, length) == (1, 0, 0xF430, size - 3)
-                    assert b'\xfe\x35' in packet[3:]
-                    assert bytes([16]) in packet[3:]
+                    wire_check((packet_type, channel, opcode, length) == (1, 0, 0xF430, size - 3), 'control_sdp_header')
+                    wire_check(b'\xfe\x35' in packet[3:], 'control_sdp_uuid')
+                    wire_check(bytes([16]) in packet[3:], 'control_sdp_channel')
                     send_frame(conn, 4, 0, bytes([0x90, 5, 0]) + struct.pack('<I', 0x10001))
                     if case == 'incoming_timeout':
                         time.sleep(.3)
@@ -194,9 +213,35 @@ def run_inbound_case(executable, case):
                     else:
                         opened = bytes([0x80, 15, 0]) + bytes.fromhex('010203040506') + struct.pack('<H', 0x5678) + bytes([16]) + struct.pack('<HHB', cid, 512, 1)
                         send_frame(conn, 4, 0, opened)
-                        command(conn, 0x41, struct.pack('<HB', cid, 0))
-                        if case != 'disconnect_timeout':
+                        packet_type, channel, body = recv_frame(conn)
+                        wire_check((packet_type, channel, body) ==
+                            (7, cid, bytes([0x7f, 0x80, 0x80, 0x80])), 'bridge_start_frame')
+                        send_frame(conn, 7, cid, bytes([0xff]) if case == 'bridge_exception' else
+                                   bytes.fromhex(UPSTREAM_PHONE_FIRST))
+                        if case != 'bridge_exception':
+                            command(conn, 0x42, bytes([16, 0, 2]))
+                            send_frame(conn, 4, 0, bytes([0x85, 2, 0x71, 16]))
+                            command(conn, 0x42, bytes([17, 0, 2]))
+                            send_frame(conn, 4, 0, bytes([0x85, 2, 0, 17]))
+                            packet_type, channel, size = struct.unpack('<HHH', exact(conn, 6))
+                            service = exact(conn, size)
+                            opcode, param_length = struct.unpack('<HB', service[:3])
+                            wire_check((packet_type, channel, opcode, param_length) == (1, 0, 0xF430, size - 3), 'auth_sdp_header')
+                            wire_check(b'\x1c\x00\x00\xfe\x36' in service[3:], 'auth_sdp_uuid128')
+                            wire_check(bytes([17]) in service[3:], 'auth_sdp_channel')
+                            send_frame(conn, 4, 0, bytes([0x90, 5, 0]) + struct.pack('<I', 0x10002))
+                            packet_type, channel, response = recv_frame(conn)
+                            wire_check((packet_type, channel, response) ==
+                                (7, cid, bytes([0x7f, 0x80, 0x80, 0x81, 0x04])), 'listener_ready_response')
                             send_frame(conn, 4, 0, bytes([0x81, 2]) + struct.pack('<H', cid))
+                    if case in ('success', 'bridge_exception'):
+                        if case == 'success':
+                            command(conn, 0x31, struct.pack('<I', 0x10002))
+                            command(conn, 0x43, bytes([17, 0]))
+                            command(conn, 1, b'')
+                            send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
+                        command(conn, 0x41, struct.pack('<HB', cid, 0))
+                        send_frame(conn, 4, 0, bytes([0x81, 2]) + struct.pack('<H', cid))
                     command(conn, 0x31, struct.pack('<I', 0x10001))
                     command(conn, 0x43, bytes([16, 0]))
                     command(conn, 1, b'')
@@ -210,21 +255,26 @@ def run_inbound_case(executable, case):
 
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
-        proc = subprocess.run([executable, endpoint, '--inbound', guard],
-                              capture_output=True, text=True, timeout=8)
+        device_id = 'synthetic-exception' if case == 'bridge_exception' else 'synthetic-device'
+        proc = subprocess.run([executable, endpoint, '--btstack-control-inbound', guard],
+                              input=bridge_config(device_id), capture_output=True, timeout=8)
+        stdout = proc.stdout.decode('utf-8', errors='replace')
+        stderr = proc.stderr.decode('utf-8', errors='replace')
         thread.join(5)
         server.close()
         assert not thread.is_alive(), (case, proc.stdout, proc.stderr)
         assert not errors, (case, errors, proc.stdout, proc.stderr)
         success = case == 'success'
-        assert proc.returncode == (0 if success else 1), (case, proc.returncode, proc.stdout, proc.stderr)
+        assert proc.returncode == (0 if success else 1), (case, proc.returncode, stdout, stderr)
+        wire_check(stdout.count('BTSTACK_TEST_BRIDGE_CLOSE_CALLED') == 1, 'bridge_closed_once')
         assert Path(guard, 'heartbeat').read_text(encoding='ascii') == 'POWER_DRIVER_OWNS_THIS\n'
-        assert ('BTSTACK_FE35_INCOMING_ACCEPT_OK' in proc.stdout) == success, (case, proc.stdout)
-        assert 'a1:a2:a3:a4:a5:a6' not in proc.stdout.lower() + proc.stderr.lower()
-        assert 'BTSTACK_FE35_INBOUND_FAILED=ACCEPT_FAILED' in proc.stdout if case == 'accept_failure' else True
-        assert 'BTSTACK_FE35_INBOUND_FAILED=INCOMING_TIMEOUT' in proc.stdout if case == 'incoming_timeout' else True
-        assert 'BTSTACK_FE35_INBOUND_FAILED=DISCONNECT_UNCONFIRMED' in proc.stdout if case == 'disconnect_timeout' else True
-        return proc.stdout
+        assert ('BTSTACK_FE35_BRIDGE_SESSION_OK' in stdout) == success, (case, stdout)
+        assert ('BTSTACK_FE35_DISCONNECT_CONFIRMED' in stdout) == success, (case, stdout)
+        assert 'BTSTACK_FE35_INBOUND_FAILED=BRIDGE_EVENT_DISPATCH' in stdout if case == 'bridge_exception' else True
+        assert 'BTSTACK_FE35_INBOUND_FAILED=ACCEPT_FAILED' in stdout if case == 'accept_failure' else True
+        assert 'BTSTACK_FE35_INBOUND_FAILED=INCOMING_TIMEOUT' in stdout if case == 'incoming_timeout' else True
+        assert 'a1:a2:a3:a4:a5:a6' not in stdout.lower() + stderr.lower()
+        return stdout
 
 
 def main():
@@ -233,7 +283,8 @@ def main():
         subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                         '-DOPENHC_BTSTACK_TEST', '-DOPENHC_TRANSPORT_TEST_TIMEOUTS',
                         '-DOPENHC_TRANSPORT_TEST_HEARTBEAT',
-                        str(ROOT / 'theos/btstack-probe.c'), '-o', executable], check=True)
+                        str(ROOT / 'theos/btstack-probe.c'),
+                        str(ROOT / 'scripts/fe35-control-bridge-test-stub.c'), '-o', executable], check=True)
         for case in ('strict_event', 'reference_event', 'delayed_echo', 'bad_length',
                      'create_failure', 'open_timeout', 'echo_mismatch', 'close_timeout',
                      'echo_timeout', 'security_event'):
@@ -244,11 +295,12 @@ def main():
         run_case(executable, 'strict_event')
         run_case(executable, 'strict_event')
         print('BTSTACK_TRANSPORT_SOCKET_REOPEN_OK=2')
-        for case in ('success', 'accept_failure', 'incoming_timeout',
-                     'disconnect_timeout', 'daemon_cleanup'):
+        before_inbound_assertions = WIRE_ASSERTIONS
+        for case in ('success', 'bridge_exception', 'accept_failure', 'incoming_timeout', 'daemon_cleanup'):
             run_inbound_case(executable, case)
             print('BTSTACK_INBOUND_SOCKET_CASE_OK=' + case)
         print('BTSTACK_INBOUND_SOCKET_TESTS_OK=5')
+        print('BTSTACK_INBOUND_WIRE_ASSERTIONS_OK=' + str(WIRE_ASSERTIONS - before_inbound_assertions))
 
 
 if __name__ == '__main__':

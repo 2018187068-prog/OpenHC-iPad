@@ -3,6 +3,11 @@
  * platform/daemon/src/{socket_connection.c,daemon.c}, src/btstack_defines.h.
  * No BTstack implementation code is copied. No power/discovery commands sent.
  */
+/* Strict C11 on glibc hides POSIX time declarations without this request.
+ * Darwin retains its existing SDK feature visibility and socket option. */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -33,6 +38,28 @@ static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
  * registration replies. Cleared before cleanup so Stop cannot cancel teardown. */
 static _Thread_local fe35_scan_transport *current_scan;
 static _Thread_local int scan_ended;
+
+/* Darwin suppresses SIGPIPE per socket; Linux requires MSG_NOSIGNAL on
+ * every send. Never change the process-wide SIGPIPE disposition. */
+static int protect_socket_sigpipe(int fd) {
+#if defined(__APPLE__)
+    int one = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#elif defined(__linux__)
+    (void)fd;
+    return 0; /* Both send paths below use MSG_NOSIGNAL. */
+#else
+#error Unsupported socket SIGPIPE protection platform
+#endif
+}
+
+static ssize_t send_without_sigpipe(int fd, const void *buffer, size_t size) {
+#if defined(__linux__)
+    return send(fd, buffer, size, MSG_NOSIGNAL);
+#else
+    return send(fd, buffer, size, 0);
+#endif
+}
 
 static int scan_event(const char *kind, int channel) {
     if (!current_scan || scan_ended) return scan_ended ? -1 : 0;
@@ -131,7 +158,7 @@ static int ready(int fd, short events, int64_t deadline) {
 static int transfer(int fd, uint8_t *buf, size_t size, int sending, int64_t deadline) {
     while (size) {
         if (ready(fd, sending ? POLLOUT : POLLIN, deadline) != 0) return -1;
-        ssize_t n = sending ? send(fd, buf, size, 0) : recv(fd, buf, size, 0);
+        ssize_t n = sending ? send_without_sigpipe(fd, buf, size) : recv(fd, buf, size, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (n <= 0) return -1;
         buf += n;
@@ -257,7 +284,7 @@ static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
         if (r == 0) continue;
         if (scan_poll()) return -1;
         if (r < 0 || !(p.revents & (sending ? POLLOUT : POLLIN))) return -1;
-        ssize_t n = sending ? send(fd, buf, size, 0) : recv(fd, buf, size, 0);
+        ssize_t n = sending ? send_without_sigpipe(fd, buf, size) : recv(fd, buf, size, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (n <= 0) return -1;
         buf += n;
@@ -454,8 +481,7 @@ static int connect_daemon(const char *path) {
         tcp_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) return -1;
-        int one = 1;
-        if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))) goto tcp_failed;
+        if (protect_socket_sigpipe(fd)) goto tcp_failed;
         if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto tcp_failed;
         if (connect(fd, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) != 0) {
             if (errno != EINPROGRESS) goto tcp_failed;
@@ -478,8 +504,7 @@ tcp_failed:
     memcpy(addr.sun_path, path, strlen(path) + 1);
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    int one = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))) goto failed;
+    if (protect_socket_sigpipe(fd)) goto failed;
     if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto failed;
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         if (errno != EINPROGRESS && errno != EAGAIN) goto failed;

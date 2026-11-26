@@ -1,4 +1,7 @@
-"""Compile/run the exact LOCAL_PEERPID helper against a synthetic Unix socket."""
+"""Compile/run the kernel peer-PID query against a synthetic Unix socket.
+
+Darwin uses LOCAL_PEERPID; Linux uses SO_PEERCRED. Neither sends application data.
+"""
 import os
 from pathlib import Path
 import socket

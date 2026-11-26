@@ -1,6 +1,6 @@
 """Exercise the C query client against a synthetic local Unix stream server.
 
-No device, radio, credentials or real BTstack instance is used. macOS only.
+No device, radio, credentials or real BTstack instance is used. Linux/macOS.
 """
 import os
 from pathlib import Path

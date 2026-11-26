@@ -290,6 +290,12 @@ def run_inbound_case(executable, case):
 
 def main():
     with tempfile.TemporaryDirectory(prefix='oh-transport-build-') as directory:
+        sigpipe_test = str(Path(directory) / 'sigpipe-test')
+        subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                        str(ROOT / 'scripts/btstack-sigpipe-test.c'),
+                        str(ROOT / 'scripts/fe35-control-bridge-test-stub.c'),
+                        '-o', sigpipe_test], check=True)
+        subprocess.run([sigpipe_test], check=True, timeout=4)
         executable = str(Path(directory) / 'transport')
         subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                         '-DOPENHC_BTSTACK_TEST', '-DOPENHC_TRANSPORT_TEST_TIMEOUTS',

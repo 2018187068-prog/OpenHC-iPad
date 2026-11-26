@@ -1,4 +1,9 @@
-/* Bounded LOCAL_PEERPID metadata query. This never sends or reads socket data. */
+/* Bounded kernel peer-PID metadata query. No socket application data I/O. */
+/* Linux SO_PEERCRED's struct ucred is a GNU extension; this also exposes
+ * POSIX lstat/S_ISSOCK under the strict C11 host-test build. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -10,7 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifndef LOCAL_PEERPID
+#if defined(__APPLE__) && !defined(LOCAL_PEERPID)
 #define LOCAL_PEERPID 0x002
 #endif
 
@@ -40,10 +45,21 @@ static int owner_pid(const char *path, pid_t *owner) {
         int error = 0; socklen_t error_size = sizeof(error);
         if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size) || error) { close(fd); return 16; }
     }
+#if defined(__linux__)
+    struct ucred credentials;
+    socklen_t length = sizeof(credentials);
+    rc = getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length);
+    if (!rc && length == sizeof(credentials)) *owner = credentials.pid;
+    else rc = -1;
+#elif defined(__APPLE__)
     socklen_t length = sizeof(*owner);
     rc = getsockopt(fd, 0 /* SOL_LOCAL on Darwin */, LOCAL_PEERPID, owner, &length);
+    if (!rc && length != sizeof(*owner)) rc = -1;
+#else
+#error Unsupported Unix peer PID platform
+#endif
     close(fd);
-    if (rc || length != sizeof(*owner) || *owner <= 0) return 17;
+    if (rc || *owner <= 0) return 17;
     if (lstat(path, &after) || !S_ISSOCK(after.st_mode) || before.st_dev != after.st_dev ||
         before.st_ino != after.st_ino || before.st_uid != expected_uid) return 18;
     return 0;

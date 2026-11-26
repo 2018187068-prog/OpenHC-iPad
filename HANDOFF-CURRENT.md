@@ -15,6 +15,7 @@
 - 本轮限制：仅本地代码、合成测试及文档；未连接设备、未上电/卸载/配对/改热点/kill、未读取身份或认证材料、未作新签名信任操作，也未启用收费 runner。
 - 最近一次代码验收：SHA `fe29b49a0a020a14e1dc087d3e5894ce084f88b1`，macOS workflow `45765343940` 于 2026-11-26 全绿。JVM 35/35、iOS Simulator 33/33；同一真实 CLI/C/ObjC/Kotlin-Native integration 3/3、190 assertions；framework/header 检查与 Theos rootless arm64 DEB 通过。
 - 本次真机准备核对：同一 CI artifact 内 0.3.5 arm64 DEB SHA-256 `5A33A0B5B91CD3133930346BC2F912A51B9A6C5F367800406B37305878FA3004`；设备最近有记录的安装为 0.3.2，当前是否安装 0.3.5 未知，不能据 CI build 推断安装。新增本地 provider 复用上游 `openhc-identity.json` schema 中的 host 型号与 `nearbyKeys`，按上游算法生成 device ID；三段 nearby key material 从现有配置读取，不声称为协议固定常量，也不要求用户另填。唯一仍需独立来源的是本机无线 Bluetooth address，经 bounded FD 输入；本机尚无读取该地址的 provider。identity 文件路径可显式传入或由既有 `OPENHC_IDENTITY_DIR` 约定解析。该地址输入、窗口新鲜 ownership 快照、guard ready 与安装核对是启动真机 trial 前置，历史证据不可代替。
+- 本地配置 provider 已验收：源码 SHA `8e7ccf357155460c2237a7e50de9c42726937322`，macOS workflow `45769151355` 全绿；provider 3/3、Trial/guard 25/25、Native socket integration 190 assertions、JVM/Native suite 与 framework/Theos package 检查通过。当前 HEAD `7c9cf6339394364508c3ca2ce06b468e35430a26` 仅包含后续交接文字校正，provider 代码测试以 `8e7ccf3` 为准。测试使用 synthetic identity fixture；未读真实配置或操作设备。
 
 ## 下一步路径
 

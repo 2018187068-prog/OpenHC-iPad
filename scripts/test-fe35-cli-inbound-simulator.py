@@ -250,7 +250,6 @@ def run_case(args, case):
     started_assertions = ASSERTIONS
     data_dir = Path(args.data_dir)
     documents = data_dir / "Documents"
-    endpoint_rel = "Documents/fe35-btstack.sock"
     alias_root = Path(tempfile.mkdtemp(prefix="f35-", dir="/tmp"))
     alias_dir = alias_root / "d"
     alias_dir.symlink_to(documents, target_is_directory=True)
@@ -284,7 +283,7 @@ def run_case(args, case):
     started = time.monotonic()
     launch = subprocess.run([
         "xcrun", "simctl", "launch", args.udid, args.bundle_id,
-        endpoint_rel, guard_rel,
+        str(endpoint_abs), guard_rel,
     ], capture_output=True, text=True, timeout=12)
     check(launch.returncode == 0, "simulator CLI process launched")
     expected_status = 0 if case == "success" else 1

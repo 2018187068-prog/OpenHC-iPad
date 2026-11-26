@@ -295,7 +295,7 @@ def run_case(args, case):
     launch = subprocess.run([
         "xcrun", "simctl", "launch", args.udid, args.bundle_id,
         endpoint, guard_rel,
-    ], capture_output=True, text=True, timeout=12)
+    ], capture_output=True, text=True, timeout=30)
     check(launch.returncode == 0, "simulator CLI process launched")
     expected_status = 0 if case == "success" else 1
     for _ in range(60):
@@ -336,9 +336,10 @@ def run_scan_case(args, case):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
     server.listen(1)
-    # Keep the synthetic peer alive longer than simctl launch's 12s bound; a
-    # delayed Simulator launch must not leave a late client blocked on STATE.
-    server.settimeout(20)
+    # Simulator process launch can take over 12s on a loaded runner. Keep
+    # accept alive beyond the bounded 30s launch without relaxing the 6s
+    # protocol I/O deadline after the client connects.
+    server.settimeout(45)
 
     def trace_has(line):
         trace_file = guard / "scan-events"
@@ -410,7 +411,7 @@ def run_scan_case(args, case):
     thread.start()
     launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
         "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name, case],
-        capture_output=True, text=True, timeout=12)
+        capture_output=True, text=True, timeout=30)
     check(launch.returncode == 0, "scan fixture launched")
     for _ in range(60):
         if result_file.exists():

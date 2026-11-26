@@ -2,6 +2,7 @@ package io.github.gcbond.openhc.core.nearby
 
 import io.github.gcbond.openhc.core.common.MalformedMessageException
 import io.github.gcbond.openhc.core.common.codec.ReceiveBuffer
+import io.github.gcbond.openhc.core.common.codec.Crc16Arc
 
 /**
  * 控制帧的流式拆帧器：TCP 一次读到的数据可能是半帧，也可能粘着好几帧。

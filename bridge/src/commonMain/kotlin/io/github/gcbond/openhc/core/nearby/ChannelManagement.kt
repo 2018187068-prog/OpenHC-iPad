@@ -89,6 +89,6 @@ internal object ChannelManagement {
     fun textOf(raw: ByteArray): String {
         var end = raw.size
         while (end > 0 && raw[end - 1].toInt() == 0) end--
-        return String(raw, 0, end, Charsets.UTF_8)
+        return raw.decodeToString(0, end)
     }
 }

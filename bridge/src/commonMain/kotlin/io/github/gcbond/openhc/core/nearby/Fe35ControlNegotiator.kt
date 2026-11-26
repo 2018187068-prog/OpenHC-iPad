@@ -1,5 +1,7 @@
 package io.github.gcbond.openhc.core.nearby
 
+import io.github.gcbond.openhc.core.common.ByteWriter
+
 /** FE35 actions derived from a decoded message-layer payload. */
 class Fe35ControlNegotiator(private val mode: Mode) {
     enum class Mode { PASSIVE, RECONNECT }

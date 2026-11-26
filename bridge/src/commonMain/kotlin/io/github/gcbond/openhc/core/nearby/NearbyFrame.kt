@@ -2,6 +2,7 @@ package io.github.gcbond.openhc.core.nearby
 
 import io.github.gcbond.openhc.core.common.ByteWriter
 import io.github.gcbond.openhc.core.common.MalformedMessageException
+import io.github.gcbond.openhc.core.common.codec.Crc16Arc
 
 /**
  * 控制通道上的一帧（有线时是第一条 TCP，蓝牙时是 RFCOMM，两者格式相同）：

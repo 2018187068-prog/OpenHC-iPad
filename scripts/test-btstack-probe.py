@@ -32,6 +32,7 @@ with tempfile.TemporaryDirectory(prefix="ohbt-", dir="/tmp") as directory:
     executable = str(Path(directory) / "query")
     subprocess.run(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
                     "-DOPENHC_BTSTACK_TEST", str(root / "theos/btstack-probe.c"),
+                    str(root / "scripts/fe35-control-bridge-test-stub.c"),
                     "-o", executable], check=True)
     cases = ["fragmented", "unrelated", "eof", "oversize", "bad_length",
              "wrong_channel", "timeout", "event_flood"]

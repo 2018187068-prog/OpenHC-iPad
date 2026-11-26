@@ -34,6 +34,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p artifacts/logs
+          python3 scripts/test-fe35-bridge-config.py 2>&1 | tee artifacts/logs/fe35-bridge-config-tests.log
           python3 scripts/test-btstack-probe.py 2>&1 | tee artifacts/logs/btstack-mock-tests.log
           python3 scripts/test-btstack-transport-socket.py 2>&1 | tee artifacts/logs/btstack-transport-socket-tests.log
           python3 scripts/test-btstack-session-gate.py 2>&1 | tee artifacts/logs/btstack-session-gate-tests.log

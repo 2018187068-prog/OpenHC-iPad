@@ -24,7 +24,7 @@
 | `CLEAR_SNAPSHOT` | 固定检查集完整、已知 helper 的活动状态 metadata 未报活动、shared helper 均未出现、无恢复 job、marker 明确 absent、无未解释 broker owner | 只表示该时点的限定检查集未见竞争；进程名不单独证明活动或空闲，不声称绝对不存在并发或消除后续竞态 |
 | `UNKNOWN` | 快照不全、shared helper 角色未明、socket owner 与 comm 不匹配、恢复 job 活跃、marker 残留/无法读取或 owner/marker 元数据缺失 | 阻断；只补造成 UNKNOWN 的最小 metadata，不追加泛化探针 |
 
-Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。本轮没有下一次真机动作目标：C BTstack inbound adapter 尚未接入下面的 FE35 session API，且缺少本次新鲜 metadata 快照；不要求用户具备 synthetic peer，也不把 synthetic peer 当作 HiCar 前置。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
+Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。真实 C/ObjC/Kotlin-Native inbound session 已在固定 CI 合成 socket peer 中贯通；真机仍无新鲜 metadata 快照，也没有真实 FE35 bridge config FD provider。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
 
 ## 离线实现与明确阻塞
 
@@ -40,7 +40,32 @@ FE35 控制协商仍由 `bridge/src/commonMain/.../Fe35ControlNegotiator.kt` 负
 
 兼容证据分两类：静态可离线确认的是 socket packet header、RFCOMM create/disconnect opcode、event 字段 offsets、`rfcomm.c` 成功 callback 的 17-byte 实际长度/16 声明，以及 daemon 读取 byte 13 routing 的源码事实；只读参考文件分别是 `platform/daemon/src/socket_connection.c`、`platform/daemon/src/daemon.c`、`src/classic/rfcomm.c` 与 `src/btstack_event.h`。reference daemon 在 `DAEMON_EVENT_RFCOMM_CREDITS` 中调用 `daemon_retry_parked()` 并消费内部 credits event，不把该事件转给 socket client；adapter 因而发送标准 `RFCOMM_DATA_PACKET`，不自行发放 credits，合成对端 echo 和 deadline 是该单次发送的应用层确认。若 installed daemon 将未识别事件路由到 client，adapter 立即拒绝并关闭连接。installed BTdaemon 是否同源、opened event 是否真的送达本 client、运行时采用 strict 还是 reference 格式，只能在首个受控连接读取 bounded metadata 时得知，不是 adapter 实现前置条件。新 CLI 的 `auto` 在首次受控连接内检测 `strict-17` 或 `reference-17-len16`；未知 shape、异常状态或超时均不发应用字节，若成功 CID 可解析则尝试有界 disconnect，否则关闭 client 清理。若 daemon 不路由该事件，现有静态源码不能证明装机行为；当前最小观测就是这次可选 synthetic 连接的 profile/timeout 结果，不要求独立 metadata-only 探针。
 
-## 真机 transport 验收卡（后续任务，不是本轮授权）
+## 真机 FE35 控制协商验收卡（准备中，待另行安排窗口）
+
+### 当前构建与设备状态
+
+- 当前 checkout `f61843e47648ea625737f53f025fc8ff7eacfbbc`；本功能验收 revision `fe29b49a0a020a14e1dc087d3e5894ce084f88b1`，macOS CI `45765343940` 成功。产物为 `com.gcbond.openhc-bridge-check` 0.3.5 arm64 DEB，CI artifact 已核对 SHA-256 `5A33A0B5B91CD3133930346BC2F912A51B9A6C5F367800406B37305878FA3004`。设备最近一次有记录的安装是 2026-11-26 的 0.3.2；0.3.5 是否已安装未知，安排窗口前需只读核对包版本/hash，不可把 CI 出包当成安装证据。
+- 当前真机前置证据缺失：新的 `snapshot_complete=true` ownership/session 快照（最多 60 秒）、独立恢复 guard 当前 ready 状态、目标 iPad 当前安装版本/二进制与本次 0.3.5 对应、Honor 手机现有正常配对/HiCar 可启动状态。旧 PID、旧快照和历史 WORKING/OFF 闭环不可复用；collector 没有正向 active-session-state 来源，空列表不构成无活动证明。
+- 本地 provider 复用固定上游 identity schema：`host.modelId/subModelId` 是本机型号标识输入，`nearbyKeys.rootKey/constA/constB` 是本机现有 nearby 加密材料；上游未将它们定义为协议固定常量，本实现不要求用户另行填写。device ID 按上游 `DeviceId` 从型号字段与无线使用的本机 Bluetooth address 计算；address 不在 identity JSON。provider 接受显式 identity 文件或 `OPENHC_IDENTITY_DIR/openhc-identity.json`，地址仅从继承 FD 读取，生成原有版本化 bridge bytes 并经匿名 pipe 交给当前进程，Trial 再按现有 bounded stdin 传到固定远端入口。内容不放 argv/env/log，输入只在进程内短暂存在并尽力清零。
+- 唯一仍需外部提供的软件输入是本机无线 Bluetooth address 的 bounded FD 来源；当前仓库未实现从目标环境 Bluetooth property 读取并安全转成此 FD 的 provider，不能用 synthetic address 运行真机。另需每次窗口新鲜 ownership snapshot、guard ready 和安装 revision/hash 只读核对；这些是现场状态门槛，不是缺少 identity schema。
+
+### 允许的最小验收范围
+
+范围仅为真实 FE35 控制协商：目标手机正常发起其现有 HiCar 连接后，观察 inbound listener/transport 是否收到合法控制帧、bridge 是否发出 `OPEN_AUTH_LISTENER` 并完成 listener-ready channel/UUID 回调，以及是否收到真实对端后续控制帧。不得记录/输出 device ID、UUID 原值、帧 payload、密钥或认证 transcript；只记录非敏感阶段标签、事件类别、长度、channel、超时/退出状态与恢复结果。这里不验证认证握手、HiCar/DMSDP 完整连接或媒体。
+
+未满足上述前置时可执行的唯一现场动作是经用户另行安排后的只读 capture：
+
+```powershell
+python scripts\capture-btstack-session-evidence.py --capture --output artifacts\session-evidence.json
+```
+
+只有 capture 完整、分类明确、距运行不超过 60 秒，当前 shared-helper PID 集一致，recovery guard ready，安装包与待测 revision 核对一致，且授权操作者已通过安全渠道准备真实 FE35 bridge config FD，才可由协调者单独批准以下 bounded trial。下面的 FD 必须由专用秘密注入器创建并继承；不能改用文件明文、命令行参数、日志或 synthetic fixture；当前 repo 没有该注入器，所以此命令现阶段不可直接执行：
+
+```powershell
+python scripts\btstack-power-trial.py --execute --mode inbound --bridge-config-fd <inherited-fd> --session-evidence artifacts\session-evidence.json
+```
+
+成功需要同时出现 `BTSTACK_POWER_WORKING`、`BTSTACK_FE35_BRIDGE_SESSION_OK`、`TRANSPORT_RESULT=PASSED`、`BTSTACK_POWER_OFF_OBSERVED`、`RESTORATION_RESULT=VERIFIED`；所有事件/阶段都不得包含 payload 或身份字段。`TRANSPORT_RESULT=FAILED` 时，只有远端退出已确认才允许 Trial 按既定唯一顺序发 OFF 并恢复；若 SSH loss、deadline 或 exit status 未确认，必须看到 `EXIT_UNCONFIRMED` 与 `DELEGATED_TO_GUARD`，不手工并行恢复、不重试。恢复 guard 从 arm 起的 deadline 是 240 秒，inbound 子命令上限 45 秒；超时后等待 guard 对原 run-dir 的结果并独立只读核验恢复，不启动第二个恢复者。手机侧仅由用户正常打开目标 HiCar 连接，不重新配对、不改热点。
 
 ### A. 可选的受控 synthetic peer 工程回环
 
@@ -100,14 +125,13 @@ python scripts\btstack-power-trial.py --execute --mode inbound --session-evidenc
 
 ### B. 真实 HiCar 协议/metadata 模式
 
-该 inbound 模式目前只验证 FE35 本机 listener/SDP、incoming accept 和 bounded close；不启动 discovery，且 C adapter 未接线到已实现的 Kotlin/Native control-frame session，因此不运行控制握手/command-3 listener 协商。真实 Honor 协议测试须等待 C/ObjC transport-action bridge 完成、通过标准 CI，并有用户正常发起 HiCar 的窗口和 fresh session-evidence snapshot。真实手机绝不运行 synthetic echo adapter，也不发送任意 synthetic auth/control 数据；真实控制事件将来只允许提取事件类别、长度、channel 和状态，不记录地址、raw payload、UUID 原值或认证 transcript。Synthetic peer 是可选工程验证路径，不是 HiCar 项目硬前置，目前没有证据用户具有该 peer。
+离线合成路径已通过 C/ObjC/Kotlin-Native 集成验收（见 checkpoint）；这不是安装机兼容或真实 Honor 连接证据。真实手机绝不运行 synthetic echo adapter，也不发送任意 synthetic auth/control 数据；其控制事件只允许提取事件类别、长度、channel 和状态，不记录地址、raw payload、UUID 原值或认证 transcript。
 
 ### 失败判据与恢复
 
-任一未知 gate、opened event 格式异常、连接 timeout、synthetic bytes 不匹配、close 未确认、guard heartbeat 丢失或 SSH 断开，均为 `TRANSPORT_FAIL`，不可自动重试。每次先等待独立 guard 完成恢复；复用它原有 run directory 的 `result` 与 `recovery.log`，不启动第二个恢复者：
+任一未知 gate、opened event 格式异常、连接 timeout、帧解析失败、close 未确认、guard heartbeat 丢失或 SSH 断开，均为 `TRANSPORT_FAIL`，不可自动重试。若远端退出已确认，由 Trial 按既有 lease 顺序发 OFF 并请求同一 guard 恢复；若退出状态未知，Trial 不发 OFF 或第二个恢复请求，停止 heartbeat 并将恢复权交给已 arm 的独立 guard。随后只读观察该 run directory 的 `result` 与 `recovery.log`，并检查 guard：
 
 ```sh
-touch /var/root/Library/OpenHCStage0Power/<run-id>/restore-request
 /var/jb/usr/bin/launchctl print system/io.github.gcbond.openhc.stage0-power-recovery
 ```
 

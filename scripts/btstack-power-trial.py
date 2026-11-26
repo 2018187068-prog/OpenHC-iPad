@@ -1,7 +1,8 @@
 """One guarded power trial over existing USB SSH; no peer operations.
 
-Inbound mode requires a caller-supplied bounded bridge config FD. Password input
-is read from stdin, never stored in artifacts.
+Inbound mode accepts either a bounded bridge config FD or an existing OpenHC
+identity file plus a Bluetooth address FD. Password input is read from stdin,
+never stored in artifacts.
 The independent device guard owns restoration, including on host/SSH failure.
 """
 import argparse
@@ -12,7 +13,6 @@ import json
 import os
 import pathlib
 import plistlib
-import select
 import shlex
 import socket
 import struct
@@ -32,6 +32,10 @@ _gate_spec = importlib.util.spec_from_file_location(
     'btstack_session_gate', ROOT / 'scripts/btstack-session-gate.py')
 session_gate = importlib.util.module_from_spec(_gate_spec)
 _gate_spec.loader.exec_module(session_gate)
+_config_spec = importlib.util.spec_from_file_location(
+    'fe35_bridge_config', ROOT / 'scripts/fe35-bridge-config.py')
+fe35_config = importlib.util.module_from_spec(_config_spec)
+_config_spec.loader.exec_module(fe35_config)
 REMOTE_BASE = '/var/root/Library/OpenHCStage0Power'
 LABEL = 'io.github.gcbond.openhc.stage0-power-recovery'
 INBOUND_RUN_SECONDS = 45
@@ -533,41 +537,54 @@ class Trial:
         return 0 if powered and restored else 1
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true', help='Perform exactly one guarded device trial')
     parser.add_argument('--mode', choices=('power-only', 'inbound'), default='power-only')
     parser.add_argument('--bridge-config-fd', type=int,
-                        help='Read the bounded caller-supplied bridge input from this inherited file descriptor')
+                        help='Read the already encoded bounded bridge input from an inherited file descriptor')
+    parser.add_argument('--identity-file', type=pathlib.Path,
+                        help='Read the existing openhc-identity.json schema; otherwise OPENHC_IDENTITY_DIR is used')
+    parser.add_argument('--bluetooth-address-fd', type=int,
+                        help='Read the runtime Bluetooth address from an inherited FD, never argv or environment')
     parser.add_argument('--session-evidence', type=pathlib.Path,
                         help='Fresh JSON metadata snapshot required when shared helpers are present')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.execute:
         print('NO_DEVICE_ACTION: pass --execute explicitly')
         return 2
     bridge_config = None
     if args.mode == 'inbound':
-        if args.bridge_config_fd is None or args.bridge_config_fd <= 2:
-            parser.error('--mode inbound requires an inherited config FD greater than 2')
-        bridge_config = bytearray()
-        deadline = time.monotonic() + 3
-        while len(bridge_config) <= 327:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                bridge_config[:] = bytes(len(bridge_config))
-                parser.error('bridge config input deadline exceeded')
-            ready, _, _ = select.select([args.bridge_config_fd], [], [], remaining)
-            if not ready:
-                bridge_config[:] = bytes(len(bridge_config))
-                parser.error('bridge config input deadline exceeded')
-            chunk = os.read(args.bridge_config_fd, 328 - len(bridge_config))
-            if not chunk:
-                break
-            bridge_config.extend(chunk)
-        os.close(args.bridge_config_fd)
-        if not 1 <= len(bridge_config) <= 327:
+        if args.bridge_config_fd is not None:
+            if args.bridge_config_fd <= 2:
+                parser.error('--bridge-config-fd must be an inherited FD greater than 2')
+            if args.identity_file is not None or args.bluetooth_address_fd is not None:
+                parser.error('choose one inbound config source')
+            try:
+                bridge_config = _read_bounded_input_fd(args.bridge_config_fd, 327, 'BRIDGE_CONFIG')
+            except ValueError as error:
+                parser.error(str(error))
+        else:
+            identity_file = args.identity_file
+            if identity_file is None:
+                identity_dir = os.environ.get('OPENHC_IDENTITY_DIR')
+                identity_file = pathlib.Path(identity_dir) / 'openhc-identity.json' if identity_dir else None
+            if args.bluetooth_address_fd is None or args.bluetooth_address_fd <= 2 or identity_file is None:
+                if args.bluetooth_address_fd is not None and args.bluetooth_address_fd > 2:
+                    os.close(args.bluetooth_address_fd)
+                parser.error('--mode inbound requires identity config and bluetooth address FD, or bridge config FD')
+            try:
+                bridge_config = fe35_config.load_bridge_config(identity_file, args.bluetooth_address_fd)
+            except fe35_config.ConfigError as error:
+                parser.error(str(error))
+    try:
+        return _run_trial(args, bridge_config)
+    finally:
+        if isinstance(bridge_config, bytearray):
             bridge_config[:] = bytes(len(bridge_config))
-            parser.error('bridge config input must be 1..327 bytes')
+
+
+def _run_trial(args, bridge_config):
     evidence = None
     if args.session_evidence:
         evidence = json.loads(args.session_evidence.read_text(encoding='utf-8'))
@@ -594,10 +611,36 @@ def main():
         print('LOG_PATH=' + str(logfile), flush=True)
         return result
     finally:
-        if isinstance(bridge_config, bytearray):
-            bridge_config[:] = bytes(len(bridge_config))
         password = None
         client.close()
+
+
+def _read_bounded_input_fd(fd, maximum, error_prefix):
+    result = bytearray()
+    try:
+        deadline = time.monotonic() + 3
+        while len(result) <= maximum:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not fe35_config.wait_readable(fd, remaining):
+                raise ValueError(error_prefix + '_FD_TIMEOUT')
+            chunk = os.read(fd, maximum + 1 - len(result))
+            if not chunk:
+                break
+            result.extend(chunk)
+        if not 1 <= len(result) <= maximum:
+            raise ValueError(error_prefix + '_SIZE_INVALID')
+        return result
+    except OSError:
+        result[:] = bytes(len(result))
+        raise ValueError(error_prefix + '_FD_INVALID') from None
+    except ValueError:
+        result[:] = bytes(len(result))
+        raise
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 if __name__ == '__main__':

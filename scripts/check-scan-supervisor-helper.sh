@@ -7,6 +7,7 @@ project="$repo_root/theos/scan-supervisor"
 mkdir -p "$test_root"
 
 : "${THEOS:?Set THEOS to a checked-out Theos tree}"
+python3 "$repo_root/scripts/test-scan-helper-path.py"
 make -C "$project" package FINALPACKAGE=1 THEOS="$THEOS" \
   TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S
 package="$(find "$project/packages" -name '*.deb' -print -quit)"

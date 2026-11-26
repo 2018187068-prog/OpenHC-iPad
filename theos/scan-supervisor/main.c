@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <time.h>
+#include "ScanHelperPath.h"
 
 #if defined(OHC_SCAN_HELPER_TEST_BUILD)
 #ifndef OHC_SCAN_HELPER_TEST_SOCKET_PATH
@@ -24,9 +25,8 @@
 #define HELPER_EXPECTED_PEER_UID geteuid()
 #define HELPER_EXPECTED_PEER_GID getegid()
 #else
-#include <rootless.h>
-#define HELPER_SOCKET_PATH ROOT_PATH("/var/run/openhc/scan-ping.sock")
-#define HELPER_LOCK_PATH ROOT_PATH("/var/run/openhc/scan-ping.lock")
+#define HELPER_SOCKET_PATH OHC_SCAN_HELPER_SOCKET_PATH
+#define HELPER_LOCK_PATH OHC_SCAN_HELPER_LOCK_PATH
 #endif
 
 #define SOCKET_MODE 0660
@@ -158,7 +158,7 @@ int main(void) {
     expectedSocketGid = mobileGroup->gr_gid;
     socketPath = HELPER_SOCKET_PATH;
     struct stat parent;
-    if (lstat(ROOT_PATH("/var/run/openhc"), &parent) != 0 || !S_ISDIR(parent.st_mode)
+    if (lstat(OHC_SCAN_HELPER_RUNTIME_PATH, &parent) != 0 || !S_ISDIR(parent.st_mode)
         || parent.st_uid != 0 || (parent.st_mode & 0022) != 0
         || (parent.st_mode & S_IXOTH) == 0) return 19;
 #endif

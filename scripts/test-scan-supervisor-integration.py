@@ -44,6 +44,20 @@ def main():
                        check=True)
         command = [str(binary)]
 
+        # Model an overlong runtime relocation: production must fail closed
+        # before opening a lock or truncating the AF_UNIX path.
+        long_binary = root / "helper-long-path"
+        long_path = str(root / ("r" * 120))
+        assert len(long_path.encode("utf-8")) >= 104
+        long_define = f'-DOHC_SCAN_HELPER_TEST_SOCKET_PATH="{long_path}"'
+        subprocess.run(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                        "-DOHC_SCAN_HELPER_TEST_BUILD", long_define,
+                        str(source), "-o", str(long_binary)], check=True)
+        long_result = subprocess.run([str(long_binary)], timeout=3)
+        assert long_result.returncode == 11, "overlong socket path did not fail closed at the path guard"
+        assert not pathlib.Path(long_path + ".lock").exists(), "overlong path guard ran after lock creation"
+        print("PASS overlong relocated socket path rejected before filesystem changes")
+
         helper = subprocess.Popen(command)
         wait_for_path(path, helper)
         with connect(path) as client:

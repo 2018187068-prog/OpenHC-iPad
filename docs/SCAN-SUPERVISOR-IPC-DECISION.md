@@ -5,7 +5,7 @@
 
 ## Why this path
 
-The Theos application target packages `OpenHCScanDemo.app` under `/var/jb/Applications`; the helper package places its executable at `/var/jb/usr/libexec/openhc-scan-ping-helper`, its LaunchDaemon plist at `/var/jb/Library/LaunchDaemons/com.gcbond.openhc-scan-ping-helper.plist`, and a root-owned runtime directory at `/var/jb/var/run/openhc`. The helper derives relocated rootless paths with Theos `ROOT_PATH`; the plist uses the stable `/var/jb` bootstrap alias.
+The Theos application target packages `OpenHCScanDemo.app` under `/var/jb/Applications`; the helper package places its executable at `/var/jb/usr/libexec/openhc-scan-ping-helper`, its LaunchDaemon plist at `/var/jb/Library/LaunchDaemons/com.gcbond.openhc-scan-ping-helper.plist`, and a root-owned runtime directory at `/var/jb/var/run/openhc`. Both app client and helper address the socket through the same short `/var/jb/var/run/openhc/scan-ping.sock` alias. Do not use `ROOT_PATH` for this AF_UNIX endpoint: its relocated expansion can exceed `sockaddr_un.sun_path` even when the rootless alias resolves correctly.
 
 This is distinct from an App Store app installed into its managed container. Apple’s app-sandbox model confines that app to its container and entitled services; code living in a jailbreak bootstrap’s `/var/jb/Applications` is not an App Store installation. However, Theos packaging and that path alone do **not** prove that the target jailbreak launches this app unsandboxed or permits access to `/var/jb/var/run`. The PoC deliberately treats socket connect as fallible, and the exact target must confirm it. Do not add an invented entitlement or claim a bundle identifier authenticates the client.
 
@@ -45,6 +45,12 @@ stat -f '%u:%g %Lp %N' /var/jb/var/run/openhc /var/jb/var/run/openhc/scan-ping.s
 ```
 
 Open the demo and tap its existing **Start · 开始演示** action. Expected result: the helper status row changes to `独立 helper：PONG（固定合成响应）`; the socket is owned by root, group `mobile`, mode `660`; the directory is root-owned and not group/world writable. Because the daemon replies only after `getpeereid` accepts the kernel UID/GID, this one observation settles app-path reachability and the effective mobile UID/GID check on the target. A request failure, helper launch failure, unexpected peer credentials, or inability to load the rootless plist is a NO-GO; preserve the production backend as disabled rather than weakening the peer check. No install, device command, or wireless action was run for this patch.
+
+## Target path-length diagnosis (2026-11-27)
+
+The target iPad5,1 accepted both reviewed 0.1.0 demo packages and their installed executable hashes, and the runtime directory was observed as root-owned `0:0` mode `0755`. Launchd repeatedly spawned the fixed helper and reported exit 11; production return 11 is the existing `strlen(socketPath) >= sizeof(sockaddr_un.sun_path)` fail-closed guard. The resolved Theos `ROOT_PATH` value is therefore not suitable for this AF_UNIX address even though `/var/jb/var/run/openhc` exists. The coordinator booted out the fixed job; do not restart it automatically. UIKit has not yet shown PONG, and FE35's separate Simulator regression remains isolated.
+
+The repair uses a shared `ScanHelperPath.h` constant for both the helper and UIKit client, with the short `/var/jb` bootstrap alias also used for runtime directory and lock access. It retains the runtime length guard and adds a regression case that compiles the real helper with an overlong relocated-path fixture and requires exit 11 before filesystem setup; a source check verifies both production endpoints share the 37-byte alias. The installer now checks Darwin/model/root/rootless gates before all diagnostic or stop branches, never bootstraps the daemon as a side effect, and blocks installation while its pinned packages are the known path-broken revision. New app/helper DEBs, their hashes, and centralized Apple CI results remain pending; currently installed packages are not replaced by old artifacts.
 
 ## Alternatives
 

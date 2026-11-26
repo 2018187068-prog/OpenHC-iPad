@@ -7,12 +7,7 @@
 #import <errno.h>
 #import <stdint.h>
 #import <time.h>
-#if __has_include(<rootless.h>)
-#import <rootless.h>
-#define OHC_HELPER_SOCKET_PATH ROOT_PATH("/var/run/openhc/scan-ping.sock")
-#else
-#define OHC_HELPER_SOCKET_PATH "/var/jb/var/run/openhc/scan-ping.sock"
-#endif
+#import "ScanHelperPath.h"
 #import <string.h>
 
 static int64_t monotonicMillis(void) {
@@ -70,7 +65,7 @@ static BOOL readAll(int fd, void *bytes, size_t count, int64_t deadlineMs) {
             if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe)) != 0)
                 ok = NO;
             struct sockaddr_un address = { .sun_family = AF_UNIX };
-            const char *path = OHC_HELPER_SOCKET_PATH;
+            const char *path = OHC_SCAN_HELPER_SOCKET_PATH;
             size_t pathLength = strlen(path);
             if (pathLength >= sizeof(address.sun_path)) ok = NO;
             else {

@@ -51,7 +51,7 @@ static void qrTests(void) {
         uint8_t *pixels = calloc(edge * edge, 4);
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
         CGContextRef bitmap = CGBitmapContextCreate(pixels, edge, edge, 8, edge * 4, space,
-            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+            (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
         CGContextDrawImage(bitmap, CGRectMake(0, 0, edge, edge), image.CGImage);
         BOOL crisp = YES, border = YES;
         for (size_t y = 0; y < edge; y++) for (size_t x = 0; x < edge; x++) {

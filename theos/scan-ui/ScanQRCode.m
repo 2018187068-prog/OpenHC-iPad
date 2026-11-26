@@ -19,7 +19,7 @@ UIImage *OHCScanQRCode(NSString *text, NSInteger scale, NSInteger *moduleWidth) 
     CGColorSpaceRef colors = CGColorSpaceCreateDeviceGray();
     if (!colors) { CGDataProviderRelease(provider); return nil; }
     CGImageRef output = CGImageCreate(bitmap.edge, bitmap.edge, 8, 8, bitmap.edge,
-        colors, kCGImageAlphaNone, provider, NULL, false, kCGRenderingIntentDefault);
+        colors, (CGBitmapInfo)kCGImageAlphaNone, provider, NULL, false, kCGRenderingIntentDefault);
     UIImage *image = output ? [UIImage imageWithCGImage:output scale:1 orientation:UIImageOrientationUp] : nil;
     if (image && moduleWidth) *moduleWidth = bitmap.modules;
     if (output) CGImageRelease(output);

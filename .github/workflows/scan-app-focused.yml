@@ -1,0 +1,130 @@
+name: Focused scan App validation (not full protocol acceptance)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  focused-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Run affected Linux socket programs and JVM (no ignored failure)
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p focused-results
+          failed=0
+          for suite in btstack-probe btstack-transport-socket session-owner-probe scan-qr-cpu scan-demo-archive prepare-scan-app-reuse; do
+            python3 "scripts/test-$suite.py" >"focused-results/linux-$suite.log" 2>&1 || failed=1
+            cat "focused-results/linux-$suite.log"
+          done
+          gradle :bridge:jvmTest --no-daemon --stacktrace >focused-results/jvm.log 2>&1 || failed=1
+          cat focused-results/jvm.log
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scan-focused-host-${{ github.sha }}
+          path: focused-results/
+          if-no-files-found: error
+
+  focused-apple:
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Verify pinned source artifact and restore framework/crypto only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/logs
+          gh api repos/2018187068-prog/OpenHC-iPad/actions/artifacts/15145905964/zip > "$RUNNER_TEMP/scan-source.zip"
+          python3 scripts/prepare-scan-app-reuse.py "$RUNNER_TEMP/scan-source.zip" --restore | tee artifacts/logs/reuse-source.log
+          bash scripts/verify-apple-artifact.sh artifacts/iosArm64/OpenHCBridge.framework
+          printf 'source_commit=%s\nscope=focused-App-and-host-not-full-protocol\nreused_source=6d1731813d95e8e60f7628a7a06f95848668c6f2\nreused_run=45875853812\nreused_artifact=15145905964\n' "$GITHUB_SHA" > artifacts/BUILD.txt
+          xcodebuild -version >> artifacts/BUILD.txt
+          xcodebuild -showsdks >> artifacts/BUILD.txt
+      - name: Validate changed Darwin host and iOS C paths without helper rebuild
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          for suite in btstack-probe btstack-transport-socket session-owner-probe; do
+            python3 "scripts/test-$suite.py" >"artifacts/logs/darwin-$suite.log" 2>&1 || failed=1
+            cat "artifacts/logs/darwin-$suite.log"
+          done
+          for source in btstack-probe session-owner-probe; do
+            xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -std=c11 -Wall -Wextra -Werror -c "theos/$source.c" -o "$RUNNER_TEMP/$source.o" || failed=1
+          done
+          exit "$failed"
+      - name: Build only missing Simulator framework using pinned crypto
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :bridge:linkReleaseFrameworkIosSimulatorArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/focused-simulator-framework.log
+      - name: Install App packaging tools
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          brew install ldid dpkg
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+          python3 scripts/test-scan-demo-archive.py --native-writer scripts/scan-demo-dpkg-deb.sh 2>&1 | tee artifacts/logs/app-archive-writer.log
+      - name: Validate CPU QR system decoder, UIKit lifecycle and actual App DEB
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/check-scan-ui.sh 2>&1 | tee artifacts/logs/scan-ui-check.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scan-focused-app-${{ github.sha }}
+          path: |
+            artifacts/BUILD.txt
+            artifacts/logs/
+            artifacts/scan-ui/
+          if-no-files-found: error
+
+  focused-required:
+    if: always()
+    needs: [focused-host, focused-apple]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require both focused jobs (no full protocol claim)
+        env:
+          HOST_RESULT: ${{ needs.focused-host.result }}
+          APPLE_RESULT: ${{ needs.focused-apple.result }}
+        run: |
+          test "$HOST_RESULT" = success
+          test "$APPLE_RESULT" = success

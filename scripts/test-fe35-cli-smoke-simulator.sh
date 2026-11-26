@@ -30,6 +30,7 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   "$repo_root/theos/main.m" "$repo_root/theos/fe35-bridge-smoke.m" \
   "$repo_root/theos/fe35-control-bridge.m" "$repo_root/theos/btstack-probe.c" \
   "$repo_root/scripts/fe35-cli-smoke-runner.m" \
+  "$repo_root/scripts/scan-transport-sim-fixture.m" \
   "$repo_root/scripts/fe35-inbound-sim-probe-stubs.c" \
   -o "$app/fe35-cli-smoke"
 codesign --force --sign - "$app"

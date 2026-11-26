@@ -68,6 +68,7 @@ jobs:
           grep -q '@interface OHCBScanReceiverEvent' "$header"
           grep -q 'onControlRfcommReadyGeneration:' "$header"
           grep -q 'onControlSdpReadyGeneration:' "$header"
+          grep -q 'onTransportEventGeneration:' "$header"
           grep -q 'takeAuthHandoffGeneration:' "$header"
           cp "$header" artifacts/iosArm64/OpenHCBridge-ObjC-API.h
           cp -R bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework artifacts/iosArm64/

@@ -29,6 +29,31 @@ static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *typ
 static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
                             int64_t deadline, const char *run_dir);
 
+/* Per-thread scoped binding: cancellation/deadline also interrupt fragmented
+ * registration replies. Cleared before cleanup so Stop cannot cancel teardown. */
+static _Thread_local fe35_scan_transport *current_scan;
+static _Thread_local int scan_ended;
+
+static int scan_event(const char *kind, int channel) {
+    if (!current_scan || scan_ended) return scan_ended ? -1 : 0;
+    int result = current_scan->notify(current_scan->context, current_scan->generation,
+                                       kind, channel, now_ms());
+    if (result) scan_ended = 1;
+    return result ? -1 : 0;
+}
+
+static int scan_poll(void) {
+    if (!current_scan) return 0;
+    if (scan_ended) return -1;
+    if (current_scan->stop_fd >= 0) {
+        struct pollfd stop = {current_scan->stop_fd, POLLIN, 0};
+        int result = poll(&stop, 1, 0);
+        if (result < 0 && errno != EINTR) return scan_event("FAILED", 0), -1;
+        if (result > 0) return scan_event("STOP", 0), -1;
+    }
+    return scan_event("TICK", 0);
+}
+
 static int read_bounded(int fd, uint8_t *buf, size_t size, int64_t deadline) {
     while (size) {
         int64_t now = now_ms();
@@ -89,11 +114,16 @@ static int64_t now_ms(void) {
 
 static int ready(int fd, short events, int64_t deadline) {
     for (;;) {
+        if (scan_poll()) return -1;
         int64_t now = now_ms();
         if (now < 0 || now >= deadline) return -1;
         struct pollfd p = {fd, events, 0};
-        int r = poll(&p, 1, (int)(deadline - now));
+        int wait = (int)(deadline - now);
+        if (current_scan && wait > 20) wait = 20;
+        int r = poll(&p, 1, wait);
         if (r < 0 && errno == EINTR) continue;
+        if (r == 0 && current_scan) continue;
+        if (scan_poll()) return -1;
         return r > 0 && (p.revents & events) ? 0 : -1;
     }
 }
@@ -216,14 +246,16 @@ static int guard_ready(const char *run_dir) {
 static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
                             int64_t deadline, const char *run_dir) {
     while (size) {
+        if (scan_poll()) return -1;
         int64_t now = now_ms();
         if (now < 0 || now >= deadline) return -1;
-        int64_t slice = now + 2000;
+        int64_t slice = now + (current_scan ? 20 : 2000);
         if (slice > deadline) slice = deadline;
         struct pollfd p = {fd, sending ? POLLOUT : POLLIN, 0};
         int r = poll(&p, 1, (int)(slice - now));
         if (r < 0 && errno == EINTR) continue;
         if (r == 0) continue;
+        if (scan_poll()) return -1;
         if (r < 0 || !(p.revents & (sending ? POLLOUT : POLLIN))) return -1;
         ssize_t n = sending ? send(fd, buf, size, 0) : recv(fd, buf, size, 0);
         if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
@@ -619,7 +651,8 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
  * public Kotlin/Native bridge, then explicitly release owned services/CID.
  * Peer addresses, session bytes, UUIDs, and key material are never logged.
  */
-static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge) {
+static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge,
+                              fe35_scan_transport *scan) {
     uint8_t state[3], reply[7], owned_channel = 0;
     uint32_t handle = 0;
     uint16_t cid = 0, packet_type = 0, packet_channel = 0;
@@ -630,7 +663,14 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     int listener_ready = 0, session_started = 0;
     unsigned status = 0;
     const char *stage = "GUARD";
+    if (current_scan || (scan && (!scan->notify || scan->generation <= 0))) {
+        if (bridge) fe35_bridge_close(bridge);
+        return 1;
+    }
+    current_scan = scan;
+    scan_ended = 0;
     if (guard_ready(run_dir) || !bridge) goto done;
+    if (scan_poll()) goto done;
     fd = connect_daemon(path);
     if (fd < 0) { stage = "CONNECT"; goto done; }
     stage = "STATE";
@@ -646,6 +686,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         if (status != 0x71) goto done;
     }
     if (!owned_channel) { stage = "RFCOMM_CHANNELS_BUSY"; goto done; }
+    if (scan_event("RFCOMM_READY", owned_channel)) goto done;
 
     stage = "FE35_SDP";
     {
@@ -653,9 +694,11 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         size_t record_size = service_record(record, 0xfe35, owned_channel);
         if (exchange(fd, 0x30, record, record_size, 0x90, reply, 7)) goto done;
         status = reply[2];
-        handle = le32(reply + 3);
-        if (status || handle < 0x10000) goto done;
+        uint32_t candidate = le32(reply + 3);
+        if (status || candidate < 0x10000) goto done;
+        handle = candidate;
     }
+    if (scan_poll() || scan_event("SDP_READY", owned_channel)) goto done;
 
     stage = "INCOMING_TIMEOUT";
     {
@@ -705,6 +748,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
                 goto done;
             }
             found = opened = 1;
+            if (scan_event("ACCEPTED", owned_channel)) goto done;
             printf("BTSTACK_FE35_INCOMING_OPENED_PROFILE=%s\n",
                    strict ? "strict-17" : "reference-17-len16");
             break;
@@ -776,6 +820,12 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         result = 0;
     } else stage = disconnected ? "CONTROL_DISCONNECTED_EARLY" : "SESSION_DEADLINE";
 done:
+    /* Revoke pairing before touching resources. The common model emits CLOSE
+     * once; a later CLEANED/failed callback cannot request a second cleanup. */
+    if (scan) {
+        (void)scan->notify(scan->context, scan->generation, result ? "FAILED" : "STOP", 0, now_ms());
+        current_scan = NULL;
+    }
     if (fd >= 0) {
         int cleanup_ok = 1;
         int64_t deadline = now_ms() + 4000;
@@ -827,6 +877,10 @@ done:
         if (disconnected) puts("BTSTACK_FE35_DISCONNECT_CONFIRMED");
     }
     if (bridge) fe35_bridge_close(bridge);
+    if (scan) {
+        (void)scan->notify(scan->context, scan->generation, "CLEANED", 0, now_ms());
+        scan_ended = 0;
+    }
     (void)accepted;
     return result;
 }
@@ -848,7 +902,19 @@ static int inbound_with_bridge(const char *path, const char *run_dir) {
         puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_CREATE");
         return 1;
     }
-    return transport_inbound(path, run_dir, bridge);
+    return transport_inbound(path, run_dir, bridge, NULL);
+}
+
+int openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle bridge,
+                               fe35_scan_transport *scan) {
+    if (!scan) { if (bridge) fe35_bridge_close(bridge); return 1; }
+#ifdef OPENHC_FE35_SIMULATOR_TEST
+    const char *path = getenv("OPENHC_FE35_TEST_SOCKET");
+    if (!path || !*path) { if (bridge) fe35_bridge_close(bridge); return 1; }
+    return transport_inbound(path, run_dir, bridge, scan);
+#else
+    return transport_inbound("/tmp/BTstack", run_dir, bridge, scan);
+#endif
 }
 
 static int remove_services(int fd, uint8_t channels[2], uint32_t handles[2]) {

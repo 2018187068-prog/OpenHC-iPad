@@ -186,6 +186,10 @@ def run_inbound_case(executable, case):
                     command(conn, 1, b'')
                     send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
                     command(conn, 0x42, bytes([16, 0, 2]))
+                    if case == 'rfcomm_failure':
+                        send_frame(conn, 4, 0, bytes([0x85, 2, 4, 16]))
+                        wire_check(conn.recv(1) == b'', 'failed_rfcomm_no_owned_cleanup')
+                        return
                     send_frame(conn, 4, 0, bytes([0x85, 2, 0, 16]))
                     packet_type, channel, size = struct.unpack('<HHH', exact(conn, 6))
                     packet = exact(conn, size)
@@ -193,6 +197,13 @@ def run_inbound_case(executable, case):
                     wire_check((packet_type, channel, opcode, length) == (1, 0, 0xF430, size - 3), 'control_sdp_header')
                     wire_check(b'\xfe\x35' in packet[3:], 'control_sdp_uuid')
                     wire_check(bytes([16]) in packet[3:], 'control_sdp_channel')
+                    if case == 'sdp_failure':
+                        send_frame(conn, 4, 0, bytes([0x90, 5, 4]) + struct.pack('<I', 0x1ffff))
+                        command(conn, 0x43, bytes([16, 0]))
+                        command(conn, 1, b'')
+                        send_frame(conn, 4, 0, bytes([0x60, 1, 2]))
+                        wire_check(conn.recv(1) == b'', 'failed_sdp_no_unowned_handle_cleanup')
+                        return
                     send_frame(conn, 4, 0, bytes([0x90, 5, 0]) + struct.pack('<I', 0x10001))
                     if case == 'incoming_timeout':
                         time.sleep(.3)
@@ -296,10 +307,11 @@ def main():
         run_case(executable, 'strict_event')
         print('BTSTACK_TRANSPORT_SOCKET_REOPEN_OK=2')
         before_inbound_assertions = WIRE_ASSERTIONS
-        for case in ('success', 'bridge_exception', 'accept_failure', 'incoming_timeout', 'daemon_cleanup'):
+        for case in ('success', 'bridge_exception', 'accept_failure', 'incoming_timeout', 'daemon_cleanup',
+                     'rfcomm_failure', 'sdp_failure'):
             run_inbound_case(executable, case)
             print('BTSTACK_INBOUND_SOCKET_CASE_OK=' + case)
-        print('BTSTACK_INBOUND_SOCKET_TESTS_OK=5')
+        print('BTSTACK_INBOUND_SOCKET_TESTS_OK=7')
         print('BTSTACK_INBOUND_WIRE_ASSERTIONS_OK=' + str(WIRE_ASSERTIONS - before_inbound_assertions))
 
 

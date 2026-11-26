@@ -117,6 +117,19 @@ class ScanReceiverSession internal constructor(
     fun tick(generation: Long, nowMillis: Long): List<ScanReceiverEvent> =
         update(generation, nowMillis) { emptyList() }
 
+    /** Native transport boundary, solely for the initial FE35 listener. Every callback
+     * carries the generation captured before registration; late callbacks cannot revive it.
+     * CLEANED acknowledges platform teardown and terminates a still-active session. */
+    fun onTransportEvent(generation: Long, kind: String, channel: Int, nowMillis: Long): List<ScanReceiverEvent> =
+        when (kind) {
+            "RFCOMM_READY" -> onControlRfcommReady(generation, channel, nowMillis)
+            "SDP_READY" -> onControlSdpReady(generation, nowMillis)
+            "ACCEPTED" -> onControlAccepted(generation, nowMillis)
+            "TICK" -> tick(generation, nowMillis)
+            "STOP", "CLEANED" -> stop(generation)
+            else -> onControlFailure(generation, nowMillis)
+        }
+
     /** Stop is clock-independent and idempotent, including during partial listener startup. */
     fun stop(generation: Long): List<ScanReceiverEvent> = lock.withLock {
         if (generation != currentGeneration || !active()) emptyList() else finish("STOPPED", "STOP_REQUESTED")

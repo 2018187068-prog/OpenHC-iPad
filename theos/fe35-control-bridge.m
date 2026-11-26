@@ -126,3 +126,25 @@ void fe35_bridge_close(fe35_bridge_handle handle) {
         @catch (__unused NSException *exception) { }
     }
 }
+
+int fe35_scan_notify(void *context, int64_t generation, const char *kind,
+                     int channel, int64_t now_ms) {
+    fe35_scan_binding *binding = context;
+    if (!binding || !binding->session || !binding->sink || !kind) return -1;
+    @autoreleasepool {
+        @try {
+            OHCBScanReceiverSession *session = (__bridge OHCBScanReceiverSession *)binding->session;
+            if (session.generation != generation) return 1;
+            NSArray<OHCBScanReceiverEvent *> *events = [session
+                onTransportEventGeneration:generation kind:[NSString stringWithUTF8String:kind]
+                channel:channel nowMillis:now_ms];
+            int close = 0;
+            for (OHCBScanReceiverEvent *event in events) {
+                if ([event.kind isEqualToString:@"CLOSE_CONTROL_TRANSPORT"]) close = 1;
+            }
+            binding->sink(binding->sink_context, (__bridge void *)events);
+            return close || [session.state isEqualToString:@"STOPPED"] ||
+                [session.state isEqualToString:@"FAILED"];
+        } @catch (__unused NSException *exception) { return -1; }
+    }
+}

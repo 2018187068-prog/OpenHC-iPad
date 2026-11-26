@@ -39,4 +39,32 @@ int fe35_bridge_copy_event(fe35_bridge_batch batch, size_t index, fe35_bridge_ev
 void fe35_bridge_release_batch(fe35_bridge_batch batch);
 void fe35_bridge_close(fe35_bridge_handle bridge);
 
+/* A serialized, borrowed ScanReceiverSession binding. The owner starts the common
+ * session first, supplies that generation, and keeps context alive until return.
+ * notify delivers common events to the owner's in-memory sink; return 1 when a
+ * CLOSE_CONTROL_TRANSPORT action occurs, -1 on bridge failure, otherwise 0.
+ * A readable/hung-up stop_fd requests Stop; -1 disables external cancellation.
+ * Never run this bounded blocking API on the UI thread. It consumes control_bridge. */
+typedef struct {
+    void *context;
+    int64_t generation;
+    int stop_fd;
+    int (*notify)(void *context, int64_t generation, const char *kind,
+                  int channel, int64_t now_ms);
+} fe35_scan_transport;
+
+/* ObjC binding: context is a borrowed OHCBScanReceiverSession. The sink receives
+ * a borrowed NSArray<OHCBScanReceiverEvent *>; retain only for foreground delivery.
+ * It must process CLEAR_PAIRING and generation changes and must never log QR/PIN. */
+typedef void (*fe35_scan_event_sink)(void *sink_context, void *events);
+typedef struct {
+    void *session;
+    void *sink_context;
+    fe35_scan_event_sink sink;
+} fe35_scan_binding;
+int fe35_scan_notify(void *binding, int64_t generation, const char *kind,
+                     int channel, int64_t now_ms);
+int openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle control_bridge,
+                               fe35_scan_transport *scan);
+
 #endif

@@ -322,6 +322,111 @@ def run_case(args, case):
     print("FE35_KN_INBOUND_CASE_ASSERTIONS=" + str(ASSERTIONS - started_assertions))
 
 
+def run_scan_case(args, case):
+    """Real C/ObjC/common Kotlin session, mocked only at the daemon socket."""
+    documents = Path(args.data_dir) / "Documents"
+    guard = documents / ("scan-guard-" + case)
+    guard.mkdir(parents=True, exist_ok=True)
+    (guard / "ready").write_text("READY\n", encoding="ascii")
+    (guard / "deadline").write_text(str(int(time.time()) + 120) + "\n", encoding="ascii")
+    (guard / "heartbeat").write_text("POWER_DRIVER_OWNS_THIS\n", encoding="ascii")
+    result_file = documents / "fe35-cli-result"
+    result_file.unlink(missing_ok=True)
+    errors = []
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    server.settimeout(6)
+
+    def trace_has(line):
+        trace_file = guard / "scan-events"
+        return trace_file.exists() and line in trace_file.read_text(encoding="ascii")
+
+    def cleanup(conn, sdp=True):
+        # A callback sink writes this synchronously before the first removal.
+        if sdp:
+            read_command(conn, 0x31, struct.pack("<I", 0x10001))
+        else:
+            read_command(conn, 0x43, bytes([16, 0]))
+        check(trace_has("EVENT=CLEAR_PAIRING\nEVENT=CLOSE_CONTROL_TRANSPORT"),
+              "pairing revoked before daemon cleanup")
+        if sdp:
+            read_command(conn, 0x43, bytes([16, 0]))
+        read_command(conn, 1, b"")
+        if case == "cleanup_failure":
+            return
+        send_event(conn, 0x60, bytes([2]))
+        check(conn.recv(1) == b"", "cleanup commands sent exactly once, client closed")
+
+    def serve():
+        try:
+            with server.accept()[0] as conn:
+                conn.settimeout(6)
+                read_command(conn, 1, b"")
+                send_event(conn, 0x60, bytes([2]))
+                read_command(conn, 0x42, bytes([16, 0, 2]))
+                if case == "rfcomm_failure":
+                    send_event(conn, 0x85, bytes([4, 16]))
+                    check(conn.recv(1) == b"", "failed RFCOMM owns no resources")
+                    return
+                if case in ("stop_rfcomm_wait", "deadline_wait"):
+                    # No acknowledgement: teardown must rely on client ownership,
+                    # and must neither register SDP nor unregister an unknown channel.
+                    check(conn.recv(1) == b"", "cancelled pending registration closes socket")
+                    return
+                send_event(conn, 0x85, bytes([0, 16]))
+                kind, channel, record = read_packet(conn)
+                check((kind, channel, record[:3]) == (1, 0, bytes([0x30, 0xf4, len(record) - 3])),
+                      "scan SDP command")
+                assert_service_record(record[3:], b"\x19\xfe\x35", 16)
+                check(not trace_has("EVENT=PAIRING_READY"), "RFCOMM alone cannot publish pairing")
+                if case == "sdp_failure":
+                    # Garbage handle on failure is not ownership acknowledgement.
+                    send_event(conn, 0x90, bytes([4]) + struct.pack("<I", 0x1ffff))
+                    cleanup(conn, sdp=False)
+                    return
+                if case == "stop_sdp_wait":
+                    # Deliver a late successful ack after Stop revoked the session.
+                    time.sleep(.10)
+                    check(trace_has("EVENT=CLEAR_PAIRING"), "Stop during SDP wait revoked pairing")
+                    send_event(conn, 0x90, bytes([0]) + struct.pack("<I", 0x10001))
+                    cleanup(conn, sdp=False)
+                    return
+                send_event(conn, 0x90, bytes([0]) + struct.pack("<I", 0x10001))
+                cleanup(conn)
+        except Exception as exc:
+            errors.append(repr(exc))
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
+        "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name, case],
+        capture_output=True, text=True, timeout=12)
+    check(launch.returncode == 0, "scan fixture launched")
+    for _ in range(60):
+        if result_file.exists():
+            break
+        time.sleep(.25)
+    check(result_file.exists(), "scan fixture bounded completion")
+    thread.join(8)
+    server.close()
+    status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
+    check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
+    check(result_file.read_text(encoding="ascii").strip() == "0", "real common sink assertions " + status)
+    trace = (guard / "scan-events").read_text(encoding="ascii")
+    expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure"))
+    check(trace.count("EVENT=PAIRING_READY\n") == expected_ready, "dual readiness once " + trace)
+    check(trace.count("EVENT=CLEAR_PAIRING\n") == 1, "clear exactly once " + trace)
+    check(trace.count("EVENT=CLOSE_CONTROL_TRANSPORT\n") == 1, "close exactly once " + trace)
+    check(trace.count("CALLBACK=CLEANED\n") == 1, "cleaned exactly once " + trace)
+    check("COUNTS=" + str(expected_ready) + ",1,1,1" in trace, "late and old callbacks inert")
+    check("hicar://" not in status + trace, "QR never enters diagnostic output")
+    check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
+          "scan never owns power heartbeat")
+    shutil.rmtree(guard)
+    print("SCAN_NATIVE_SOCKET_CASE_OK=" + case)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--udid", required=True)
@@ -331,6 +436,11 @@ def main():
     for case in ("success", "listener_registration_failure", "incoming_timeout"):
         run_case(args, case)
     print("FE35_KN_INBOUND_ASSERTIONS=" + str(ASSERTIONS))
+    for case in ("ready_stop", "rfcomm_failure", "sdp_failure", "stop_rfcomm_wait",
+                 "stop_sdp_wait", "deadline_wait", "ready_timeout", "cleanup_failure"):
+        run_scan_case(args, case)
+    print("SCAN_NATIVE_SOCKET_TESTS_OK=8")
+    print("FE35_AND_SCAN_KN_ASSERTIONS=" + str(ASSERTIONS))
 
 
 if __name__ == "__main__":

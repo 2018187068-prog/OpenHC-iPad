@@ -17,6 +17,29 @@ class ScanReceiverSessionTest {
         return s.onControlSdpReady(s.generation, now).single()
     }
 
+    @Test fun nativeTransportEventsRequireSameGenerationAndBothRegistrations() {
+        val s = session()
+        assertEquals("OPEN_CONTROL_LISTENER", s.start(0).single().kind)
+        val generation = s.generation
+        assertTrue(s.onTransportEvent(generation + 1, "RFCOMM_READY", 16, 1).isEmpty())
+        assertTrue(s.onTransportEvent(generation, "RFCOMM_READY", 16, 1).isEmpty())
+        assertTrue(s.onTransportEvent(generation, "TICK", 0, 2).isEmpty())
+        val event = s.onTransportEvent(generation, "SDP_READY", 0, 3).single()
+        assertEquals("PAIRING_READY", event.kind)
+        assertTrue(s.onTransportEvent(generation - 1, "FAILED", 0, 4).isEmpty())
+    }
+
+    @Test fun nativeTransportStopAndCleanupAreIdempotentAgainstLateEvents() {
+        val s = session()
+        s.start(0)
+        val generation = s.generation
+        s.onTransportEvent(generation, "RFCOMM_READY", 16, 1)
+        val stopped = s.onTransportEvent(generation, "STOP", 0, 2)
+        assertEquals(listOf("CLEAR_PAIRING", "CLOSE_CONTROL_TRANSPORT", "STOPPED"), kinds(stopped))
+        assertTrue(s.onTransportEvent(generation, "SDP_READY", 0, 3).isEmpty())
+        assertTrue(s.onTransportEvent(generation, "CLEANED", 0, 4).isEmpty())
+    }
+
     @Test fun qrMatchesExactUpstreamOrderUnicodeAndCapabilities() {
         val expected = "hicar://car/connect?devicename=演示车机&mac=A0:B1:C2:D3:E4:F5&moduleid=A1B2C3&submoduleid=D4&pin=000007&ability=4"
         val qr = PairingQrCode.build(host(), "a0-b1-c2-d3-e4-f5", "000007", false)

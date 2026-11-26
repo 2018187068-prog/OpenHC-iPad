@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 int openhc_cli_main(int argc, const char *argv[]);
+int openhc_scan_transport_fixture(const char *run_dir, const char *scenario);
 
 static int write_all(int fd, const uint8_t *bytes, size_t size) {
     while (size) {
@@ -54,7 +55,7 @@ int main(int argc, char *argv[]) {
         int result;
         if (argc == 2 && strcmp(argv[1], "--fe35-bridge-smoke") == 0) {
             result = openhc_cli_main(argc, (const char **)argv);
-        } else if (argc == 3) {
+        } else if (argc == 3 || argc == 4) {
             if (chdir(NSHomeDirectory().fileSystemRepresentation) != 0 ||
                 setenv("OPENHC_FE35_TEST_SOCKET", argv[1], 1) != 0 || setup_bridge_input()) return 91;
             NSString *logPath = [NSHomeDirectory() stringByAppendingPathComponent:
@@ -66,7 +67,8 @@ int main(int argc, char *argv[]) {
             }
             close(logFD);
             const char *cli_argv[] = {"openhc-bridge-check", "--btstack-control-inbound", argv[2]};
-            result = openhc_cli_main(3, cli_argv);
+            result = argc == 4 ? openhc_scan_transport_fixture(argv[2], argv[3]) :
+                openhc_cli_main(3, cli_argv);
         } else {
             return 92;
         }

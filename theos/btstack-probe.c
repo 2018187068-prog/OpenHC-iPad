@@ -129,9 +129,6 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
     int64_t start = now_ms();
     if (start < 0) return -1;
     int64_t deadline = start + 4000;
-#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
-    deadline = start + 150;
-#endif
     if (command(fd, ocf, params, size, deadline)) return -1;
     for (unsigned i = 0; i < 32; ++i) {
         uint8_t header[6], body[1024];

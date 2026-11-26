@@ -24,7 +24,7 @@
 | `CLEAR_SNAPSHOT` | 固定检查集完整、已知 helper 的活动状态 metadata 未报活动、shared helper 均未出现、无恢复 job、marker 明确 absent、无未解释 broker owner | 只表示该时点的限定检查集未见竞争；进程名不单独证明活动或空闲，不声称绝对不存在并发或消除后续竞态 |
 | `UNKNOWN` | 快照不全、shared helper 角色未明、socket owner 与 comm 不匹配、恢复 job 活跃、marker 残留/无法读取或 owner/marker 元数据缺失 | 阻断；只补造成 UNKNOWN 的最小 metadata，不追加泛化探针 |
 
-Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。真实 C/ObjC/Kotlin-Native inbound session 已在固定 CI 合成 socket peer 中贯通；真机仍无新鲜 metadata 快照，也没有真实 FE35 bridge config FD provider。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
+Marker 只能作为一项辅助状态，不能单独证明活动/空闲；进程名或 Showcase 主进程存在不能单独判活动；进程缺席不能证明绝对无并发。正向活动状态优先于 broker 分类。判据不要求证明“绝对不存在并发”。真实 C/ObjC/Kotlin-Native inbound session 已在固定 CI 合成 socket peer 中贯通；本地 identity-to-FD provider 已实现，真机仍无新鲜 metadata 快照，也没有本机 Bluetooth address 的受控 FD 来源。owner/comm 的旧快照不得复用；未来执行若 collector 当前快照为 `UNKNOWN` 即停止。不复测工具启动、不执行无关上电探针。
 
 ## 离线实现与明确阻塞
 

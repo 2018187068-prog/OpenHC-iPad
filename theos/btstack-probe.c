@@ -484,9 +484,9 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
                 offset += part;
             }
         } else if (strcmp(event.kind, "OPEN_AUTH_LISTENER") == 0) {
-            if (event.uuid_size != sizeof(auth_uuid) || *auth_channel || *auth_handle) { result = -1; }
+            if (event.uuid_size != 16 || *auth_channel || *auth_handle) { result = -1; }
             else {
-                memcpy(auth_uuid, event.uuid, sizeof(auth_uuid));
+                memcpy(auth_uuid, event.uuid, 16);
                 if (open_auth_listener(fd, auth_uuid, auth_channel, auth_handle)) result = -1;
                 else {
                     fe35_bridge_batch ready = fe35_bridge_listener_ready(bridge, *auth_channel);

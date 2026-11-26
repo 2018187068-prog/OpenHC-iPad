@@ -13,7 +13,9 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   -F"$(dirname "$framework")" -framework OpenHCBridge -framework UIKit \
   -framework Foundation -framework CoreImage -framework CoreGraphics -framework QuartzCore \
   "$repo_root/theos/scan-ui/main.m" "$repo_root/theos/scan-ui/ScanDemo.m" \
-  "$repo_root/theos/scan-ui/ScanQRCode.m" "$repo_root/scripts/scan-ui-tests.m" \
+  "$repo_root/theos/scan-ui/ScanQRCode.m" \
+  "$repo_root/theos/scan-supervisor/ScanHelperClient.m" \
+  "$repo_root/scripts/scan-ui-tests.m" \
   -o "$app/OpenHCScanDemo"
 codesign --force --sign - "$app"
 udid="$(python3 - <<'PY'
@@ -63,8 +65,9 @@ echo SCAN_UI_SIMULATOR_ACCEPTANCE_OK
 # Independent rootless UIKit package. Existing CLI target and DEB remain intact.
 make -C "$repo_root/theos/scan-ui" package FINALPACKAGE=1 THEOS="$THEOS" \
   TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S
-cp "$repo_root/theos/scan-ui/packages/"*.deb "$repo_root/artifacts/scan-ui/"
 package="$(find "$repo_root/theos/scan-ui/packages" -name '*.deb' -print -quit)"
+python3 "$repo_root/scripts/check-scan-demo-archive.py" "$package"
+cp "$package" "$repo_root/artifacts/scan-ui/"
 dpkg-deb -c "$package"
 dpkg-deb -f "$package" Package Architecture
 dpkg-deb -x "$package" "$test_root/device-package"

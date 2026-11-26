@@ -29,6 +29,12 @@ THEOS=/path/to/theos bash scripts/check-scan-supervisor-helper.sh
 
 ## Minimum harmless target-device validation
 
+**Packaging prerequisite (2026-11-27):** artifact `15133189055` / run `45847497955` is forbidden for installation: the real DEBs carry builder UID/GID `501:20` even on the helper's required root-owned runtime directory. The macOS process tests did not validate these archive owners. Both demo Makefiles now explicitly select `scripts/scan-demo-dpkg-deb.sh`, which delegates to native `dpkg-deb --root-owner-group` rather than Darwin's default `dm.pl`. Theos' `makefiles/package/deb.mk` invokes `_THEOS_PLATFORM_DPKG_DEB` as a writer with `-b`, and `makefiles/platform/Darwin.mk` defaults this variable to `dm.pl`; overriding the executable per demo target preserves the normal Theos rootless staging/package flow. No filesystem ownership rewrite, privileged build, install-time recursive chown, or peer-check relaxation is involved. The supported dpkg switch sets archived IDs to root without requiring the build user's effective UID to be root.
+
+`scripts/check-scan-demo-archive.py` checks the numeric tar header UID/GID for both control and data archives before extraction or artifact publication. All members, including shared ancestors, must be `0:0`; directories/executables must be `0755`, metadata/plists must be `0644`. Only the exact two demo layouts and fixed helper launchd keys are accepted; symlinks, hardlinks, devices, duplicate/traversal paths, maintainer scripts/triggers and unexpected payloads are rejected. This root-only packaging policy requires no app-specific ownership exception: the app executable runs under the launcher's credentials, and its writable state belongs in the ordinary app data container, not its package directory. The regression suite explicitly rejects `501:20` fixtures for both packages and checks root-owned positive fixtures. Actual built DEBs must independently pass the same archive checker; extracted-host `stat` cannot substitute for it.
+
+Packaging source references: <https://github.com/theos/theos/blob/master/makefiles/package/deb.mk>, <https://github.com/theos/theos/blob/master/makefiles/platform/Darwin.mk>, and dpkg-deb `--root-owner-group` at <https://manpages.debian.org/bookworm/dpkg/dpkg-deb.1.en.html>.
+
 After the coordinator’s planned package installation, use the authorized root shell to run only these checks; they do not inspect identity material or touch Bluetooth/power:
 
 ```sh

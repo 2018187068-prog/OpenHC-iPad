@@ -1,6 +1,7 @@
 #import "ScanDemo.h"
 #import "ScanQRCode.h"
 #include <time.h>
+#import "../scan-supervisor/ScanHelperClient.h"
 
 static int64_t scanNow(void) {
     struct timespec t;
@@ -65,6 +66,7 @@ static int64_t scanNow(void) {
 @property(nonatomic, strong) UIImageView *qrView;
 @property(nonatomic, strong) UILabel *pinLabel;
 @property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, strong) UILabel *helperStatusLabel;
 @property(nonatomic, strong) UIButton *startButton;
 @property(nonatomic, strong) UIButton *stopButton;
 @property(nonatomic) int64_t generation;
@@ -87,6 +89,9 @@ static int64_t scanNow(void) {
     self.statusLabel = [UILabel new];
     self.statusLabel.text = @"未开始";
     self.statusLabel.accessibilityIdentifier = @"scan.status";
+    self.helperStatusLabel = [UILabel new];
+    self.helperStatusLabel.text = @"独立 helper：未探测";
+    self.helperStatusLabel.accessibilityIdentifier = @"scan.helper-status";
     self.qrView = [UIImageView new];
     self.qrView.backgroundColor = UIColor.whiteColor;
     self.qrView.layer.magnificationFilter = kCAFilterNearest;
@@ -107,7 +112,7 @@ static int64_t scanNow(void) {
     buttons.axis = UILayoutConstraintAxisHorizontal;
     buttons.distribution = UIStackViewDistributionFillEqually;
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:
-        @[title, notice, self.statusLabel, self.qrView, self.pinLabel, buttons]];
+        @[title, notice, self.statusLabel, self.helperStatusLabel, self.qrView, self.pinLabel, buttons]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 18;
     stack.alignment = UIStackViewAlignmentCenter;
@@ -128,6 +133,9 @@ static int64_t scanNow(void) {
     self.provider.events = ^(NSArray *events) { [weakSelf receive:events]; };
     [self clearPairing];
 }
+- (void)probeIndependentHelperWithCompletion:(void (^)(NSString *))completion {
+    [OHCScanHelperClient pingWithTimeout:2 completion:completion];
+}
 - (void)clearPairing {
     self.qrView.image = nil;
     self.qrView.hidden = YES;
@@ -141,9 +149,14 @@ static int64_t scanNow(void) {
     self.generation = 0;
     self.readyCount = 0;
     self.statusLabel.text = @"准备合成会话…";
+    self.helperStatusLabel.text = @"独立 helper：请求中…";
     self.startButton.enabled = NO;
     self.stopButton.enabled = YES;
     [self.provider start];
+    [self probeIndependentHelperWithCompletion:^(NSString *reply) {
+        self.helperStatusLabel.text = [reply isEqualToString:@"PONG"]
+            ? @"独立 helper：PONG（固定合成响应）" : @"独立 helper：请求失败";
+    }];
 }
 - (void)stopDemo {
     self.accepting = NO;

@@ -4,13 +4,13 @@ Updated 2026-11-26. Repo: `D:\OpenHC-iPad`, branch `stage0-auth-validation`.
 
 ## Verified Revision
 
-- Tested SHA: `bc589e1812e93d937a9d3fed9e82a5b1b61a5ea3`.
-- macOS workflow `45757974503`: success. JVM 35/35; iOS Simulator 33/33; iOS arm64 framework/header and Theos rootless arm64 DEB passed.
-- C synthetic transport socket mock compiled and executed 5 inbound cases with 158 wire assertions, including normal close, bridge exception, accept timeout, and daemon cleanup. It links a bridge test double, not Kotlin/Native.
-- The same CLI dispatcher (`theos/main.m`) ran `--fe35-bridge-smoke` in iOS Simulator against the actual Kotlin/Native framework and reported `FE35_PUBLIC_KOTLIN_BRIDGE_CLI_SMOKE_OK`. The Theos production adapter also calls the exported `OHCBFe35ControlBridge` API; generated Objective-C header signatures were checked and package compilation/linking passed.
+- Tested SHA: `fe29b49a0a020a14e1dc087d3e5894ce084f88b1`.
+- macOS workflow `45765343940`: success. JVM 35/35 and iOS Simulator 33/33; iOS arm64 framework/header and Theos rootless arm64 DEB passed.
+- The same iOS Simulator process executed `main.m --btstack-control-inbound`, `btstack-probe.c::transport_inbound`, production Objective-C adapter, and Kotlin/Native against a synthetic BTdaemon peer. Three cases passed with 190 assertions: success 86, listener-registration failure/cleanup 72, incoming timeout 32; assertions cover fragmented/coalesced frames, listener UUID/channel callbacks, encrypted command-4 bytes, cleanup ordering, and bounded completion.
+- The simulator-only peer uses host loopback TCP because host and Simulator have separate Unix-socket `/tmp` namespaces; production Theos transport remains Unix socket. No bridge double is used in this fixture.
 
 ## Scope And Remaining Work
 
-`--btstack-control-inbound` accepts bounded bridge configuration from stdin, feeds bounded RFCOMM frames to the public bridge adapter, dispatches `SEND_FRAME`, `OPEN_AUTH_LISTENER`, and `CLOSE_AUTH_LISTENER`, registers the event UUID, returns the assigned channel through `listenerReady`, and cleans up its service/CID. The socket mock verifies this C path with a test double; a real-BTstack-free socket run combining that C path with the production Objective-C/Kotlin implementation remains unverified. Do not describe it as a single end-to-end C/K/N socket execution.
+Offline FE35 control negotiation through the real C/Objective-C/Kotlin-Native bridge is verified end-to-end with synthetic bytes. This does not implement or verify authentication, HiCar/DMSDP, or media. Device acceptance still requires separately scheduled real-Honor-phone testing after current ownership/transport prerequisites are met; do not repeat historical probes or send synthetic frames to a device.
 
-No device, radio, pairing, identity file, or real authentication data was used. Authentication handshake, DMSDP, and media remain unimplemented. Do not send synthetic protocol frames to a device. Existing physical evidence is historical and must not be repeated.
+No device, radio, pairing, identity file, or real authentication data was used in this CI run.

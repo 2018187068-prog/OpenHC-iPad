@@ -1,15 +1,13 @@
 #import <Foundation/Foundation.h>
 #import <OpenHCBridge/OpenHCBridge.h>
 
-static KotlinByteArray *zeroBytes(int32_t length) {
-    return [[KotlinByteArray alloc] initWithSize:length init:^int8_t(int32_t index) {
-        return 0;
-    }];
+static OHCBKotlinByteArray *zeroBytes(int32_t length) {
+    return [OHCBKotlinByteArray arrayWithSize:length];
 }
 
 int openhc_fe35_bridge_smoke(void) {
     @autoreleasepool {
-        KotlinByteArray *key = zeroBytes(16);
+        OHCBKotlinByteArray *key = zeroBytes(16);
         OHCBFe35ControlBridge *bridge = [[OHCBFe35ControlBridge alloc]
             initWithDeviceIdText:@"synthetic-device"
             rootKey:key constA:key constB:key];

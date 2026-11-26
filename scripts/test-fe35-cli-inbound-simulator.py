@@ -370,9 +370,16 @@ def run_scan_case(args, case):
                     check(conn.recv(1) == b"", "failed RFCOMM owns no resources")
                     return
                 if case in ("stop_rfcomm_wait", "deadline_wait"):
-                    # No acknowledgement: teardown must rely on client ownership,
-                    # and must neither register SDP nor unregister an unknown channel.
-                    check(conn.recv(1) == b"", "cancelled pending registration closes socket")
+                    # Synchronize on the actual registration request so simulator
+                    # launch latency cannot turn this into cancellation during the
+                    # preceding state query. No ack means no registration ownership:
+                    # cancellation must not publish SDP or unregister the channel.
+                    read_command(conn, 0x42, bytes([16, 0, 2]))
+                    if case == "stop_rfcomm_wait":
+                        (guard / "stop").write_text("STOP\n", encoding="ascii")
+                    check(conn.recv(1) == b"", "cancelled pending registration closes socket cleanly")
+                    check(trace_has("EVENT=CLEAR_PAIRING\nEVENT=CLOSE_CONTROL_TRANSPORT"),
+                          "pending registration cancellation revokes before socket close")
                     return
                 send_event(conn, 0x85, bytes([0, 16]))
                 kind, channel, record = read_packet(conn)

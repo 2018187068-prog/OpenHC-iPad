@@ -89,6 +89,7 @@ jobs:
           gradle :bridge:linkReleaseFrameworkIosSimulatorArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/ios-simulator-framework.log
           bash scripts/test-fe35-cli-smoke-simulator.sh 2>&1 | tee artifacts/logs/fe35-cli-simulator-smoke.log
       - name: Run shared JVM and Native simulator tests
+        if: always()
         shell: bash
         run: |
           set -o pipefail
@@ -100,12 +101,14 @@ jobs:
           mkdir -p artifacts/test-results
           if [ -d bridge/build/test-results ]; then cp -R bridge/build/test-results/. artifacts/test-results/; fi
       - name: Install Theos and ldid
+        if: always()
         shell: bash
         run: |
           brew install ldid dpkg
           git clone --depth 1 --recursive https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
       - name: Build rootless Theos package
+        if: always()
         shell: bash
         run: |
           set -o pipefail
@@ -142,6 +145,7 @@ jobs:
           grep -q 'iphoneos-arm64' ../artifacts/logs/deb-control.log
           bash ../scripts/verify-device-binary.sh "$binary"
       - name: Validate UIKit scan demo and rootless application package
+        if: always()
         shell: bash
         run: |
           set -o pipefail

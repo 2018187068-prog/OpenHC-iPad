@@ -15,6 +15,7 @@ typedef struct {
     int stop_pipe[2];
     pthread_t timer;
     int timer_started;
+    char stop_marker[512];
     int rfcomm;
     int sdp;
     int ready;
@@ -33,8 +34,18 @@ static int64_t monotonic_ms(void) {
 
 static void *request_stop(void *context) {
     fixture *f = context;
-    struct timespec delay = {0, 60000000};
-    nanosleep(&delay, NULL);
+    if (f->stop_marker[0]) {
+        /* Stop only after the host fixture has observed the RFCOMM command.
+         * This keeps simulator scheduling latency out of the cancellation race. */
+        struct timespec delay = {0, 10000000};
+        unsigned attempts = 0;
+        while (access(f->stop_marker, F_OK) != 0 && attempts++ < 800)
+            nanosleep(&delay, NULL);
+        if (access(f->stop_marker, F_OK) != 0) return NULL;
+    } else {
+        struct timespec delay = {0, 60000000};
+        nanosleep(&delay, NULL);
+    }
     (void)write(f->stop_pipe[1], "S", 1);
     return NULL;
 }
@@ -99,7 +110,7 @@ int openhc_scan_transport_fixture(const char *run_dir, const char *scenario) {
     if (!f.trace || pipe(f.stop_pipe)) return 91;
     OHCBHostIdentity *host = [[OHCBHostIdentity alloc] initWithModelId:@"A1B2C3"
         subModelId:@"D4" brand:@"Synthetic" deviceName:@"Synthetic"];
-    int64_t lifetime = !strcmp(scenario, "deadline_wait") ? 100 : 2000;
+    int64_t lifetime = 2000;
     OHCBScanReceiverConfig *config = [[OHCBScanReceiverConfig alloc] initWithHost:host
         bluetoothAddress:@"A0:B1:C2:D3:E4:F5" supportsUsb:NO lifetimeMillis:lifetime];
     OHCBScanReceiverSession *session = [[OHCBScanReceiverSession alloc] initWithConfig:config];
@@ -112,7 +123,11 @@ int openhc_scan_transport_fixture(const char *run_dir, const char *scenario) {
     input.root_key_size = input.const_a_size = input.const_b_size = 16;
     fe35_bridge_handle bridge = fe35_bridge_create(&input);
     if (!bridge) return 92;
-    if (!strcmp(scenario, "stop_rfcomm_wait")) start_timer(&f);
+    if (!strcmp(scenario, "stop_rfcomm_wait")) {
+        if (snprintf(f.stop_marker, sizeof(f.stop_marker), "%s/stop", run_dir) >=
+            (int)sizeof(f.stop_marker)) return 94;
+        start_timer(&f);
+    }
     fe35_scan_transport transport = {&f, f.generation, f.stop_pipe[0], notify};
     int result = openhc_btstack_scan_inbound(run_dir, bridge, &transport);
     if (f.timer_started) pthread_join(f.timer, NULL);

@@ -336,7 +336,9 @@ def run_scan_case(args, case):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
     server.listen(1)
-    server.settimeout(6)
+    # Keep the synthetic peer alive longer than simctl launch's 12s bound; a
+    # delayed Simulator launch must not leave a late client blocked on STATE.
+    server.settimeout(20)
 
     def trace_has(line):
         trace_file = guard / "scan-events"

@@ -36,6 +36,14 @@ internal object AesGcm {
         return invoke(4, key, nonce, aad, cipherAndTag, cipherAndTag.size - 16)
     }
 }
+internal object NearbyAesCfb {
+    fun crypt(key: ByteArray, iv: ByteArray, input: ByteArray, encrypt: Boolean): ByteArray {
+        require(key.size == 16 && iv.size == 16)
+        if (input.isEmpty()) return byteArrayOf()
+        return invoke(if (encrypt) 12 else 13, key, iv, c = input, size = input.size)
+            ?: error("NEARBY_AES_CFB_FAILED")
+    }
+}
 internal object Ed25519Keys {
     fun publicKey(seed: ByteArray): ByteArray { require(seed.size == 32); return invoke(5, seed, size = 32)!! }
     fun sign(seed: ByteArray, message: ByteArray): ByteArray { require(seed.size == 32); return invoke(6, seed, message, size = 64)!! }

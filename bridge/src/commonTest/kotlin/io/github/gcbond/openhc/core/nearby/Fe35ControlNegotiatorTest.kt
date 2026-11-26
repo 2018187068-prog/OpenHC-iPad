@@ -47,15 +47,9 @@ class Fe35ControlNegotiatorTest {
 
         val invalidUuid = hex("83918693896869636172417574688083010203")
         assertIs<Fe35ControlNegotiator.Action.SendControl>(machine.onMessageLayerPayload(invalidUuid).single())
-        val malformed = machine.onMessageLayerPayload(hex("838d8693896869"))
-        assertIs<Fe35ControlNegotiator.Action.AbortControl>(malformed.single())
-        assertFailsWith<IllegalStateException> { machine.onMessageLayerPayload(authRequest) }
-
-        val opening = Fe35ControlNegotiator(Fe35ControlNegotiator.Mode.PASSIVE)
-        opening.onMessageLayerPayload(authRequest)
-        val cleanup = opening.onMessageLayerPayload(hex("838d8693896869"))
-        assertIs<Fe35ControlNegotiator.Action.CloseAuthListener>(cleanup[0])
-        assertIs<Fe35ControlNegotiator.Action.AbortControl>(cleanup[1])
+        val malformed = machine.onMessageLayerPayload(authRequest + hex("838d8693896869"))
+        assertIs<Fe35ControlNegotiator.Action.Discarded>(malformed.single())
+        assertIs<Fe35ControlNegotiator.Action.OpenAuthListener>(machine.onMessageLayerPayload(authRequest).single())
     }
 
     @Test

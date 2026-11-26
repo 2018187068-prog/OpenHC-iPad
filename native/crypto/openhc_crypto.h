@@ -4,4 +4,5 @@
 int oh_crypto(int op, const unsigned char *key, int nk,
     const unsigned char *a, int na, const unsigned char *b, int nb,
     const unsigned char *c, int nc, unsigned char *out, int capacity);
+int oh_random_bytes(unsigned char *out, int capacity);
 #endif

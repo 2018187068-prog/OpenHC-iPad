@@ -54,6 +54,15 @@ jobs:
           python3 scripts/verify-speke-oracle.py | tee artifacts/logs/speke-oracle.log
           gradle :bridge:linkReleaseFrameworkIosArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/kotlin-native-build.log
           mkdir -p artifacts/iosArm64
+          header=bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework/Headers/OpenHCBridge.h
+          grep -q '@interface OHCBFe35ControlBridge' "$header"
+          grep -q '@interface OHCBFe35ControlBridgeEvent' "$header"
+          grep -q 'startNowMillis:' "$header"
+          grep -q 'feedData:' "$header"
+          grep -q 'listenerReadyChannel:' "$header"
+          grep -q 'tickNowMillis:' "$header"
+          grep -q 'close' "$header"
+          cp "$header" artifacts/iosArm64/OpenHCBridge-ObjC-API.h
           cp -R bridge/build/bin/iosArm64/releaseFramework/OpenHCBridge.framework artifacts/iosArm64/
           bash scripts/verify-apple-artifact.sh artifacts/iosArm64/OpenHCBridge.framework 2>&1 | tee artifacts/logs/framework-inspection.log
           {

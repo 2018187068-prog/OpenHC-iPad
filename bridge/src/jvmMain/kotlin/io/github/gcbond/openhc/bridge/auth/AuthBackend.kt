@@ -6,6 +6,10 @@ import io.github.gcbond.openhc.core.auth.crypto.AesGcm as RefAesGcm
 import io.github.gcbond.openhc.core.auth.crypto.Ed25519Keys as RefEd25519Keys
 import io.github.gcbond.openhc.core.auth.crypto.X25519Keys as RefX25519Keys
 import java.math.BigInteger
+import java.security.GeneralSecurityException
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 internal actual object AuthBackend {
     actual fun call(op: Int, key: ByteArray, a: ByteArray, b: ByteArray, c: ByteArray, size: Int): ByteArray? = when(op) {
@@ -23,6 +27,15 @@ internal actual object AuthBackend {
             ByteArray(size).also { out -> unsigned.copyInto(out,size-unsigned.size) }
         }
         11 -> if (key.size <= c.size && BigInteger(1,key) > BigInteger.ONE && BigInteger(1,key) < BigInteger(1,c)-BigInteger.ONE) byteArrayOf(1) else null
+        12, 13 -> {
+            if (key.size != 16 || a.size != 16 || c.size != size) null else try {
+                Cipher.getInstance("AES/CFB/NoPadding").run {
+                    init(if (op == 12) Cipher.ENCRYPT_MODE else Cipher.DECRYPT_MODE,
+                        SecretKeySpec(key, "AES"), IvParameterSpec(a))
+                    doFinal(c)
+                }
+            } catch (_: GeneralSecurityException) { null }
+        }
         else -> error("UNSUPPORTED_OPERATION")
     }
 }

@@ -10,6 +10,7 @@ int openhc_btstack_control_synthetic(const char *address, unsigned channel,
 int openhc_btstack_control_inbound(const char *run_dir);
 int openhc_btstack_ownership_probe(void);
 int openhc_session_owner_probe(void);
+int openhc_fe35_bridge_smoke(void);
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -34,6 +35,8 @@ int main(int argc, const char *argv[]) {
             return openhc_btstack_ownership_probe();
         } else if (argc == 2 && strcmp(argv[1], "--session-owner") == 0) {
             return openhc_session_owner_probe();
+        } else if (argc == 2 && strcmp(argv[1], "--fe35-bridge-smoke") == 0) {
+            return openhc_fe35_bridge_smoke();
         } else if (argc == 6 && strcmp(argv[1], "--btstack-control-synthetic") == 0) {
             char *end = NULL;
             unsigned long channel = strtoul(argv[3], &end, 10);
@@ -44,7 +47,7 @@ int main(int argc, const char *argv[]) {
         } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
             puts("OPENHC_STAGE0_VERSION=0.3.5");
         } else {
-            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--session-owner|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--btstack-control-inbound RUN_DIR|--version]\n", stderr);
+            fputs("usage: openhc-bridge-check [--wifi|--auth|--platform|--btstack|--btstack-services|--btstack-ownership|--session-owner|--fe35-bridge-smoke|--btstack-control-synthetic ADDRESS CHANNEL auto|strict|reference RUN_DIR|--btstack-control-inbound RUN_DIR|--version]\n", stderr);
             return 2;
         }
     }

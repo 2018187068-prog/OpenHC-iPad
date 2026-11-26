@@ -4,6 +4,7 @@
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/rand.h>
 
 int oh_crypto(int op, const unsigned char *key, int nk,
     const unsigned char *a, int na, const unsigned char *b, int nb,
@@ -104,6 +105,18 @@ int oh_crypto(int op, const unsigned char *key, int nk,
             ok = BN_mod_exp_mont_consttime(result,base,exp,prime,bnctx,NULL) == 1 && BN_bn2binpad(result,out,capacity) == capacity;
         }
         break;
+    case 12: case 13:
+        if(nk != 16 || na != 16 || nc != capacity) break;
+        if(nc == 0) { ok = 1; break; }
+        ctx = EVP_CIPHER_CTX_new();
+        if(!ctx) break;
+        if(EVP_CipherInit_ex(ctx, EVP_aes_128_cfb128(), NULL, key, a, op == 12) != 1 ||
+           EVP_CIPHER_CTX_set_padding(ctx, 0) != 1 ||
+           EVP_CipherUpdate(ctx, out, &n, c, nc) != 1) break;
+        total = n;
+        if(EVP_CipherFinal_ex(ctx, out + total, &n) != 1) break;
+        ok = total + n == capacity;
+        break;
     }
     EVP_CIPHER_CTX_free(ctx); EVP_MD_CTX_free(md); EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(peer); EVP_PKEY_free(pk);
@@ -111,4 +124,10 @@ int oh_crypto(int op, const unsigned char *key, int nk,
     if(!ok && capacity) OPENSSL_cleanse(out,capacity);
     ERR_clear_error(); /* Never expose backend diagnostics or key material. */
     return ok;
+}
+
+int oh_random_bytes(unsigned char *out, int capacity) {
+    if(capacity < 0 || (capacity > 0 && out == NULL)) return 0;
+    if(capacity == 0) return 1;
+    return RAND_bytes(out, capacity) == 1;
 }

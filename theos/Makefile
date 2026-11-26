@@ -5,7 +5,7 @@ THEOS_PACKAGE_SCHEME = rootless
 include $(THEOS)/makefiles/common.mk
 
 TOOL_NAME = openhc-bridge-check
-openhc-bridge-check_FILES = main.m platform-probe.m ownership-probe.m session-owner-probe.c btstack-probe.c
+openhc-bridge-check_FILES = main.m platform-probe.m ownership-probe.m session-owner-probe.c btstack-probe.c fe35-bridge-smoke.m
 openhc-bridge-check_FRAMEWORKS = Foundation OpenHCBridge
 openhc-bridge-check_CFLAGS = -F$(THEOS_PROJECT_DIR)/../artifacts/iosArm64
 openhc-bridge-check_LDFLAGS = -F$(THEOS_PROJECT_DIR)/../artifacts/iosArm64

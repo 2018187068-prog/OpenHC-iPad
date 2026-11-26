@@ -1,21 +1,24 @@
 # OpenHC-iPad Stage 0 Plan
 
-Current stage status (2026-11-26): guarded FE35 inbound listener/accept/close
-and single-owner power lease integration passed macOS CI run `45706468742` on
-the prior baseline. This turn adds an offline FE35 message-layer control
-negotiator based on read-only OpenHC revision
-`8132399bea6aa86d68da6d3e1d9e3e001c0a7643`, plus a read-only host collector
-that obtains a bounded current peer PID/process/marker/recovery snapshot without
-hand-authored JSON or historical PID reuse. The negotiator does not parse
-Nearby framing, CRC, handshake, encryption or RFCOMM data and is not wired into
-the C accept CLI; no real phone control/auth protocol is ready. New CI is
-pending for this revision. The collector cannot supply positive session-state
+Current stage status (2026-11-26): the working tree contains an unverified
+`Fe35NearbyControlSession` prototype that connects bounded Nearby frames,
+handshake, decryption, the FE35 negotiator, and a simulated listener-ready
+callback into a complete encrypted command-4 frame. Its common test contains
+fixed upstream-format synthetic vectors, but the current Windows environment
+has no JDK compiler and cannot run JVM tests; iOS/Native and ObjC framework
+builds require macOS CI and have not validated this working tree. No exported
+ObjC session class or C adapter call site exists yet. The C
+`--btstack-control-inbound` path still does not read RFCOMM bytes or call the
+Kotlin/Native API, so no true phone control protocol is ready; HiCar auth,
+DMSDP, and media remain out of scope. The read-only host collector provides a
+bounded fresh peer-PID/process/marker/recovery snapshot without hand-authored
+JSON or historical PID reuse, but cannot supply positive session-state
 metadata; extra or unexplained shared helpers remain UNKNOWN and block. No
-device command was run in this stage. Synthetic loopback remains optional and
-is not a HiCar project prerequisite. The next protocol implementation step is
-a bounded FE35 Nearby frame reader/handshake integrated with the C listener
-callback; HiCar auth/DMSDP/media remain out of scope. See
-`HANDOFF-CURRENT.md` and `BTSTACK-OWNERSHIP.md` for current evidence.
+device command was run. Synthetic loopback is the required offline integration
+acceptance for this implementation task, not a HiCar prerequisite. The next
+code dependency is a public ObjC session API plus C/ObjC transport-action bridge
+inside the existing Trial WORKING lease; the frame code alone is not ready.
+See `HANDOFF-CURRENT.md` and `BTSTACK-OWNERSHIP.md` for current evidence.
 
 Target: iPad mini 4 Wi-Fi (A8, 2 GB), iPadOS 15.8.8, Dopamine rootless, Sileo DEB. Development is Windows + WSL2/Theos; no local Mac is available.
 

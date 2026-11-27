@@ -1,22 +1,15 @@
 #import <Foundation/Foundation.h>
 #import <OpenHCBridge/OpenHCBridge.h>
 #include "ScanOwner.h"
+#import "ScanLeaseAdapter.h"
 NS_ASSUME_NONNULL_BEGIN
 /* Trusted internal asynchronous adapter for the EXISTING Trial/guard contract.
  * No native device implementation is supplied or enabled. An implementation
  * must own the exclusive lock, immutable absolute guard deadline, sole heartbeat
  * and independent recovery actor. It must not block the owner executor or accept
  * UI paths/truth. All result blocks may run on any queue; deadlines fence them.
- * The offline fixture implements only these effects synthetically. */
-@protocol OHCScanLeaseAdapter <NSObject>
-@property(nonatomic, readonly) NSString *privateRunDirectory;
-- (void)arm:(uint64_t)generation deadline:(int64_t)deadline result:(void (^)(BOOL))result;
-- (void)takeover:(uint64_t)generation result:(void (^)(BOOL))result;
-- (void)heartbeat:(uint64_t)generation;
-- (void)stopHeartbeat:(uint64_t)generation;
-- (void)requestRestore:(uint64_t)generation result:(void (^)(BOOL))result;
-- (void)delegateOnce:(uint64_t)generation;
-@end
+ * ScanProcessLeaseAdapter executes private-channel I/O; only its compile-time
+ * fixture bootstrap is available. Deployment effects/launch remain disabled. */
 
 /* Not installed, launched or wired to the demo/PING helper. One instance per
  * root owner process, not per caller. Internal root actor supplies config/lease;

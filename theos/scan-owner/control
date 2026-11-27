@@ -1,0 +1,9 @@
+Package: com.gcbond.openhc-scan-owner-inert
+Name: OpenHC Scan Owner Inert Components
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Disabled native broker and guard; no launch job or production admission
+Maintainer: OpenHC
+Author: OpenHC
+Section: Development
+Depends: firmware (>= 15.0)

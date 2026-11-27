@@ -3,6 +3,10 @@
  * sources. Never linked into a shipped helper or enabled by runtime flags. */
 #import "../theos/scan-owner/ScanOwnerRuntime.h"
 #import "../theos/scan-owner/ScanOwnerForeground.h"
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+#import "../theos/scan-owner/ScanProcessLeaseAdapter.h"
+#include <netinet/in.h>
+#endif
 #import <UIKit/UIKit.h>
 #import "../theos/scan-ui/ScanQRCode.h"
 #include <sys/socket.h>
@@ -34,8 +38,29 @@
 @end
 int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
     NSString *caseName=[NSString stringWithUTF8String:scenario];
-    OHCFixtureLease *lease=[OHCFixtureLease new];
-    lease.privateRunDirectory=[NSString stringWithUTF8String:run_dir];
+    BOOL processLease=[caseName hasPrefix:@"process_"];
+    if(processLease) { caseName=[caseName substringFromIndex:8]; }
+    NSString *directory=[NSString stringWithUTF8String:run_dir];
+    OHCFixtureLease *synthetic=[OHCFixtureLease new]; synthetic.privateRunDirectory=directory;
+    id<OHCScanLeaseAdapter> lease=synthetic;
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+    if(processLease) {
+        /* Test-only loopback relay to host broker/guard, never app admission.
+         * No production factory reads this file or accepts a TCP grant. */
+        NSString *portText=[NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"process-port"]
+            encoding:NSASCIIStringEncoding error:NULL];
+        int port=portText.intValue;
+        if(port<=0||port>65535) { return 91; }
+        int fd=socket(AF_INET,SOCK_STREAM,0);
+        struct sockaddr_in address={0}; address.sin_family=AF_INET;
+        address.sin_port=htons((uint16_t)port); address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+        if(fd<0||connect(fd,(struct sockaddr *)&address,sizeof(address))) { if(fd>=0) { close(fd); } return 91; }
+        lease=[[OHCScanProcessLeaseAdapter alloc] initWithTestDescriptor:fd runDirectory:directory];
+        if(!lease) { return 91; }
+    }
+#else
+    if(processLease) { return 91; }
+#endif
     FILE *trace=fopen([[lease.privateRunDirectory stringByAppendingPathComponent:@"scan-events"] fileSystemRepresentation],"w");
     if(!trace) return 91;
     int fds[2]; if(socketpair(AF_UNIX,SOCK_STREAM,0,fds)) {fclose(trace); return 91;}
@@ -52,6 +77,9 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
     memset(&input,0,sizeof(input));
     dispatch_semaphore_t done=dispatch_semaphore_create(0);
     __block _Atomic int invalid=0;
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+    OWNER_CHECK([OHCScanProcessLeaseAdapter productionAdapter]==nil,"production_process_factory_unconditionally_disabled");
+#endif
     __block int ready=0,clear=0,closeCount=0,cleaned=0,coreClear=0,handoff=0;
     __block BOOL returned=NO;
     __block int foregroundReady=0, foregroundClear=0;
@@ -118,7 +146,9 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         int expectedStatus=[caseName isEqualToString:@"success"]?0:1;
         fprintf(trace,"COMPLETION=%d,%d,%d\n",c.returned,c.cleanup_confirmed,c.status);
         fprintf(trace,"COUNTS=%d,%d,%d,%d\n",ready,clear,closeCount,cleaned);
-        fprintf(trace,"OWNER_BOUNDARIES=synthetic-OS-and-lease-real-owner-native-common\n");
+        fprintf(trace,"OWNER_BOUNDARIES=%s\n",processLease?
+            "real-owner-native-common-private-channel-guard-process;injected-OS-admission-and-inert-Trial":
+            "synthetic-OS-and-lease-real-owner-native-common");
         fprintf(trace,"OWNER_HANDOFF_SAME_PIN=%d\n",handoff);
         OWNER_CHECK(c.returned,"worker_returned");
         OWNER_CHECK(c.cleanup_confirmed==expectedCleanup,"cleanup_certainty");
@@ -129,12 +159,14 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         OWNER_CHECK(cleaned==1,"cleaned_once");
         OWNER_CHECK(coreClear==1,"owner_core_clear_once");
         OWNER_CHECK(delegated!=expectedCleanup,"cleanup_controls_guard_decision");
-        OWNER_CHECK(lease.armed==1,"guard_armed_once");
-        OWNER_CHECK(lease.taken==1,"lease_taken_once");
-        OWNER_CHECK(lease.stopped==1,"sole_heartbeat_stopped_once");
+        if(!processLease) {
+            OWNER_CHECK(synthetic.armed==1,"guard_armed_once");
+            OWNER_CHECK(synthetic.taken==1,"lease_taken_once");
+            OWNER_CHECK(synthetic.stopped==1,"sole_heartbeat_stopped_once");
+        }
         OWNER_CHECK(handoff==[caseName isEqualToString:@"success"],"handoff_one_shot");
         /* Independent fake recovery observation, explicitly not native CLEANED. */
-        [runtime observeVerifiedRecovery:YES generation:1];
+        if(!processLease) { [runtime observeVerifiedRecovery:YES generation:1]; }
         fflush(trace); dispatch_semaphore_signal(done);
     };
     ohc_owner_peer p={0};p.connection=1;p.endpoint_device=1;p.endpoint_inode=1;p.policy_epoch=0x54455354;
@@ -163,6 +195,13 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
     /* Barrier: final callback still owns fixture storage; get test count via the
      * serial queue before closing trace or dropping retained event/sink objects. */
     OWNER_CHECK(runtime.testHandoffCount==handoff,"final_callback_lifetime_barrier");
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+    if(processLease) {
+        dispatch_semaphore_t flushed=dispatch_semaphore_create(0);
+        [(OHCScanProcessLeaseAdapter *)lease testFlush:^{ dispatch_semaphore_signal(flushed); }];
+        OWNER_CHECK(!dispatch_semaphore_wait(flushed,dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC)),"private_adapter_completion_flush");
+    }
+#endif
     runtime.finished=nil;runtime.events=nil;runtime.testNativeCallback=nil;runtime.clearPairing=nil;
     /* Drain bounded owner frames, then local foreground teardown synchronously
      * invalidates even if remote CLEAR was not delivered before disconnect. */

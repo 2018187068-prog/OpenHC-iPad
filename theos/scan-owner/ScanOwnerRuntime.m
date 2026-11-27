@@ -69,6 +69,19 @@ static bool testAdmission(const ohc_owner_peer *p) { return p->policy_epoch == 0
         _timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,_executor);
         dispatch_source_set_timer(_timer,dispatch_time(DISPATCH_TIME_NOW,0),20*NSEC_PER_MSEC,2*NSEC_PER_MSEC);
         __weak OHCScanOwnerRuntime *weak=self;
+        if([_lease respondsToSelector:@selector(setUnavailable:)]) {
+            _lease.unavailable=^(uint64_t generation) {
+                OHCScanOwnerRuntime *strong=weak;
+                if(!strong) { return; }
+                dispatch_async(strong->_executor,^{
+                    if(generation!=strong->_owner.generation) { return; }
+                    /* Revoke/cancel first, then retain fence and delegate. A
+                     * lost guard is NOT independent execution-exit knowledge. */
+                    (void)ohc_owner_transport_event(&strong->_owner,generation,"STOP",ownerNow());
+                    ohc_owner_execution_exited(&strong->_owner,generation,false);
+                });
+            };
+        }
         dispatch_source_set_event_handler(_timer,^{ [weak pollConnection]; });
         dispatch_resume(_timer);
     } return self;
@@ -164,7 +177,11 @@ disconnect:
             else if(self->_owner.generation==g) {
                 /* Cancellation before queued launch: actual execution knowledge,
                  * no session/bridge/socket was created, not inferred from CLEANED. */
-                ohc_owner_completed(&self->_owner,g,(fe35_scan_completion){true,true,1},true,ownerNow());
+                fe35_scan_completion c={true,true,1};
+                if([self->_lease respondsToSelector:@selector(workerCompletion:generation:executionExited:)]) {
+                    [self->_lease workerCompletion:c generation:g executionExited:YES];
+                }
+                ohc_owner_completed(&self->_owner,g,c,true,ownerNow());
             }
         }); break;
     }
@@ -211,6 +228,9 @@ disconnect:
         fe35_scan_transport t={&context,commonGeneration,self->_stop[0],ownerNotify};
         fe35_scan_completion completion=openhc_btstack_scan_inbound(runDirectory.fileSystemRepresentation,bridge,&t);
         dispatch_async(self->_executor,^{
+            if([self->_lease respondsToSelector:@selector(workerCompletion:generation:executionExited:)]) {
+                [self->_lease workerCompletion:completion generation:ownerGeneration executionExited:YES];
+            }
             ohc_owner_completed(&self->_owner,ownerGeneration,completion,true,ownerNow());
             /* Returned in-process worker is independent execution knowledge; it
              * does NOT prove daemon absence or successful restoration. */
@@ -222,6 +242,9 @@ disconnect:
 }
 - (void)failedLaunch:(int)status {
     fe35_scan_completion c={true,false,status};
+    if([_lease respondsToSelector:@selector(workerCompletion:generation:executionExited:)]) {
+        [_lease workerCompletion:c generation:_workerGeneration executionExited:YES];
+    }
     ohc_owner_completed(&_owner,_workerGeneration,c,true,ownerNow());
     if(_stop[0]>=0)close(_stop[0]);if(_stop[1]>=0)close(_stop[1]);_stop[0]=_stop[1]=-1;
     _binding=(fe35_scan_binding){0};_session=nil;

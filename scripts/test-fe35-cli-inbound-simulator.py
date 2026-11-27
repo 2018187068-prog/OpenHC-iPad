@@ -16,6 +16,10 @@ _spec = importlib.util.spec_from_file_location(
     "btstack_socket_fixture", ROOT / "scripts/test-btstack-transport-socket.py")
 _fixture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fixture)
+_process_spec = importlib.util.spec_from_file_location(
+    'scan_owner_process', ROOT / 'scripts/test-scan-owner-process.py')
+_process = importlib.util.module_from_spec(_process_spec)
+_process_spec.loader.exec_module(_process)
 
 DEVICE_ID = b"CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F"
 ROOT_KEY = bytes(16)
@@ -334,10 +338,10 @@ def run_case(args, case):
     print("FE35_KN_INBOUND_CASE_ASSERTIONS=" + str(ASSERTIONS - started_assertions))
 
 
-def run_scan_case(args, case, owner=False):
+def run_scan_case(args, case, owner=False, process=False):
     """Real transport/common; owner cases also inject test-only OS/lease effects."""
     documents = Path(args.data_dir) / "Documents"
-    guard = documents / (("owner-guard-" if owner else "scan-guard-") + case)
+    guard = documents / (("owner-process-" if process else "owner-guard-" if owner else "scan-guard-") + case)
     guard.mkdir(parents=True, exist_ok=True)
     (guard / "ready").write_text("READY\n", encoding="ascii")
     (guard / "deadline").write_text(str(int(time.time()) + 120) + "\n", encoding="ascii")
@@ -352,6 +356,16 @@ def run_scan_case(args, case, owner=False):
     # accept alive beyond the bounded 30s launch without relaxing the 6s
     # protocol I/O deadline after the client connects.
     server.settimeout(45)
+    broker = listener = None
+    if process:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        binaries = {name: ROOT / 'artifacts/scan-owner/process/bin' / name
+                    for name in ('broker-test', 'guard-test')}
+        broker_directory = ROOT / 'artifacts/scan-owner/process' / ('simulator-' + case)
+        broker = _process.Broker(binaries, broker_directory, listener=listener)
+        (guard / 'process-port').write_text(str(listener.getsockname()[1]), encoding='ascii')
 
     def trace_has(line):
         trace_file = guard / "scan-events"
@@ -377,6 +391,10 @@ def run_scan_case(args, case, owner=False):
         try:
             with server.accept()[0] as conn:
                 conn.settimeout(6)
+                if process:
+                    process_events = (broker.directory / 'events').read_text(encoding='ascii')
+                    check('INERT_TAKEOVER' in process_events,
+                          'independent guard READY/takeover acknowledged before native transport opened')
                 if owner and case == "success":
                     drive_peer(conn, "success", lambda _: None)
                     return
@@ -432,7 +450,7 @@ def run_scan_case(args, case, owner=False):
     thread.start()
     launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
         "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name,
-        ("owner_" if owner else "") + case],
+        ("owner_" if owner else "") + ("process_" if process else "") + case],
         capture_output=True, text=True, timeout=30)
     check(launch.returncode == 0, "scan fixture launched")
     for _ in range(60):
@@ -443,7 +461,7 @@ def run_scan_case(args, case, owner=False):
     thread.join(8)
     server.close()
     status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
-    preserve_case_evidence(documents, guard, ("owner-" if owner else "scan-") + case)
+    preserve_case_evidence(documents, guard, ("owner-process-" if process else "owner-" if owner else "scan-") + case)
     check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
     trace = (guard / "scan-events").read_text(encoding="ascii")
     check(result_file.read_text(encoding="ascii").strip() == "0",
@@ -467,10 +485,27 @@ def run_scan_case(args, case, owner=False):
         check(trace.index("OWNER_CORE_CLEAR\n") < trace.index("EVENT=CLEAR_PAIRING\n") <
               trace.index("EVENT=CLOSE_CONTROL_TRANSPORT\n"),
               "owner revoke precedes common terminal events and native teardown " + trace)
-        check("OWNER_BOUNDARIES=synthetic-OS-and-lease-real-owner-native-common" in trace,
+        expected_boundary = ('real-owner-native-common-private-channel-guard-process;injected-OS-admission-and-inert-Trial'
+                             if process else 'synthetic-OS-and-lease-real-owner-native-common')
+        check('OWNER_BOUNDARIES=' + expected_boundary in trace,
               "explicit synthetic effect boundary, real integrated code")
         check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,
               "same common PIN one-shot handoff; not authentication success")
+    if process:
+        # Simulator executable has returned; closing host relay transfers no
+        # restore authority. Guard observes its actual host-broker parent exit.
+        broker.close()
+        listener.close()
+        _process.wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+        process_events = (broker.directory / 'events').read_text(encoding='ascii')
+        check(process_events.count('ARM_IMMUTABLE') == 1, 'process guard immutable arm once')
+        check(process_events.count('INERT_TAKEOVER') == 1, 'process guard READY before work')
+        check(process_events.count('INERT_RESTORE_ONCE') == 1, 'independent inert recovery once')
+        if case == 'cleanup_failure':
+            check('RETURN_UNCERTAIN' in process_events and 'PARENT_EXIT_OBSERVED' in process_events,
+                  'cleanup uncertainty cannot restore concurrently with live broker owner')
+        else:
+            check('RETURN_CLEAN_EXITED' in process_events, 'typed completion precedes guard restore')
     check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
           "scan never owns power heartbeat")
     shutil.rmtree(guard)
@@ -494,6 +529,9 @@ def main():
                  "stop_rfcomm_wait", "stop_sdp_wait", "deadline_wait", "ready_timeout", "cleanup_failure"):
         run_scan_case(args, case, owner=True)
     print("SCAN_OWNER_NATIVE_COMMON_CASES_OK=11")
+    for case in ('ready_stop', 'disconnect', 'cleanup_failure'):
+        run_scan_case(args, case, owner=True, process=True)
+    print('SCAN_OWNER_PROCESS_NATIVE_COMMON_CASES_OK=3')
     print("FE35_AND_SCAN_KN_ASSERTIONS=" + str(ASSERTIONS))
 
 

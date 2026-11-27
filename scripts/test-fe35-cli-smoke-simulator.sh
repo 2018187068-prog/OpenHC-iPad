@@ -30,7 +30,7 @@ for qr_source in ScanQRBitmap vendor/qrcodegen/qrcodegen; do
 done
 xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   -fobjc-arc -DOPENHC_CLI_NO_MAIN -DOPENHC_FE35_SIMULATOR_TEST \
-  -DOPENHC_TRANSPORT_TEST_TIMEOUTS -DOPENHC_SCAN_OWNER_TEST \
+  -DOPENHC_TRANSPORT_TEST_TIMEOUTS -DOPENHC_SCAN_OWNER_TEST -DOPENHC_SCAN_OWNER_PROCESS_TEST \
   -F"$(dirname "$framework")" -framework OpenHCBridge -framework Foundation -framework CoreFoundation \
   -framework UIKit -framework CoreGraphics \
   "$repo_root/theos/main.m" "$repo_root/theos/fe35-bridge-smoke.m" \
@@ -40,6 +40,9 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   "$repo_root/theos/scan-owner/ScanOwner.c" "$repo_root/theos/scan-owner/ScanOwnerPeer.c" \
   "$repo_root/theos/scan-owner/ScanOwnerRuntime.m" \
   "$repo_root/theos/scan-owner/ScanOwnerForeground.m" \
+  "$repo_root/theos/scan-owner/ScanProcessLeaseAdapter.m" \
+  "$repo_root/theos/scan-owner/ScanLeaseProtocol.c" \
+  "$repo_root/theos/scan-owner/ScanLeaseChannel.c" \
   "$repo_root/scripts/scan-owner-sim-fixture.m" \
   "$repo_root/theos/scan-ui/ScanQRCode.m" \
   "$RUNNER_TEMP/owner-ScanQRBitmap.o" "$RUNNER_TEMP/owner-qrcodegen.o" \

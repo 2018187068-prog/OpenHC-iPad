@@ -14,7 +14,8 @@ from pathlib import Path
 import hashlib
 paths = set()
 for directory in ('theos/scan-owner', 'bridge/src', 'native/crypto'):
-    paths.update(p for p in Path(directory).rglob('*') if p.is_file())
+    paths.update(p for p in Path(directory).rglob('*')
+                 if p.is_file() and not {'.theos', 'packages', 'build'}.intersection(p.parts))
 for directory in ('theos/scan-ui',):
     paths.update(p for p in Path(directory).rglob('*')
                  if p.is_file() and not {'.theos', 'packages', 'build'}.intersection(p.parts)
@@ -28,6 +29,8 @@ for name in (
     'theos/scan-supervisor/ScanHelperClient.m',
     'scripts/check-scan-owner-apple.sh', 'scripts/prepare-scan-owner-crypto.py',
     'scripts/test-scan-owner.py', 'scripts/scan-owner-tests.c',
+    'scripts/test-scan-owner-process.py', 'scripts/scan-owner-process-tests.c',
+    'scripts/scan-owner-process-fixture.c', 'scripts/check-scan-owner-package.py',
     'scripts/test-scan-owner-crypto.py', 'scripts/scan-owner-sim-fixture.m',
     'scripts/fe35-cli-smoke-runner.m', 'scripts/scan-transport-sim-fixture.m',
     'scripts/fe35-inbound-sim-probe-stubs.c', 'scripts/test-fe35-cli-smoke-simulator.sh',
@@ -52,6 +55,7 @@ gradle :bridge:linkReleaseFrameworkIosArm64 \
 export OPENHC_BRIDGE_FRAMEWORK_DIR="$PWD/bridge/build/bin/iosArm64/releaseFramework"
 bash scripts/verify-apple-artifact.sh "$OPENHC_BRIDGE_FRAMEWORK_DIR/OpenHCBridge.framework" 2>&1 | tee artifacts/logs/owner-framework-audit.log
 python3 scripts/test-scan-owner.py 2>&1 | tee artifacts/logs/owner-darwin-core.log
+python3 scripts/test-scan-owner-process.py --output artifacts/scan-owner/process 2>&1 | tee artifacts/logs/owner-darwin-process.log
 for suite in btstack-probe btstack-transport-socket session-owner-probe; do
   python3 "scripts/test-$suite.py" 2>&1 | tee "artifacts/logs/owner-darwin-$suite.log"
 done
@@ -66,11 +70,11 @@ for sdk in iphoneos iphonesimulator; do
   else
     echo "$sdk peer collector branch=unsupported-deny production-admission=deny-all"
   fi
-  for source in ScanOwner.c ScanOwnerPeer.c; do
+  for source in ScanOwner.c ScanOwnerPeer.c ScanLeaseProtocol.c ScanLeaseChannel.c ScanGuardProcess.c ScanBrokerProcess.c; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -std=c11 -Wall -Wextra -Werror \
       -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$source.o"
   done
-  for source in ScanOwnerRuntime.m ScanOwnerForeground.m; do
+  for source in ScanOwnerRuntime.m ScanOwnerForeground.m ScanProcessLeaseAdapter.m; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -Wall -Wextra -Werror -fobjc-arc \
       -F"$PWD/bridge/build/bin/$target/releaseFramework" \
       -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$source.o"
@@ -84,6 +88,23 @@ done
 bash scripts/test-fe35-cli-smoke-simulator.sh 2>&1 | tee artifacts/logs/owner-fe35-common-simulator.log
 # CPU golden/3 system decoders, UIKit PONG/lifecycle and actual App DEB; no helper.
 bash scripts/check-scan-ui.sh 2>&1 | tee artifacts/logs/owner-ui-app.log
+# Build-only inert components: no enabled launch job, no helper replacement.
+{
+make -C theos/scan-owner package FINALPACKAGE=1 THEOS="$THEOS" TARGET_CODESIGN=ldid TARGET_CODESIGN_FLAGS=-S
+package="$(find theos/scan-owner/packages -name '*.deb' -print -quit)"
+python3 scripts/check-scan-owner-package.py "$package"
+mkdir -p artifacts/scan-owner/inert-package
+cp "$package" artifacts/scan-owner/inert-package/
+dpkg-deb -c "$package"
+dpkg-deb -x "$package" "$RUNNER_TEMP/owner-inert-package"
+for name in broker guard; do
+  binary="$RUNNER_TEMP/owner-inert-package/var/jb/usr/libexec/openhc-owner-inert/openhc-scan-$name"
+  lipo "$binary" -verify_arch arm64
+  ldid -h "$binary" 2>&1 | grep CodeDirectory
+  otool -L "$binary"
+  shasum -a 256 "$binary"
+done
+} 2>&1 | tee artifacts/logs/owner-inert-package.log
 source_manifest > "$RUNNER_TEMP/owner-source-inputs-after.sha256"
 cmp artifacts/scan-owner/source-inputs.sha256 "$RUNNER_TEMP/owner-source-inputs-after.sha256"
 shasum -a 256 artifacts/scan-owner/source-inputs.sha256 >> artifacts/scan-owner/BUILD.txt

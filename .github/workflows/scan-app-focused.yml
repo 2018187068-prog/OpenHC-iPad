@@ -40,12 +40,14 @@ jobs:
           failed=0
           suites='btstack-probe btstack-transport-socket session-owner-probe scan-qr-cpu scan-demo-archive'
           if [[ "$VALIDATION_SCOPE" == owner ]]; then
-            suites="$suites scan-owner scan-owner-crypto"
+            suites="$suites scan-owner scan-owner-crypto scan-owner-process"
           else
             suites="$suites prepare-scan-app-reuse"
           fi
           for suite in $suites; do
-            python3 "scripts/test-$suite.py" >"focused-results/linux-$suite.log" 2>&1 || failed=1
+            args=()
+            if [[ "$suite" == scan-owner-process ]]; then args=(--output focused-results/owner-process); fi
+            python3 "scripts/test-$suite.py" "${args[@]}" >"focused-results/linux-$suite.log" 2>&1 || failed=1
             cat "focused-results/linux-$suite.log"
           done
           gradle :bridge:jvmTest --no-daemon --stacktrace >focused-results/jvm.log 2>&1 || failed=1

@@ -55,6 +55,11 @@ void ohc_owner_tick(ohc_owner *, int64_t);
 void ohc_owner_guard_ready(ohc_owner *, uint64_t, bool, int64_t);
 void ohc_owner_working(ohc_owner *, uint64_t, bool, int64_t);
 bool ohc_owner_transport_event(ohc_owner *, uint64_t, const char *, int64_t);
+/* Trusted common sink preflight, outside effect handlers and before forwarding
+ * its event batch. Only CLOSE_CONTROL_TRANSPORT is terminal; accepted CLEAR
+ * alone must preserve the same-PIN handoff. Generation is the captured owner
+ * fence, not a client field or common generation. No cleanup/recovery authority. */
+void ohc_owner_common_event(ohc_owner *, uint64_t, const char *, int64_t);
 bool ohc_owner_pairing(ohc_owner *, uint64_t);
 bool ohc_owner_handoff(ohc_owner *, uint64_t);
 void ohc_owner_completed(ohc_owner *, uint64_t, fe35_scan_completion, bool execution_exited, int64_t);

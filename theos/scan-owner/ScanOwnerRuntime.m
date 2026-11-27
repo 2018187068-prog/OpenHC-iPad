@@ -247,6 +247,16 @@ disconnect:
     }); return result;
 }
 - (void)consume:(NSArray<OHCBScanReceiverEvent *> *)events {
+    if (_workerGeneration!=_owner.generation) return;
+    /* The sink runs on _executor after the core call has returned, never from
+     * an effect handler. Preflight the whole common batch before forwarding
+     * terminal CLEAR/CLOSE: scan expiry need not reach the owner lease deadline.
+     * A nonterminal ACCEPTED CLEAR has no CLOSE and does not cancel handoff. */
+    int64_t now=ownerNow();
+    for (OHCBScanReceiverEvent *e in events) {
+        if(e.generation==_commonGeneration)
+            ohc_owner_common_event(&_owner,_workerGeneration,e.kind.UTF8String,now);
+    }
     for (OHCBScanReceiverEvent *e in events) {
         if(e.generation!=_commonGeneration) continue;
         if([e.kind isEqualToString:@"PAIRING_READY"]) {

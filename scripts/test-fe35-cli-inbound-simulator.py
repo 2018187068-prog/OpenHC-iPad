@@ -445,8 +445,9 @@ def run_scan_case(args, case, owner=False):
     status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
     preserve_case_evidence(documents, guard, ("owner-" if owner else "scan-") + case)
     check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
-    check(result_file.read_text(encoding="ascii").strip() == "0", "real common sink assertions " + status)
     trace = (guard / "scan-events").read_text(encoding="ascii")
+    check(result_file.read_text(encoding="ascii").strip() == "0",
+          "real common sink assertions " + status + "; named fixture trace: " + trace)
     expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure", "background", "disconnect", "success"))
     check(trace.count("EVENT=PAIRING_READY\n") == expected_ready, "dual readiness once " + trace)
     expected_clear = 2 if owner and case == "success" else 1
@@ -461,6 +462,11 @@ def run_scan_case(args, case, owner=False):
           "CLEANED precedes typed return and is not cleanup success")
     check("hicar://" not in status + trace, "QR never enters diagnostic output")
     if owner:
+        check("OWNER_ASSERT_FAIL=" not in trace, "all named owner assertions passed " + trace)
+        check(trace.count("OWNER_CORE_CLEAR\n") == 1, "owner revoked once " + trace)
+        check(trace.index("OWNER_CORE_CLEAR\n") < trace.index("EVENT=CLEAR_PAIRING\n") <
+              trace.index("EVENT=CLOSE_CONTROL_TRANSPORT\n"),
+              "owner revoke precedes common terminal events and native teardown " + trace)
         check("OWNER_BOUNDARIES=synthetic-OS-and-lease-real-owner-native-common" in trace,
               "explicit synthetic effect boundary, real integrated code")
         check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,

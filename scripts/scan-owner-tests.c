@@ -162,6 +162,42 @@ int main(void) {
     CHECK(!ohc_owner_transport_event(&o,old,"SDP_READY",0));
     CHECK(o.state==OHC_ARMING && o.last_now==200 && !o.sdp && !o.worker_returned);
     printf("SCAN_OWNER_TEST_ADAPTER_CHECKS=%d\n",checks);
+    const int terminal_checks=checks;
+    /* Reproduce the old deadline gap: common expires well before the immutable
+     * 240-second owner lease, so a native TICK alone cannot revoke the owner.
+     * Exercise the actual common-event adapter at startup, ready and accepted. */
+    for (int stage=0;stage<3;stage++) {
+        running(&o,&c,&l,&p);
+        const uint64_t generation=o.generation;
+        const int64_t lease_deadline=o.deadline;
+        if (stage) {
+            CHECK(ohc_owner_transport_event(&o,generation,"RFCOMM_READY",103));
+            CHECK(ohc_owner_transport_event(&o,generation,"SDP_READY",104));
+            CHECK(ohc_owner_pairing(&o,generation));
+        }
+        if (stage==2) {
+            CHECK(ohc_owner_transport_event(&o,generation,"ACCEPTED",105));
+            ohc_owner_common_event(&o,generation,"CLEAR_PAIRING",105);
+            CHECK(o.accepted && !o.cancelled && o.state==OHC_RUNNING);
+        }
+        CHECK(ohc_owner_transport_event(&o,generation,"TICK",2102));
+        CHECK(o.revoked==(stage==2) && !o.cancelled);
+        const int used=l.used;
+        ohc_owner_common_event(&o,generation-1,"CLOSE_CONTROL_TRANSPORT",0);
+        ohc_owner_common_event(&o,generation,"CLEAR_PAIRING",2102);
+        ohc_owner_common_event(&o,generation,"CLEANED",2102);
+        CHECK(l.used==used && o.state==OHC_RUNNING && o.last_now==2102);
+        ohc_owner_common_event(&o,generation,"CLOSE_CONTROL_TRANSPORT",2102);
+        CHECK(o.revoked && o.cancelled && o.state==OHC_STOPPING);
+        CHECK(l.n[OHC_CLEAR]==1 && l.n[OHC_CANCEL_WORKER]==1);
+        CHECK(l.order[l.used-1]==OHC_CANCEL_WORKER);
+        CHECK(o.deadline==lease_deadline && !l.n[OHC_REQUEST_RESTORE] && !l.n[OHC_DELEGATE_GUARD]);
+        CHECK(!ohc_owner_handoff(&o,generation));
+        const int stopped=l.used;
+        ohc_owner_common_event(&o,generation,"CLOSE_CONTROL_TRANSPORT",2103);
+        CHECK(l.used==stopped && o.deadline==lease_deadline);
+    }
+    printf("SCAN_OWNER_COMMON_TERMINAL_CHECKS=%d\n",checks-terminal_checks);
 #endif
     return 0;
 }

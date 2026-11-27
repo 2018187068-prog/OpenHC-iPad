@@ -10,6 +10,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+/* Static labels only: never include QR, PIN, keys or identity in diagnostics. */
+#define OWNER_CHECK(condition, label) do { \
+    if (!(condition)) { \
+        invalid=1; \
+        fprintf(trace,"OWNER_ASSERT_FAIL=%s line=%d\n",label,__LINE__); \
+        fflush(trace); \
+    } \
+} while (0)
 
 @interface OHCFixtureLease : NSObject <OHCScanLeaseAdapter>
 @property(nonatomic, copy) NSString *privateRunDirectory;
@@ -55,36 +63,52 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         });
     };
     foreground.publication=^(NSString *kind,uint64_t g,NSString *qr,NSString *value){
-        if(!NSThread.isMainThread || g>1)invalid=1;
+        OWNER_CHECK(NSThread.isMainThread && g<=1,"foreground_main_thread_generation");
         if([kind isEqualToString:@"PAIRING_READY"]){
-            foregroundReady++;if(!qr || value.length!=6)invalid=1;
+            foregroundReady++;
+            OWNER_CHECK(qr && value.length==6,"foreground_pairing_shape");
             qrView.image=OHCScanQRCode(qr,3,NULL);pinLabel.text=value;
-            if(!qrView.image || pinLabel.text.length!=6)invalid=1;
+            OWNER_CHECK(qrView.image && pinLabel.text.length==6,"foreground_qr_render");
             if([caseName isEqualToString:@"ready_stop"] || [caseName isEqualToString:@"background"])stop();
             if([caseName isEqualToString:@"disconnect"])shutdown(client,SHUT_WR);
         }
         if([kind isEqualToString:@"CLEAR_PAIRING"]){foregroundClear++;qrView.image=nil;pinLabel.text=nil;}
     };
-    runtime.clearPairing=^(uint64_t g){ if(g!=1)invalid=1; coreClear++; };
+    runtime.clearPairing=^(uint64_t g){
+        OWNER_CHECK(g==1,"core_clear_generation");
+        coreClear++;fprintf(trace,"OWNER_CORE_CLEAR\n");fflush(trace);
+    };
     runtime.events=^(NSArray<OHCBScanReceiverEvent *> *events){
         for(OHCBScanReceiverEvent *e in events){
             fprintf(trace,"EVENT=%s\n",e.kind.UTF8String);
-            if(e.generation!=1) invalid=1;
+            OWNER_CHECK(e.generation==1,"common_event_generation");
             if([e.kind isEqualToString:@"PAIRING_READY"]){
                 ready++; pin=[e.pinCode copy];
-                if(!e.qrCode || pin.length!=6)invalid=1;
+                OWNER_CHECK(e.qrCode && pin.length==6,"common_pairing_shape");
             }
-            if([e.kind isEqualToString:@"CLEAR_PAIRING"])clear++;
+            if([e.kind isEqualToString:@"CLEAR_PAIRING"]){
+                clear++;
+                OWNER_CHECK(coreClear==1,"owner_revoke_before_common_clear");
+            }
             if([e.kind isEqualToString:@"CLOSE_CONTROL_TRANSPORT"]){
                 closeCount++;int expectedClear=[caseName isEqualToString:@"success"]?2:1;
-                if(!coreClear || clear!=expectedClear)invalid=1;
+                OWNER_CHECK(coreClear!=0,"owner_revoke_before_common_close");
+                OWNER_CHECK(clear==expectedClear,"common_clear_before_transport_close");
             }
-            if([e.kind isEqualToString:@"AUTH_HANDOFF"]){handoff++;if(![pin isEqualToString:e.pinCode] || !coreClear)invalid=1;}
+            if([e.kind isEqualToString:@"AUTH_HANDOFF"]){
+                handoff++;
+                OWNER_CHECK([pin isEqualToString:e.pinCode],"handoff_same_pin");
+                OWNER_CHECK(coreClear!=0,"handoff_after_owner_revoke");
+            }
         } fflush(trace);
     };
     runtime.testNativeCallback=^(NSString *kind){
         if(![kind isEqualToString:@"TICK"])fprintf(trace,"CALLBACK=%s\n",kind.UTF8String);
-        if([kind isEqualToString:@"CLEANED"]){cleaned++;if(returned || closeCount!=1)invalid=1;}
+        if([kind isEqualToString:@"CLEANED"]){
+            cleaned++;
+            OWNER_CHECK(!returned,"cleaned_before_typed_return");
+            OWNER_CHECK(closeCount==1,"common_close_before_cleaned");
+        }
         fflush(trace);
     };
     runtime.finished=^(fe35_scan_completion c,BOOL delegated){
@@ -96,10 +120,19 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         fprintf(trace,"COUNTS=%d,%d,%d,%d\n",ready,clear,closeCount,cleaned);
         fprintf(trace,"OWNER_BOUNDARIES=synthetic-OS-and-lease-real-owner-native-common\n");
         fprintf(trace,"OWNER_HANDOFF_SAME_PIN=%d\n",handoff);
-        if(!c.returned || c.cleanup_confirmed!=expectedCleanup || c.status!=expectedStatus ||
-           ready!=expectedReady || clear!=([caseName isEqualToString:@"success"]?2:1) || closeCount!=1 || cleaned!=1 || coreClear!=1 ||
-           delegated==expectedCleanup || lease.armed!=1 || lease.taken!=1 || lease.stopped!=1 ||
-           handoff!=[caseName isEqualToString:@"success"]) invalid=1;
+        OWNER_CHECK(c.returned,"worker_returned");
+        OWNER_CHECK(c.cleanup_confirmed==expectedCleanup,"cleanup_certainty");
+        OWNER_CHECK(c.status==expectedStatus,"native_status");
+        OWNER_CHECK(ready==expectedReady,"dual_ready_count");
+        OWNER_CHECK(clear==([caseName isEqualToString:@"success"]?2:1),"common_clear_count");
+        OWNER_CHECK(closeCount==1,"common_close_once");
+        OWNER_CHECK(cleaned==1,"cleaned_once");
+        OWNER_CHECK(coreClear==1,"owner_core_clear_once");
+        OWNER_CHECK(delegated!=expectedCleanup,"cleanup_controls_guard_decision");
+        OWNER_CHECK(lease.armed==1,"guard_armed_once");
+        OWNER_CHECK(lease.taken==1,"lease_taken_once");
+        OWNER_CHECK(lease.stopped==1,"sole_heartbeat_stopped_once");
+        OWNER_CHECK(handoff==[caseName isEqualToString:@"success"],"handoff_one_shot");
         /* Independent fake recovery observation, explicitly not native CLEANED. */
         [runtime observeVerifiedRecovery:YES generation:1];
         fflush(trace); dispatch_semaphore_signal(done);
@@ -116,7 +149,7 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         NSString *marker=[lease.privateRunDirectory stringByAppendingPathComponent:@"stop"];
         for(int n=0;n<800 && access(marker.fileSystemRepresentation,F_OK);n++)
             [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
-        if(access(marker.fileSystemRepresentation,F_OK))invalid=1;
+        OWNER_CHECK(!access(marker.fileSystemRepresentation,F_OK),"registration_marker_observed");
         stop();
     }
     NSDate *limit=[NSDate dateWithTimeIntervalSinceNow:15];
@@ -129,15 +162,16 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
     }
     /* Barrier: final callback still owns fixture storage; get test count via the
      * serial queue before closing trace or dropping retained event/sink objects. */
-    if(runtime.testHandoffCount!=handoff)invalid=1;
+    OWNER_CHECK(runtime.testHandoffCount==handoff,"final_callback_lifetime_barrier");
     runtime.finished=nil;runtime.events=nil;runtime.testNativeCallback=nil;runtime.clearPairing=nil;
     /* Drain bounded owner frames, then local foreground teardown synchronously
      * invalidates even if remote CLEAR was not delivered before disconnect. */
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.08]];
     [foreground stop];
-    if(!foregroundClear || foregroundReady>1)invalid=1;
-    if(qrView.image || pinLabel.text.length)invalid=1;
-    if([@[@"ready_stop",@"background",@"disconnect",@"ready_timeout"] containsObject:caseName] && foregroundReady!=1)invalid=1;
+    OWNER_CHECK(foregroundClear && foregroundReady<=1,"foreground_clear_and_single_ready");
+    OWNER_CHECK(!qrView.image && !pinLabel.text.length,"foreground_no_stale_pairing");
+    if([@[@"ready_stop",@"background",@"disconnect",@"ready_timeout"] containsObject:caseName])
+        OWNER_CHECK(foregroundReady==1,"foreground_expected_ready");
     fprintf(trace,"OWNER_FOREGROUND_CLEAR_OK=1\n");
     fclose(trace);
     return invalid?96:0;

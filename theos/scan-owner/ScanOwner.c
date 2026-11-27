@@ -142,6 +142,12 @@ bool ohc_owner_transport_event(ohc_owner *o, uint64_t g, const char *kind, int64
     /* CLEANED/PONG never supply readiness or recovery evidence. */
     return true;
 }
+void ohc_owner_common_event(ohc_owner *o, uint64_t g, const char *kind, int64_t now) {
+    if (g != o->generation || !kind || strcmp(kind, "CLOSE_CONTROL_TRANSPORT")) return;
+    /* A shorter common scan budget can expire while the independent owner
+     * lease is still valid. Revoke/cancel now, not on a later native FAILED. */
+    (void)ohc_owner_transport_event(o, g, "STOP", now);
+}
 bool ohc_owner_pairing(ohc_owner *o, uint64_t g) {
     if (g != o->generation || o->state != OHC_RUNNING || o->revoked ||
         !o->rfcomm || !o->sdp || o->published) return false;

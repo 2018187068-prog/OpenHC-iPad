@@ -76,9 +76,20 @@ def native_now(binaries):
     return int(subprocess.check_output([str(binaries['broker-test']), 'clock'], timeout=3))
 
 
+def wait_recovery(directory):
+    # The prior effect record can precede fence removal. Only the final record
+    # follows successful unlink + directory fsync; retain both assertions.
+    wait_text(directory / 'events', 'INERT_RECOVERY_COMPLETED')
+    events = (directory / 'events').read_text(encoding='ascii')
+    assert events.count('INERT_RESTORE_ONCE') == 1
+    assert events.count('INERT_RECOVERY_COMPLETED') == 1
+    assert events.index('INERT_RESTORE_ONCE') < events.index('INERT_RECOVERY_COMPLETED')
+    assert not (directory / 'fence').exists()
+
+
 class Broker:
     """Test broker with real private guard child; NEVER deployment authorization."""
-    def __init__(self, binaries, directory, listener=None, missing=False):
+    def __init__(self, binaries, directory, listener=None, missing=False, finalization=None):
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.log = open(self.directory / 'broker.log', 'wb')
@@ -90,7 +101,7 @@ class Broker:
             self.socket, inherited = None, listener
             mode = 'relay-listener'
         self.process = subprocess.Popen([str(binaries['broker-test']), mode, str(binaries['guard-test']),
-            str(self.directory), 'missing_ready' if missing else 'normal'],
+            str(self.directory), finalization or ('missing_ready' if missing else 'normal')],
             stdin=inherited, stdout=self.log, stderr=subprocess.STDOUT, close_fds=True)
         if listener is None:
             inherited.close()
@@ -187,6 +198,7 @@ def relay_bootstrap_checks(binaries, base):
             raise AssertionError('listener remained available after one-shot accept')
     finally:
         broker.close()
+    wait_recovery(broker.directory)
     events = (broker.directory / 'events').read_text(encoding='ascii')
     assert events.count('INERT_RESTORE_ONCE') == 1 and 'RETURN_CLEAN_EXITED' in events
     assert 'INHERITED_FD_ALLOWLIST_EOF' in (broker.directory / 'broker.log').read_text(encoding='ascii')
@@ -196,12 +208,58 @@ def relay_bootstrap_checks(binaries, base):
     broker.exchange(ARM)
     broker.exchange(TAKEOVER)
     broker.close()
-    wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+    wait_recovery(broker.directory)
     events = (broker.directory / 'events').read_text(encoding='ascii')
     assert events.count('INERT_RESTORE_ONCE') == 1 and events.count('DELEGATE_ONCE') == 1
     assert 'PARENT_EXIT_OBSERVED' in events and 'RETURN_CLEAN_EXITED' not in events
     checks += 1
     return checks
+
+
+def finalization_checks(binaries, base):
+    """Real guard exec/filesystem, test-only inert effect finalization faults."""
+    for mode in ('finalize_hold', 'finalize_fail'):
+        broker = Broker(binaries, base / mode, finalization=mode)
+        try:
+            broker.exchange(ARM)
+            broker.exchange(TAKEOVER)
+            broker.exchange(COMPLETE, flags=7, status=1)
+            broker.sequence += 1
+            broker.socket.sendall(frame(RESTORE, broker.sequence, deadline=broker.deadline))
+            marker = 'TEST_FINALIZATION_WAIT' if mode == 'finalize_hold' else 'TEST_FINALIZATION_FAILED'
+            wait_text(broker.directory / 'events', marker)
+            events = (broker.directory / 'events').read_text(encoding='ascii')
+            assert events.count('INERT_RESTORE_ONCE') == 1
+            assert (broker.directory / 'restore.once').is_file()
+            assert (broker.directory / 'fence').exists(), 'effect must not imply fence release'
+            assert 'INERT_RECOVERY_COMPLETED' not in events, 'partial effect promoted to completion'
+            if mode == 'finalize_hold':
+                # No elapsed-time assumption: the guard cannot proceed until
+                # this explicit private-file gate is created by the harness.
+                fd = os.open(broker.directory / 'finalize.release', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'wb') as release:
+                    release.write(b'1')
+                    release.flush()
+                    os.fsync(release.fileno())
+                expected = OK
+            else:
+                expected = DENIED
+            reply = FRAME.unpack(exact(broker.socket, FRAME.size))
+            assert reply[2] == expected, (mode, reply[2])
+        finally:
+            broker.close()
+        if mode == 'finalize_hold':
+            wait_recovery(broker.directory)
+        else:
+            # Parent-exit retry encounters the exclusive prior-effect file;
+            # it must not execute the effect twice or infer final completion.
+            wait_text(broker.directory / 'events', 'PARENT_EXIT_OBSERVED')
+            events = (broker.directory / 'events').read_text(encoding='ascii')
+            assert events.count('INERT_RESTORE_ONCE') == 1
+            assert 'INERT_RECOVERY_COMPLETED' not in events
+            assert (broker.directory / 'fence').exists()
+        print('SCAN_OWNER_FINALIZATION_CASE_OK=' + mode)
+    return 2
 
 
 def runtime_checks(binaries, base):
@@ -234,7 +292,7 @@ def runtime_checks(binaries, base):
             finally:
                 other.close()
         else:
-            wait_text(directory / 'events', 'INERT_RESTORE_ONCE')
+            wait_recovery(directory)
             events = (directory / 'events').read_text(encoding='ascii')
             assert events.count('INERT_RESTORE_ONCE') == 1
             assert not (directory / 'fence').exists()
@@ -263,7 +321,7 @@ def runtime_checks(binaries, base):
                 raise AssertionError('forged/stale frame accepted')
         finally:
             broker.close()
-        wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+        wait_recovery(broker.directory)
         checks += 1
     broker = Broker(binaries, base / 'one_owner')
     broker.exchange(ARM, fragments=True)
@@ -281,6 +339,7 @@ def runtime_checks(binaries, base):
     broker.exchange(COMPLETE, flags=7, status=1)
     broker.exchange(RESTORE)
     broker.close()
+    wait_recovery(broker.directory)
     assert (broker.directory / 'events').read_text().count('INERT_RESTORE_ONCE') == 1
     checks += 1
     for case, payload in (('forged_path', b'/tmp/owner START root'),
@@ -292,7 +351,7 @@ def runtime_checks(binaries, base):
             assert broker.socket.recv(1) == b'', 'unframed authority/path accepted'
         finally:
             broker.close()
-        wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+        wait_recovery(broker.directory)
         checks += 1
     broker = Broker(binaries, base / 'immutable_budget')
     try:
@@ -307,7 +366,7 @@ def runtime_checks(binaries, base):
             raise AssertionError('absolute budget extended')
     finally:
         broker.close()
-    wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+    wait_recovery(broker.directory)
     checks += 1
     broker = Broker(binaries, base / 'partial_frame_deadline')
     try:
@@ -316,7 +375,7 @@ def runtime_checks(binaries, base):
         assert broker.socket.recv(1) == b'', 'partial frame kept capability indefinitely'
     finally:
         broker.close()
-    wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+    wait_recovery(broker.directory)
     checks += 1
     broker = Broker(binaries, base / 'replayed_writer')
     try:
@@ -330,7 +389,7 @@ def runtime_checks(binaries, base):
             raise AssertionError('second/replayed heartbeat sequence admitted')
     finally:
         broker.close()
-    wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+    wait_recovery(broker.directory)
     checks += 1
     broker = Broker(binaries, base / 'actual_deadline')
     broker.deadline = native_now(binaries) + 1000
@@ -351,6 +410,7 @@ def runtime_checks(binaries, base):
     assert invalid.returncode == 78
     checks += 1
     checks += relay_bootstrap_checks(binaries, base)
+    checks += finalization_checks(binaries, base)
     print('SCAN_OWNER_REAL_PROCESS_CASES_OK=' + str(checks))
     print('PROCESS_BOUNDARY=real-POSIX-owner-core-guard-exec-fs-IPC;injected-admission-and-inert-Trial-effects')
 

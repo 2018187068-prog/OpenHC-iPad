@@ -80,7 +80,7 @@ static int relay_input(const char *mode) {
     return accepted;
 }
 static void pause_ms(int ms) { (void)poll(NULL,0,ms); }
-static pid_t spawn_guard(const char *exe,int dir,int *client,bool missing) {
+static pid_t spawn_guard(const char *exe,int dir,int *client,const char *which) {
     int pair[2]; CHECK(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));
     int leakage[2]; CHECK(!pipe(leakage));
     int childSocket=fcntl(pair[1],F_DUPFD_CLOEXEC,10);
@@ -94,7 +94,10 @@ static pid_t spawn_guard(const char *exe,int dir,int *client,bool missing) {
         CHECK(dup2(nullfd,0)==0&&dup2(nullfd,1)==1&&dup2(nullfd,2)==2);
         long maximum=sysconf(_SC_OPEN_MAX); CHECK(maximum>0&&maximum<=1048576);
         for(int fd=5;fd<maximum;++fd) { close(fd); }
-        char *const args[]={(char *)exe,missing?"--test-missing-ready":NULL,NULL};
+        const char *option=!strcmp(which,"missing_ready")?"--test-missing-ready":
+            !strcmp(which,"finalize_hold")?"--test-finalize-hold":
+            !strcmp(which,"finalize_fail")?"--test-finalize-fail":NULL;
+        char *const args[]={(char *)exe,(char *)option,NULL};
         char *const env[]={NULL};
         execve(exe,args,env); _exit(91);
     }
@@ -191,6 +194,8 @@ static int owner_case(const char *which,int dir,int channel,pid_t guard) {
     completed(&f,clean,exited);
     if(clean&&exited) {
         CHECK(f.released==1&&!f.delegated);
+        /* RESTORE OK is sent only after final recovery, not prior effect. */
+        CHECK(faccessat(dir,"fence",F_OK,0));
         int status; CHECK(waitpid(guard,&status,0)==guard&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
     } else {
         CHECK(!f.released&&f.delegated==1);
@@ -211,7 +216,7 @@ int main(int argc,char **argv) {
     int dir=open(directory,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW); CHECK(dir>=0);
     int channel;
     if(!strcmp(mode,"owner")) {
-        pid_t guard=spawn_guard(guardExe,dir,&channel,!strcmp(which,"missing_ready"));
+        pid_t guard=spawn_guard(guardExe,dir,&channel,which);
         return owner_case(which,dir,channel,guard);
     }
     /* Relay test-only inherited stdin (Python-created AF_UNIX socket or loopback
@@ -219,7 +224,7 @@ int main(int argc,char **argv) {
      * a Simulator/loopback connection authenticated deployment provenance. */
     int input=relay_input(mode);
     printf("RELAY_BOOTSTRAP_OK mode=%s\n",mode); fflush(stdout);
-    (void)spawn_guard(guardExe,dir,&channel,!strcmp(which,"missing_ready"));
+    (void)spawn_guard(guardExe,dir,&channel,which);
 #ifdef __APPLE__
     int one=1; CHECK(!setsockopt(input,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one)));
     CHECK(!setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one)));

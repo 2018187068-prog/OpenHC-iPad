@@ -505,7 +505,7 @@ def run_scan_case(args, case, owner=False, process=False):
         # restore authority. Guard observes its actual host-broker parent exit.
         broker.close()
         listener.close()
-        _process.wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+        _process.wait_recovery(broker.directory)
         process_events = (broker.directory / 'events').read_text(encoding='ascii')
         check(process_events.count('ARM_IMMUTABLE') == 1, 'process guard immutable arm once')
         check(process_events.count('INERT_TAKEOVER') == 1, 'process guard READY before work')

@@ -5,7 +5,7 @@
 #import "../Fe36AuthTransport.h"
 NS_ASSUME_NONNULL_BEGIN
 typedef void (^OHCScanOwnerKeySink)(uint64_t ownerGeneration, int64_t commonGeneration,
-                                    int64_t incarnation, const uint8_t key[16]);
+                                    int64_t incarnation, const uint8_t key[_Nonnull 16]);
 /* Trusted internal asynchronous adapter for the EXISTING Trial/guard contract.
  * No native device implementation is supplied or enabled. An implementation
  * must own the exclusive lock, immutable absolute guard deadline, sole heartbeat

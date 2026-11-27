@@ -27,7 +27,7 @@ static int rejectSend(void *context,const uint8_t *bytes,size_t size) {
 }
 int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     NSString *name=[NSString stringWithUTF8String:scenario],*directory=[NSString stringWithUTF8String:run_dir];
-    BOOL cryptoCase=[@[@"success",@"wrong_pin",@"forged_signature",@"cleanup_failure",@"pending_stop"] containsObject:name];
+    BOOL cryptoCase=[@[@"success",@"wrong_pin",@"forged_signature",@"cleanup_failure",@"pending_stop",@"late_cleanup_data"] containsObject:name];
     __block _Atomic int invalid=0;
     FILE *trace=fopen([[directory stringByAppendingPathComponent:@"scan-events"] fileSystemRepresentation],"w");
     if(!trace) return 91;
@@ -99,7 +99,7 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     __block BOOL completed=NO;
     runtime.finished=^(fe35_scan_completion c,BOOL delegated) {
         BOOL success=[name isEqualToString:@"success"];
-        BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"wrong_peer",
+        BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"late_cleanup_data",@"wrong_peer",
             @"wrong_cid",@"control_cid_reuse",@"extra_connection",@"wrong_listener",@"wrong_data_cid",@"reopened_cid"] containsObject:name];
         CID_CHECK(c.returned && c.status==(success?0:1),"typed_protocol_completion");
         CID_CHECK(c.cleanup_confirmed==!uncertain,"independent_cleanup_certainty");

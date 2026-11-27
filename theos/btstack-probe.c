@@ -988,6 +988,10 @@ done:
                         confirmed = 1;
                         break;
                     }
+                    /* A verified candidate is still revocable throughout
+                     * cleanup. Do not discard unexpected data/events here
+                     * and subsequently promote it on a later close ACK. */
+                    if (auth) cleanup_ok = 0;
                 }
                 if (!confirmed) cleanup_ok = 0;
                 else disconnected = 1;

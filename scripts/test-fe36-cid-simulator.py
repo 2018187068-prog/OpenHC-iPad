@@ -15,7 +15,8 @@ import time
 CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_peer',
          'wrong_cid', 'control_cid_reuse', 'extra_connection', 'malformed_open',
          'wrong_data_cid', 'reopened_cid', 'wrong_listener',
-         'control_close', 'auth_disconnect', 'stop', 'background', 'deadline', 'send_failure', 'cleanup_failure', 'pending_stop')
+         'control_close', 'auth_disconnect', 'stop', 'background', 'deadline', 'send_failure', 'cleanup_failure', 'pending_stop',
+         'late_cleanup_data')
 
 
 def run_case(args, h, case):
@@ -63,6 +64,10 @@ def run_case(args, h, case):
         command(conn, 1, b'')
         h.send_event(conn, 0x60, bytes([2]))
         command(conn, 0x41, struct.pack('<HB', control_cid, 0))
+        if case == 'late_cleanup_data':
+            # A real crypto candidate exists; this unexpected FE35 payload
+            # before the close ACK must revoke it, never be silently skipped.
+            h.send_packet(conn, 7, control_cid, b'{}')
         h.send_event(conn, 0x81, struct.pack('<H', control_cid))
         command(conn, 0x31, struct.pack('<I', 0x10001))
         command(conn, 0x43, bytes([16, 0]))

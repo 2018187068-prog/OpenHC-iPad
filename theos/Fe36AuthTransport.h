@@ -7,7 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
  * representation. This is not a radio/network grant or a transferred lease.
  * A future next stage must copy privately and own cancellation/lease transfer;
  * the current bounded scan worker still tears down and returns to its guard. */
-typedef void (^OHCFe36KeySink)(int64_t generation, int64_t incarnation, const uint8_t key[16]);
+typedef void (^OHCFe36KeySink)(int64_t generation, int64_t incarnation, const uint8_t key[_Nonnull 16]);
 @interface OHCFe36AuthTransport : NSObject
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithConfig:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust

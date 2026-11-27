@@ -28,15 +28,38 @@ static bool note(int dir,const char *name,const char *text,int flags) {
 static void delegate(int dir,bool *once) {
     if(!*once) { *once=true; (void)note(dir,"events","DELEGATE_ONCE\n",O_APPEND); }
 }
-static bool recover(int dir,ohc_lease_guard *s) {
+static bool recover(int dir,ohc_lease_guard *s,int finalization) {
     /* Test-only independent recovery effect: no OFF/launchctl or controller.
      * The exclusive file demonstrates idempotence across process boundaries. */
     if(!note(dir,"restore.once","INERT_RECOVERY_VERIFIED\n",O_EXCL)) { return false; }
     if(!note(dir,"events","INERT_RESTORE_ONCE\n",O_APPEND)) { return false; }
+    /* Effect evidence is NOT completion. These test-build-only fault gates
+     * make the pre-unlink observation window deterministic, without sleeps in
+     * the observer or any deployment/environment-controlled recovery mode. */
+    if(finalization==1) {
+        if(!note(dir,"events","TEST_FINALIZATION_WAIT\n",O_APPEND)) { return false; }
+        int64_t until=ohc_lease_now()+3000;
+        for(;;) {
+            int gate=openat(dir,"finalize.release",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+            if(gate>=0) {
+                struct stat st; char byte=0;
+                bool ok=!fstat(gate,&st)&&S_ISREG(st.st_mode)&&st.st_uid==geteuid()&&
+                    (st.st_mode&0777)==0600&&st.st_nlink==1&&st.st_size==1&&read(gate,&byte,1)==1&&byte=='1';
+                close(gate); if(!ok) { return false; } break;
+            }
+            if(errno!=ENOENT||ohc_lease_now()>=until) { return false; }
+            (void)poll(NULL,0,20);
+        }
+    } else if(finalization==2) {
+        (void)note(dir,"events","TEST_FINALIZATION_FAILED\n",O_APPEND); return false;
+    }
     if(unlinkat(dir,"fence",0) || fsync(dir)) { return false; }
+    /* Only this later record may be observed as final completion: the effect
+     * and required fence removal/directory sync have already succeeded. */
+    if(!note(dir,"events","INERT_RECOVERY_COMPLETED\n",O_APPEND)) { return false; }
     s->restored=true; return true;
 }
-static int run_guard(bool missingReady) {
+static int run_guard(bool missingReady,int finalization) {
     const int channel=3,dir=4;
     pid_t originalParent=getppid();
     if(originalParent<=1) { return 78; }
@@ -68,7 +91,7 @@ static int run_guard(bool missingReady) {
         if(getppid()!=originalParent) {
             delegate(dir,&delegated);
             (void)note(dir,"events","PARENT_EXIT_OBSERVED\n",O_APPEND);
-            return recover(dir,&state)?0:79;
+            return recover(dir,&state,finalization)?0:79;
         }
         if((!state.armed&&now>=bootstrap)||ohc_lease_overdue(&state,now)) {
             delegate(dir,&delegated); state.delegated=true;
@@ -97,7 +120,7 @@ static int run_guard(bool missingReady) {
         if(accepted&&frame.op==OHC_L_COMPLETE) {
             (void)note(dir,"events",state.safe?"RETURN_CLEAN_EXITED\n":"RETURN_UNCERTAIN\n",O_APPEND);
         }
-        if(accepted&&frame.op==OHC_L_RESTORE) { accepted=recover(dir,&state); }
+        if(accepted&&frame.op==OHC_L_RESTORE) { accepted=recover(dir,&state,finalization); }
         if(!accepted||frame.op==OHC_L_DELEGATE) { delegate(dir,&delegated); state.delegated=true; }
         frame.op=accepted?OHC_L_OK:OHC_L_DENIED; frame.flags=0; frame.status=0;
         if(!ohc_lease_write(channel,&frame,1000)) {
@@ -109,8 +132,10 @@ static int run_guard(bool missingReady) {
 #endif
 int main(int argc,char **argv) {
 #ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
-    if(argc==1) { return run_guard(false); }
-    if(argc==2&&!strcmp(argv[1],"--test-missing-ready")) { return run_guard(true); }
+    if(argc==1) { return run_guard(false,0); }
+    if(argc==2&&!strcmp(argv[1],"--test-missing-ready")) { return run_guard(true,0); }
+    if(argc==2&&!strcmp(argv[1],"--test-finalize-hold")) { return run_guard(false,1); }
+    if(argc==2&&!strcmp(argv[1],"--test-finalize-fail")) { return run_guard(false,2); }
 #else
     (void)argc; (void)argv;
 #endif

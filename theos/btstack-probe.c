@@ -38,6 +38,7 @@ static int transfer_guarded(int fd, uint8_t *buf, size_t size, int sending,
  * registration replies. Cleared before cleanup so Stop cannot cancel teardown. */
 static _Thread_local fe35_scan_transport *current_scan;
 static _Thread_local int scan_ended;
+static _Thread_local int auth_strict_exchange;
 
 /* Darwin suppresses SIGPIPE per socket; Linux requires MSG_NOSIGNAL on
  * every send. Never change the process-wide SIGPIPE disposition. */
@@ -193,9 +194,9 @@ static int exchange(int fd, uint8_t ocf, const uint8_t *params, size_t size,
         unsigned size = le16(header + 4);
         if (size > sizeof(body)) return -1;
         if (transfer(fd, body, size, 0, deadline)) return -1;
-        if (le16(header) != 4) continue;
+        if (le16(header) != 4) { if (auth_strict_exchange) return -1; continue; }
         if (size < 2 || body[1] != size - 2) return -1;
-        if (body[0] != expected) continue;
+        if (body[0] != expected) { if (auth_strict_exchange) return -1; continue; }
         if (le16(header + 2) != 0 || size != expected_size) return -1;
         memcpy(reply, body, size);
         return 0;
@@ -316,7 +317,7 @@ static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *typ
     *size = le16(header + 4);
     if (*size > 1024) return -2;
     if (*type == 7) {
-        if (*channel != expected_cid || *size > 512) return -2;
+        if ((expected_cid != UINT16_MAX && *channel != expected_cid) || !*channel || *size > 512) return -2;
     } else if (*type == 4 && *channel == 0 && *size >= 2) {
         uint8_t event_header[2];
         if (transfer_guarded(fd, event_header, 2, 0, deadline, run_dir)) return -1;
@@ -330,16 +331,9 @@ static int receive_transport_packet(int fd, uint16_t expected_cid, uint16_t *typ
             (event_header[0] == 0x80 && *size != 16 && *size != 17) ||
             (event_header[0] == 0x82 && *size != 11) ||
             (event_header[0] == 0x81 && *size != 4)) return -2;
-        if (event_header[0] == 0x80) {
-            uint8_t discard[6];
-            if (transfer_guarded(fd, body + 2, 1, 0, deadline, run_dir) ||
-                transfer_guarded(fd, discard, sizeof(discard), 0, deadline, run_dir) ||
-                transfer_guarded(fd, body + 9, *size - 9, 0, deadline, run_dir)) return -1;
-        } else if (event_header[0] == 0x82) {
-            uint8_t discard_address[6];
-            if (transfer_guarded(fd, discard_address, sizeof(discard_address), 0, deadline, run_dir) ||
-                transfer_guarded(fd, body + 8, *size - 8, 0, deadline, run_dir)) return -1;
-        } else if (transfer_guarded(fd, body + 2, *size - 2, 0, deadline, run_dir)) {
+        /* Private peer correlation only. Neither these addresses nor data are
+         * printed. Both incoming/open BTstack events use reversed BD_ADDR. */
+        if (transfer_guarded(fd, body + 2, *size - 2, 0, deadline, run_dir)) {
             return -1;
         }
         return 0;
@@ -621,12 +615,12 @@ static int close_auth_listener(int fd, uint8_t channel, uint32_t handle) {
     return 0;
 }
 
-static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge,
+static int dispatch_bridge_batch(int fd, uint16_t cid, uint16_t mtu, fe35_bridge_handle bridge,
                                  fe35_bridge_batch batch, uint8_t *auth_channel,
                                  uint32_t *auth_handle, uint8_t auth_uuid[16],
                                  int64_t deadline, const char *run_dir) {
     size_t count = fe35_bridge_event_count(batch);
-    int result = 0;
+    int result = (!mtu || mtu>512) ? -1 : 0;
     if (count > FE35_BRIDGE_MAX_EVENTS) result = -1;
     for (size_t i = 0; !result && i < count; ++i) {
         fe35_bridge_event event;
@@ -635,7 +629,7 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
             if (!event.frame_size || event.frame_size > FE35_BRIDGE_MAX_FRAME) result = -1;
             for (size_t offset = 0; !result && offset < event.frame_size;) {
                 size_t part = event.frame_size - offset;
-                if (part > 512) part = 512;
+                if (part > mtu) part = mtu;
                 if (send_btstack_packet(fd, 7, cid, event.frame + offset, part, deadline, run_dir)) result = -1;
                 offset += part;
             }
@@ -648,7 +642,7 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
                     fe35_bridge_batch ready = fe35_bridge_listener_ready(bridge, *auth_channel);
                     if (!ready) result = -1;
                     else {
-                        result = dispatch_bridge_batch(fd, cid, bridge, ready, auth_channel,
+                        result = dispatch_bridge_batch(fd, cid, mtu, bridge, ready, auth_channel,
                             auth_handle, auth_uuid, deadline, run_dir);
                         fe35_bridge_release_batch(ready);
                     }
@@ -676,13 +670,94 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
  * public Kotlin/Native bridge, then explicitly release owned services/CID.
  * Peer addresses, session bytes, UUIDs, and key material are never logged.
  */
+typedef struct {
+    int fd; uint16_t cid, mtu; int64_t deadline; const char *run_dir;
+} auth_writer;
+static int auth_send(void *context,const uint8_t *bytes,size_t size) {
+    auth_writer *w=context;
+    if(!bytes || !size || size>4096 || !w->cid || !w->mtu || w->mtu>512) return -1;
+    for(size_t at=0;at<size;) {
+        size_t n=size-at; if(n>w->mtu) n=w->mtu;
+        if(scan_poll() || send_btstack_packet(w->fd,7,w->cid,bytes+at,n,w->deadline,w->run_dir)) return -1;
+        at+=n;
+    }
+    return scan_poll();
+}
+/* No packet=JSON assumption: every byte is copied into the Native framer. A
+ * single accepted incarnation (1) is scoped to this stack invocation and
+ * captured common generation; reusable daemon CIDs are never authority. */
+static int auth_stream(int fd,const char *run_dir,fe36_auth_transport *auth,
+    fe35_bridge_handle bridge,uint16_t control_cid,uint16_t control_mtu,uint8_t *listener,uint32_t *listener_handle,
+    uint8_t uuid[16],const uint8_t peer[6],uint16_t acl,
+    uint16_t *auth_cid,int *auth_opened,int *auth_disconnected,int *control_disconnected,int *uncertain) {
+    uint8_t body[1024]; uint16_t type,channel,mtu=0; size_t size;
+    int connected=0; int64_t start=now_ms(),last=start,deadline=start+30000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+    deadline=start+2500;
+#endif
+    auth_writer writer={fd,0,0,deadline,run_dir};
+    for(unsigned packets=0;packets<4096;packets++) {
+        int64_t now=now_ms();
+        if(now<last || now>=deadline || scan_poll()) return -1;
+        last=now;
+        if(connected && auth->step(auth->context,FE36_IO_TICK,1,NULL,0,now,auth_send,&writer)<0) return -1;
+        if(receive_transport_packet(fd,UINT16_MAX,&type,&channel,body,&size,deadline,run_dir)) return -1;
+        if(type==4) {
+            if(body[0]==0x82) {
+                /* Unknown/duplicate/control-CID reuse/other peer never accepted. */
+                uint16_t candidate=(uint16_t)le16(body+9);
+                if(*auth_cid || body[8]!=*listener || !candidate || candidate==control_cid ||
+                    memcmp(body+2,peer,6)) { *uncertain=1; return -1; }
+                *auth_cid=candidate;
+                uint8_t params[]={(uint8_t)candidate,(uint8_t)(candidate>>8)};
+                if(command(fd,0x44,params,sizeof(params),deadline)) return -1;
+            } else if(body[0]==0x80) {
+                if(connected || (size==17 && (!*auth_cid || le16(body+12)!=*auth_cid))) *uncertain=1;
+                if(!*auth_cid || connected || size!=17 || body[2] || body[11]!=*listener ||
+                    le16(body+12)!=*auth_cid || body[16]!=1 || memcmp(body+3,peer,6) ||
+                    le16(body+9)!=acl || !(mtu=(uint16_t)le16(body+14)) || mtu>512) return -1;
+                *auth_opened=connected=1; writer.cid=*auth_cid; writer.mtu=mtu;
+                if(auth->step(auth->context,FE36_IO_CONNECTED,1,NULL,0,now_ms(),auth_send,&writer)) return -1;
+            } else if(body[0]==0x81) {
+                if(le16(body+2)!=control_cid && (!*auth_cid || le16(body+2)!=*auth_cid)) *uncertain=1;
+                if(le16(body+2)==control_cid) *control_disconnected=1;
+                if(*auth_cid && le16(body+2)==*auth_cid) *auth_disconnected=1;
+                /* Reference WirelessReceiverSession: before WiFi, FE35 close is
+                 * fatal even during authentication. This slice has no WiFi. */
+                return -1;
+            } else return -1;
+        } else {
+            if(channel==control_cid) {
+                fe35_bridge_batch batch=fe35_bridge_feed(bridge,body,size);
+                if(!batch) return -1;
+                int failed=dispatch_bridge_batch(fd,control_cid,control_mtu,bridge,batch,listener,
+                    listener_handle,uuid,deadline,run_dir);
+                fe35_bridge_release_batch(batch);memset(body,0,sizeof(body));
+                if(failed) *uncertain=1;
+                if(failed || !*listener) return -1;
+                continue;
+            }
+            if(!connected || channel!=*auth_cid || !size || size>mtu) {
+                if(channel!=*auth_cid) *uncertain=1;
+                return -1;
+            }
+            int step=auth->step(auth->context,FE36_IO_DATA,1,body,size,now_ms(),auth_send,&writer);
+            memset(body,0,sizeof(body));
+            if(step<0 || scan_poll()) return -1;
+            if(step==1) return 0;
+        }
+    }
+    return -1;
+}
 static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge,
-                              fe35_scan_transport *scan, bool *cleanup_confirmed) {
+                              fe35_scan_transport *scan, bool *cleanup_confirmed,fe36_auth_transport *auth) {
     uint8_t state[3], reply[7], owned_channel = 0;
     uint32_t handle = 0;
-    uint16_t cid = 0, packet_type = 0, packet_channel = 0;
+    uint16_t cid = 0, packet_type = 0, packet_channel = 0, control_mtu=512;
     uint8_t body[1024], auth_channel = 0, auth_uuid[16] = {0};
     uint32_t auth_handle = 0;
+    uint8_t peer[6]={0}; uint16_t acl=0, auth_cid=0;
+    int auth_opened=0, auth_disconnected=0, auth_verified=0;
     size_t size = 0;
     int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
     int listener_ready = 0, session_started = 0;
@@ -690,7 +765,8 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     if (cleanup_confirmed) *cleanup_confirmed = false;
     unsigned status = 0;
     const char *stage = "GUARD";
-    if (current_scan || (scan && (!scan->notify || scan->generation <= 0))) {
+    if (current_scan || (scan && (!scan->notify || scan->generation <= 0)) ||
+        (auth && (!scan || !auth->context || !auth->step || !auth->commit || !auth->cancel))) {
         if (bridge) fe35_bridge_close(bridge);
         return 1;
     }
@@ -746,6 +822,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
             if (packet_type != 4 || body[0] != 0x82) continue;
             if (size != 11 || body[8] != owned_channel) { stage = "INCOMING_EVENT_SHAPE"; goto done; }
             cid = (uint16_t)le16(body + 9);
+            memcpy(peer,body+2,6);
             if (!cid) { stage = "INCOMING_CID_INVALID"; goto done; }
             found = 1;
             break;
@@ -775,11 +852,14 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
             int strict = size == 17 && body[1] == 15;
             int reference = size == 17 && body[1] == 16;
             if ((!strict && !reference) || body[2] || body[11] != owned_channel ||
-                le16(body + 12) != cid || body[16] != 1) {
+                le16(body + 12) != cid || body[16] != 1 ||
+                (auth && (memcmp(peer,body+3,6) || !le16(body+14) || le16(body+14)>512))) {
                 stage = "INCOMING_OPEN_PROFILE";
                 goto done;
             }
             found = opened = 1;
+            acl=(uint16_t)le16(body+9);
+            if(auth) control_mtu=(uint16_t)le16(body+14);
             if (scan_event("ACCEPTED", owned_channel)) goto done;
             printf("BTSTACK_FE35_INCOMING_OPENED_PROFILE=%s\n",
                    strict ? "strict-17" : "reference-17-len16");
@@ -794,7 +874,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         if (!batch) goto done;
         session_started = 1;
         int64_t deadline = now_ms() + 4000;
-        int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
+        int dispatched = dispatch_bridge_batch(fd, cid, control_mtu, bridge, batch, &auth_channel,
             &auth_handle, auth_uuid, deadline, run_dir);
         fe35_bridge_release_batch(batch);
         if (dispatched) { cleanup_uncertain = 1; goto done; }
@@ -841,26 +921,52 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
                 memset(&event, 0, sizeof(event));
             }
             if (strcmp(stage, "BRIDGE_EVENT_INVALID") == 0) { fe35_bridge_release_batch(batch); goto done; }
-            int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
+            int dispatched = dispatch_bridge_batch(fd, cid, control_mtu, bridge, batch, &auth_channel,
                 &auth_handle, auth_uuid, now_ms() + 4000, run_dir);
             fe35_bridge_release_batch(batch);
             if (dispatched) { cleanup_uncertain = 1; stage = "BRIDGE_EVENT_DISPATCH"; goto done; }
             if (auth_channel) listener_ready = 1;
+            if(auth && auth_channel && listener_ready) {
+                stage="AUTH_STREAM"; auth_strict_exchange=1;
+                if(auth_stream(fd,run_dir,auth,bridge,cid,control_mtu,&auth_channel,&auth_handle,auth_uuid,peer,acl,&auth_cid,
+                    &auth_opened,&auth_disconnected,&disconnected,&cleanup_uncertain)) goto done;
+                auth_verified=1; break;
+            }
         }
     }
-    if (session_started && listener_ready) {
+    if (session_started && listener_ready && (!auth || auth_verified)) {
         result = 0;
     } else stage = disconnected ? "CONTROL_DISCONNECTED_EARLY" : "SESSION_DEADLINE";
 done:
     /* Revoke pairing before touching resources. The common model emits CLOSE
      * once; a later CLEANED/failed callback cannot request a second cleanup. */
-    if (scan) {
+    if (scan && (!auth || result)) {
         (void)scan->notify(scan->context, scan->generation, result ? "FAILED" : "STOP", 0, now_ms());
         current_scan = NULL;
     }
     if (fd >= 0) {
         int cleanup_ok = 1;
         int64_t deadline = now_ms() + 4000;
+        /* Pending accepted CID is owned even if OPEN was malformed/lost. Try
+         * closing it, but never manufacture cleanup certainty from socket EOF. */
+        if(auth_cid && !auth_disconnected) {
+            uint8_t params[]={(uint8_t)auth_cid,(uint8_t)(auth_cid>>8),0};
+            if(command(fd,0x41,params,sizeof(params),deadline)) cleanup_ok=0;
+            else {
+                int confirmed=0; int64_t close_deadline=now_ms()+5000;
+#ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
+                close_deadline=now_ms()+150;
+#endif
+                for(unsigned i=0;i<64;i++) {
+                    if(receive_transport_packet(fd,auth_cid,&packet_type,&packet_channel,body,&size,close_deadline,run_dir)) break;
+                    if(packet_type==4 && body[0]==0x81 && le16(body+2)==auth_cid) {confirmed=1;break;}
+                    /* Do not swallow a remote control close/extra data and
+                     * then promote a candidate. Unknown events fail closed. */
+                    cleanup_ok=0;
+                }
+                if(!confirmed) cleanup_ok=0; else auth_disconnected=1;
+            }
+        }
         if (auth_channel || auth_handle) {
             if (close_auth_listener(fd, auth_channel, auth_handle)) cleanup_ok = 0;
             auth_channel = 0;
@@ -904,10 +1010,20 @@ done:
         /* Socket teardown alone does not confirm an unacknowledged registration
          * or pending CID. Preserve protocol status; report certainty separately. */
         int close_ok = close(fd) == 0;
-        if (cleanup_confirmed)
-            *cleanup_confirmed = cleanup_ok && close_ok && !registration_pending &&
-                !cleanup_uncertain && (!cid || opened || disconnected);
+        bool confirmed=cleanup_ok && close_ok && !registration_pending &&
+                !cleanup_uncertain && (!cid || opened || disconnected) &&
+                (!auth_cid || auth_disconnected);
+        if (cleanup_confirmed) *cleanup_confirmed = confirmed;
+        if(auth && !result && (!confirmed || scan_poll() || auth->commit(auth->context,1,now_ms()))) {
+            result=1; stage="AUTH_COMMIT_REVOKED";
+        }
     }
+    if(auth) {
+        auth->cancel(auth->context);
+        if(scan && current_scan) (void)scan->notify(scan->context,scan->generation,result?"FAILED":"STOP",0,now_ms());
+    }
+    current_scan=NULL; auth_strict_exchange=0;
+    memset(peer,0,sizeof(peer));
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
     else {
         puts("BTSTACK_FE35_BRIDGE_SESSION_OK");
@@ -921,6 +1037,7 @@ done:
         scan_ended = 0;
     }
     (void)accepted;
+    (void)auth_opened;
     return result;
 }
 
@@ -941,11 +1058,15 @@ static int inbound_with_bridge(const char *path, const char *run_dir) {
         puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_CREATE");
         return 1;
     }
-    return transport_inbound(path, run_dir, bridge, NULL, NULL);
+    return transport_inbound(path, run_dir, bridge, NULL, NULL,NULL);
 }
 
 fe35_scan_completion openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle bridge,
                                                 fe35_scan_transport *scan) {
+    return openhc_btstack_scan_auth_inbound(run_dir,bridge,scan,NULL);
+}
+fe35_scan_completion openhc_btstack_scan_auth_inbound(const char *run_dir, fe35_bridge_handle bridge,
+                                                fe35_scan_transport *scan,fe36_auth_transport *auth) {
     fe35_scan_completion completion = { .returned = true, .cleanup_confirmed = false, .status = 1 };
     if (!scan) { if (bridge) fe35_bridge_close(bridge); return completion; }
 #ifdef OPENHC_FE35_SIMULATOR_TEST
@@ -954,7 +1075,7 @@ fe35_scan_completion openhc_btstack_scan_inbound(const char *run_dir, fe35_bridg
 #else
     const char *path = "/tmp/BTstack";
 #endif
-    completion.status = transport_inbound(path, run_dir, bridge, scan, &completion.cleanup_confirmed);
+    completion.status = transport_inbound(path, run_dir, bridge, scan, &completion.cleanup_confirmed,auth);
     return completion;
 }
 

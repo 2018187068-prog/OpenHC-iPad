@@ -45,6 +45,7 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   "$repo_root/theos/scan-owner/ScanLeaseChannel.c" \
   "$repo_root/scripts/scan-owner-sim-fixture.m" \
   "$repo_root/scripts/hicar-auth-sim-fixture.m" \
+  "$repo_root/scripts/fe36-cid-sim-fixture.m" \
   "$repo_root/theos/scan-ui/ScanQRCode.m" \
   "$RUNNER_TEMP/owner-ScanQRBitmap.o" "$RUNNER_TEMP/owner-qrcodegen.o" \
   "$repo_root/scripts/fe35-inbound-sim-probe-stubs.c" \
@@ -82,7 +83,7 @@ destination.mkdir(parents=True, exist_ok=True)
 for name in ('fe35-cli-status.log', 'fe35-cli-result'):
     p = source / name
     if p.is_file(): shutil.copyfile(p, destination / name)
-for pattern in ('scan-guard-*/scan-events', 'owner-guard-*/scan-events'):
+for pattern in ('scan-guard-*/scan-events', 'owner-guard-*/scan-events', 'auth-cid-*/scan-events'):
     for p in source.glob(pattern):
         shutil.copyfile(p, destination / (p.parent.name + '-events.log'))
 PY

@@ -3,6 +3,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #include "fe35-control-bridge.h"
 #include <string.h>
+#import "Fe36AuthTransport.h"
 
 static OHCBKotlinByteArray *kotlinBytes(const uint8_t *bytes, size_t size) {
     if (size > INT32_MAX) return nil;
@@ -148,3 +149,107 @@ int fe35_scan_notify(void *context, int64_t generation, const char *kind,
         } @catch (__unused NSException *exception) { return -1; }
     }
 }
+
+@interface OHCFe36AuthTransport () {
+    NSLock *_lock;
+    OHCBFe36AuthSessionBridge *_auth;
+    int64_t _generation;
+    BOOL _handed, _cancelled, _candidate, _delivered;
+    BOOL (^_commit)(OHCFe36AuthTransport *, int64_t, int64_t);
+}
+- (int)step:(enum fe36_io_event)event incarnation:(int64_t)incarnation
+    bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now
+    send:(fe36_io_send)send context:(void *)context;
+@end
+static int authStep(void *p, enum fe36_io_event event, int64_t incarnation,
+                    const uint8_t *bytes, size_t size, int64_t now, fe36_io_send send, void *context) {
+    return [(__bridge OHCFe36AuthTransport *)p step:event incarnation:incarnation
+        bytes:bytes size:size now:now send:send context:context];
+}
+static int authCommit(void *p,int64_t incarnation,int64_t now) {
+    OHCFe36AuthTransport *a=(__bridge OHCFe36AuthTransport *)p;
+    return [a commitIncarnation:incarnation now:now] ? 0 : -1;
+}
+static void authCancel(void *p) { [(__bridge OHCFe36AuthTransport *)p cancel]; }
+@implementation OHCFe36AuthTransport
+- (instancetype)initWithConfig:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    commit:(BOOL (^)(OHCFe36AuthTransport *,int64_t,int64_t))commit {
+    if(!config || !trust || !commit) return nil;
+    if((self=[super init])) {
+        _lock=[NSLock new]; _commit=[commit copy];
+        _auth=[[OHCBFe36AuthSessionBridge alloc] initWithConfig:config trust:trust];
+        if(!_auth) return nil;
+    } return self;
+}
+- (BOOL)handoff:(OHCBScanReceiverEvent *)event now:(int64_t)now deadline:(int64_t)deadline {
+    [_lock lock];
+    @try {
+        if(_handed || _cancelled) return NO;
+        _handed=YES; _generation=event.generation;
+        NSArray *actions=[_auth handoffEvent:event nowMillis:now deadlineMillis:deadline];
+        return actions.count==1 && [((OHCBFe36AuthAction *)actions[0]).kind isEqualToString:@"OPEN_AUTH_CONNECTION"];
+    } @catch(__unused NSException *e) { _cancelled=YES; return NO; }
+    @finally { [_lock unlock]; }
+}
+- (fe36_auth_transport)binding { return (fe36_auth_transport){(__bridge void *)self,authStep,authCommit,authCancel}; }
+- (BOOL)commitIncarnation:(int64_t)incarnation now:(int64_t)now { return _commit && _commit(self,incarnation,now); }
+- (int)step:(enum fe36_io_event)event incarnation:(int64_t)incarnation
+    bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now
+    send:(fe36_io_send)send context:(void *)context {
+    @autoreleasepool {
+        NSArray<OHCBFe36AuthAction *> *actions=nil;
+        [_lock lock];
+        @try {
+            if(!_handed || _cancelled || _candidate || !send) return -1;
+            if(event==FE36_IO_CONNECTED) actions=[_auth connectedGeneration:_generation connection:incarnation nowMillis:now];
+            else if(event==FE36_IO_TICK) actions=[_auth tickGeneration:_generation nowMillis:now];
+            else if(event==FE36_IO_DATA && bytes && size && size<=4096) {
+                OHCBKotlinByteArray *copy=kotlinBytes(bytes,size);
+                @try { actions=[_auth receiveGeneration:_generation connection:incarnation bytes:copy nowMillis:now]; }
+                @finally { wipeKotlinBytes(copy); }
+            } else return -1;
+        } @catch(__unused NSException *e) { return -1; }
+        @finally { [_lock unlock]; }
+        if(actions.count>32) { [self cancel]; return -1; }
+        BOOL verified=NO;
+        for(OHCBFe36AuthAction *action in actions) {
+            if([action.kind isEqualToString:@"SEND"]) {
+                OHCBKotlinByteArray *data=action.bytes;
+                if(!data || data.size<=0 || data.size>65536) { wipeKotlinBytes(data); [self cancel]; return -1; }
+                uint8_t copy[4096]; int failed=0;
+                for(int32_t at=0;at<data.size && !failed;) {
+                    size_t part=MIN(sizeof(copy),(size_t)(data.size-at));
+                    for(size_t j=0;j<part;j++) copy[j]=(uint8_t)[data getIndex:at+(int32_t)j];
+                    failed=send(context,copy,part); memset(copy,0,sizeof(copy)); at+=(int32_t)part;
+                }
+                wipeKotlinBytes(data);
+                if(failed) { [self cancel]; return -1; }
+            } else if([action.kind isEqualToString:@"AUTHENTICATED"]) verified=YES;
+            else { [self cancel]; return -1; }
+        }
+        [_lock lock];
+        int result=_cancelled ? -1 : (verified ? 1 : 0);
+        if(result==1) _candidate=YES;
+        [_lock unlock]; return result;
+    }
+}
+- (BOOL)deliver:(int64_t)incarnation now:(int64_t)now sink:(OHCFe36KeySink)sink {
+    uint8_t key[16]={0}; BOOL valid=NO;
+    [_lock lock];
+    @try {
+        if(!_candidate || _cancelled || _delivered || !sink) return NO;
+        OHCBKotlinByteArray *data=[_auth takeSessionKeyGeneration:_generation connection:incarnation nowMillis:now];
+        if(data.size==16) { for(int32_t i=0;i<16;i++) key[i]=(uint8_t)[data getIndex:i]; valid=YES; _delivered=YES; }
+        wipeKotlinBytes(data);
+    } @catch(__unused NSException *e) { valid=NO; }
+    @finally { [_lock unlock]; }
+    @try { if(valid) sink(_generation,incarnation,key); }
+    @finally { memset(key,0,sizeof(key)); }
+    return valid;
+}
+- (void)cancel {
+    [_lock lock];
+    @try { if(!_cancelled) { _cancelled=YES; [_auth stopGeneration:_generation]; } }
+    @finally { [_lock unlock]; }
+}
+@end

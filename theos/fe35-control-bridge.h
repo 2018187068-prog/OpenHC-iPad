@@ -83,4 +83,24 @@ typedef struct {
 fe35_scan_completion openhc_btstack_scan_inbound(
     const char *run_dir, fe35_bridge_handle control_bridge, fe35_scan_transport *scan);
 
+/* Optional trusted, borrowed authentication binding, never populated from wire
+ * input. step: 0=waiting, 1=verified candidate, -1=failed. SEND effects occur
+ * outside bridge locks and must complete before step may return a candidate.
+ * commit runs only after confirmed transport cleanup and a final owner poll;
+ * it must independently serialize owner/generation/deadline validation with
+ * one-shot key delivery. An unconfigured binding must reject, never use defaults.
+ * incarnation is assigned by this transport (not the daemon's reusable CID). */
+enum fe36_io_event { FE36_IO_CONNECTED, FE36_IO_DATA, FE36_IO_TICK };
+typedef int (*fe36_io_send)(void *, const uint8_t *, size_t);
+typedef struct {
+    void *context;
+    int (*step)(void *, enum fe36_io_event, int64_t incarnation,
+                const uint8_t *, size_t, int64_t now_ms, fe36_io_send, void *);
+    int (*commit)(void *, int64_t incarnation, int64_t now_ms);
+    void (*cancel)(void *);
+} fe36_auth_transport;
+fe35_scan_completion openhc_btstack_scan_auth_inbound(
+    const char *run_dir, fe35_bridge_handle control_bridge,
+    fe35_scan_transport *scan, fe36_auth_transport *auth);
+
 #endif

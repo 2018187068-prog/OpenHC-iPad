@@ -198,7 +198,7 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
     send_event(conn, 0x60, bytes([2]))
 
 
-def drive_peer(conn, case, set_step):
+def drive_peer(conn, case, set_step, auth_flow=None):
     set_step("initial_state")
     conn.settimeout(4)
     read_command(conn, 1, b"")
@@ -221,7 +221,7 @@ def drive_peer(conn, case, set_step):
     set_step("incoming_and_open")
     send_event(conn, 0x82, bytes.fromhex("a1a2a3a4a5a6") + bytes([16]) + struct.pack("<H", cid))
     read_command(conn, 0x44, struct.pack("<H", cid))
-    send_event(conn, 0x80, bytes([0]) + bytes.fromhex("010203040506") +
+    send_event(conn, 0x80, bytes([0]) + bytes.fromhex("a1a2a3a4a5a6" if auth_flow else "010203040506") +
                struct.pack("<H", 0x5678) + bytes([16]) + struct.pack("<HHB", cid, 512, 1))
 
     kind, channel, start = read_packet(conn)
@@ -268,6 +268,9 @@ def drive_peer(conn, case, set_step):
     check(b"\x91\x82\x93" in payload, "command4 channel and business id")
     check(b"\xfe\x36\x00\x00\x10\x00\x80\x00\x00\x80\x5f\x9b\x34\xfb" in payload,
           "command4 UUID bytes")
+    if auth_flow is not None:
+        auth_flow(conn)
+        return
     set_step("disconnect_and_cleanup")
     send_event(conn, 0x81, struct.pack("<H", cid))
     expect_cleanup(conn, expected_auth_channel=17, expected_auth_handle=0x10002)
@@ -538,6 +541,11 @@ def main():
     for case in ('ready_stop', 'disconnect', 'cleanup_failure'):
         run_scan_case(args, case, owner=True, process=True)
     print('SCAN_OWNER_PROCESS_NATIVE_COMMON_CASES_OK=3')
+    cid_spec = importlib.util.spec_from_file_location('fe36_cid_io', ROOT / 'scripts/test-fe36-cid-simulator.py')
+    cid = importlib.util.module_from_spec(cid_spec)
+    cid_spec.loader.exec_module(cid)
+    import sys
+    cid.run_all(args, sys.modules[__name__])
     print("FE35_AND_SCAN_KN_ASSERTIONS=" + str(ASSERTIONS))
 
 

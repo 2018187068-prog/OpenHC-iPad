@@ -9,6 +9,7 @@
 int openhc_cli_main(int argc, const char *argv[]);
 int openhc_scan_transport_fixture(const char *run_dir, const char *scenario);
 int openhc_scan_owner_fixture(const char *run_dir, const char *scenario);
+int openhc_fe36_cid_fixture(const char *run_dir, const char *scenario);
 
 static int write_all(int fd, const uint8_t *bytes, size_t size) {
     while (size) {
@@ -68,7 +69,8 @@ int main(int argc, char *argv[]) {
             }
             close(logFD);
             const char *cli_argv[] = {"openhc-bridge-check", "--btstack-control-inbound", argv[2]};
-            result = argc == 4 ? (!strncmp(argv[3], "owner_", 6) ?
+            result = argc == 4 ? (!strncmp(argv[3], "auth_", 5) ?
+                openhc_fe36_cid_fixture(argv[2],argv[3]+5) : !strncmp(argv[3], "owner_", 6) ?
                 openhc_scan_owner_fixture(argv[2], argv[3] + 6) :
                 openhc_scan_transport_fixture(argv[2], argv[3])) : openhc_cli_main(3, cli_argv);
         } else {

@@ -31,6 +31,10 @@ typedef struct { void *runtime; uint64_t owner_generation; } OHCScanWorkerContex
     OHCScanOwnerRuntime *_keepAlive;
     NSMutableData *_output;
     BOOL _outputFailed;
+    OHCBFe36AuthConfig *_authConfig;
+    id<OHCBTrustStore> _authTrust;
+    OHCScanOwnerKeySink _keySink;
+    OHCFe36AuthTransport *_authTransport;
 }
 - (void)effect:(ohc_owner_effect)e generation:(uint64_t)g;
 - (void)pollConnection;
@@ -97,6 +101,15 @@ static bool testAdmission(const ohc_owner_peer *p) { return p->policy_epoch == 0
         if (!ohc_owner_collect_peer(fd,++self->_nonce,1,&p) || !ohc_owner_open(&self->_connection,&p)) { close(fd); return; }
         self->_client=fd;
     });
+}
+- (BOOL)configureAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    keySink:(OHCScanOwnerKeySink)sink {
+    if(!config || !trust || !sink) return NO;
+    __block BOOL configured=NO;
+    dispatch_sync(_executor,^{
+        if(self->_owner.state!=OHC_IDLE || self->_authConfig || self->_client>=0) return;
+        self->_authConfig=config; self->_authTrust=trust; self->_keySink=[sink copy]; configured=YES;
+    }); return configured;
 }
 #ifdef OPENHC_SCAN_OWNER_TEST
 - (void)acceptTestDescriptor:(int)fd evidence:(ohc_owner_peer)evidence {
@@ -191,6 +204,7 @@ disconnect:
         if (self.clearPairing) self.clearPairing(g);
         break;
     case OHC_CANCEL_WORKER:
+        [_authTransport cancel];
         if (_stop[1]>=0) { ssize_t n=write(_stop[1],"S",1); (void)n; } break;
     case OHC_HEARTBEAT: [_lease heartbeat:g]; break;
     case OHC_STOP_HEARTBEAT: [_lease stopHeartbeat:g]; break;
@@ -214,6 +228,29 @@ disconnect:
     _commonGeneration=_session.generation;
     _binding=(fe35_scan_binding){(__bridge void *)_session,(__bridge void *)self,ownerSink};
     [self consume:start];
+    if(_authConfig) {
+        __weak OHCScanOwnerRuntime *weak=self;
+        const uint64_t ownerGeneration=_workerGeneration;
+        _authTransport=[[OHCFe36AuthTransport alloc] initWithConfig:_authConfig trust:_authTrust
+            commit:^BOOL(OHCFe36AuthTransport *adapter,int64_t incarnation,int64_t now) {
+                (void)now; OHCScanOwnerRuntime *strong=weak; if(!strong) return NO;
+                __block BOOL delivered=NO;
+                dispatch_sync(strong->_executor,^{
+                    [strong pollConnection]; /* drain queued Stop/background/EOF before promotion */
+                    int64_t current=ownerNow(); ohc_owner_tick(&strong->_owner,current);
+                    if(strong->_owner.generation!=ownerGeneration || strong->_owner.state!=OHC_RUNNING ||
+                        strong->_owner.cancelled || strong->_authTransport!=adapter) return;
+                    /* Common deadline, reversal and endpoint cancellation are
+                     * processed under the same executor immediately before key. */
+                    [strong consume:[strong->_session tickGeneration:strong->_commonGeneration nowMillis:current]];
+                    if(strong->_owner.state==OHC_RUNNING && !strong->_owner.cancelled)
+                        delivered=[adapter deliver:incarnation now:current sink:^(int64_t common,int64_t connection,const uint8_t key[16]) {
+                            strong->_keySink(ownerGeneration,common,connection,key);
+                        }];
+                }); return delivered;
+            }];
+        if(!_authTransport) { [self failedLaunch:92]; return; }
+    }
     fe35_bridge_handle bridge=fe35_bridge_create(&_input);
     if (!bridge) {
         [self failedLaunch:91]; return;
@@ -221,12 +258,16 @@ disconnect:
     const uint64_t ownerGeneration=_workerGeneration;
     const int64_t commonGeneration=_commonGeneration;
     NSString *runDirectory=[_lease.privateRunDirectory copy];
+    OHCFe36AuthTransport *auth=self->_authTransport;
     /* Strong self capture retains session/binding/sink through final callback and
      * typed return. Worker only touches native; common callbacks sync to executor. */
     dispatch_async(_worker,^{ @autoreleasepool {
         OHCScanWorkerContext context={(__bridge void *)self,ownerGeneration};
         fe35_scan_transport t={&context,commonGeneration,self->_stop[0],ownerNotify};
-        fe35_scan_completion completion=openhc_btstack_scan_inbound(runDirectory.fileSystemRepresentation,bridge,&t);
+        fe36_auth_transport a={0}; if(auth) a=[auth binding];
+        fe35_scan_completion completion=auth ?
+            openhc_btstack_scan_auth_inbound(runDirectory.fileSystemRepresentation,bridge,&t,&a) :
+            openhc_btstack_scan_inbound(runDirectory.fileSystemRepresentation,bridge,&t);
         dispatch_async(self->_executor,^{
             if([self->_lease respondsToSelector:@selector(workerCompletion:generation:executionExited:)]) {
                 [self->_lease workerCompletion:completion generation:ownerGeneration executionExited:YES];
@@ -236,6 +277,7 @@ disconnect:
              * does NOT prove daemon absence or successful restoration. */
             close(self->_stop[0]); close(self->_stop[1]); self->_stop[0]=self->_stop[1]=-1;
             self->_binding=(fe35_scan_binding){0}; self->_session=nil;
+            self->_authTransport=nil;
             if (self.finished) self.finished(completion,self->_owner.delegated);
         });
     }});
@@ -248,6 +290,7 @@ disconnect:
     ohc_owner_completed(&_owner,_workerGeneration,c,true,ownerNow());
     if(_stop[0]>=0)close(_stop[0]);if(_stop[1]>=0)close(_stop[1]);_stop[0]=_stop[1]=-1;
     _binding=(fe35_scan_binding){0};_session=nil;
+    [_authTransport cancel];_authTransport=nil;
     if(self.finished)self.finished(c,_owner.delegated);
 }
 - (int)notify:(const char *)kind generation:(int64_t)g ownerGeneration:(uint64_t)captured channel:(int)channel now:(int64_t)now {
@@ -291,6 +334,14 @@ disconnect:
             /* PIN originates only from common; preserve before CLEAR at ACCEPTED
              * using the common handoff contract, never manufacture a new PIN. */
             if(!ohc_owner_handoff(&_owner,_workerGeneration)) continue;
+            if(_authTransport) {
+                NSNumber *commonDeadline=_session.deadlineMillis;
+                int64_t deadline=commonDeadline ? MIN(_owner.deadline,commonDeadline.longLongValue) : 0;
+                if(![_authTransport handoff:e now:now deadline:deadline]) {
+                    (void)ohc_owner_transport_event(&_owner,_workerGeneration,"STOP",now);
+                    continue;
+                }
+            }
             _handoffCount++;
             [self publishKind:e.kind generation:_workerGeneration qr:nil pin:nil];
         }

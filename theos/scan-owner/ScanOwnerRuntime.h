@@ -2,7 +2,10 @@
 #import <OpenHCBridge/OpenHCBridge.h>
 #include "ScanOwner.h"
 #import "ScanLeaseAdapter.h"
+#import "../Fe36AuthTransport.h"
 NS_ASSUME_NONNULL_BEGIN
+typedef void (^OHCScanOwnerKeySink)(uint64_t ownerGeneration, int64_t commonGeneration,
+                                    int64_t incarnation, const uint8_t key[16]);
 /* Trusted internal asynchronous adapter for the EXISTING Trial/guard contract.
  * No native device implementation is supplied or enabled. An implementation
  * must own the exclusive lock, immutable absolute guard deadline, sole heartbeat
@@ -19,6 +22,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithConfig:(OHCBScanReceiverConfig *)config
                     bridgeInput:(const fe35_bridge_input *)input
                           lease:(id<OHCScanLeaseAdapter>)lease NS_DESIGNATED_INITIALIZER;
+/* Trusted in-memory opt-in, before START, once per runtime. No endpoint/file/
+ * environment loader. Nil/partial configuration rejects. Default initializer
+ * retains explicit FE35-only behavior; no fabricated authentication success.
+ * sink is synchronous on owner executor and must not reenter the runtime. */
+- (BOOL)configureAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    keySink:(OHCScanOwnerKeySink)sink;
 /* Ownership of accepted fd transfers here. Nonblocking read, fresh kernel and
  * endpoint sampling each tick, fixed bounded grammar. No claimed identity. */
 - (void)acceptConnectedDescriptor:(int)fd;

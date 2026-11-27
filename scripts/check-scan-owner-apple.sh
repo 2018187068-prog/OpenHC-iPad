@@ -34,6 +34,8 @@ for name in (
     'scripts/test-scan-owner-crypto.py', 'scripts/scan-owner-sim-fixture.m',
     'scripts/fe35-cli-smoke-runner.m', 'scripts/scan-transport-sim-fixture.m',
     'scripts/hicar-auth-sim-fixture.m',
+    'scripts/fe36-cid-sim-fixture.m', 'scripts/test-fe36-cid-simulator.py',
+    'theos/Fe36AuthTransport.h',
     'scripts/fe35-inbound-sim-probe-stubs.c', 'scripts/test-fe35-cli-smoke-simulator.sh',
     'scripts/fe35-control-bridge-test-stub.c', 'scripts/btstack-sigpipe-test.c',
     'scripts/test-btstack-probe.py', 'scripts/test-btstack-transport-socket.py',
@@ -75,10 +77,10 @@ for sdk in iphoneos iphonesimulator; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -std=c11 -Wall -Wextra -Werror \
       -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$source.o"
   done
-  for source in ScanOwnerRuntime.m ScanOwnerForeground.m ScanProcessLeaseAdapter.m; do
+  for source in ScanOwnerRuntime.m ScanOwnerForeground.m ScanProcessLeaseAdapter.m ../fe35-control-bridge.m; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -Wall -Wextra -Werror -fobjc-arc \
       -F"$PWD/bridge/build/bin/$target/releaseFramework" \
-      -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$source.o"
+      -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$(basename "$source").o"
   done
   xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -std=c11 -Wall -Wextra -Werror \
     -c theos/btstack-probe.c -o "$RUNNER_TEMP/$sdk-native-probe.o"

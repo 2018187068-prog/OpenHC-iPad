@@ -366,6 +366,9 @@ def run_scan_case(args, case, owner=False, process=False):
         broker_directory = ROOT / 'artifacts/scan-owner/process' / ('simulator-' + case)
         broker = _process.Broker(binaries, broker_directory, listener=listener)
         (guard / 'process-port').write_text(str(listener.getsockname()[1]), encoding='ascii')
+        # Broker owns the inherited one-shot listener. Retain no parent copy
+        # that could keep accepting/queuing connections after its first accept.
+        listener.close()
 
     def trace_has(line):
         trace_file = guard / "scan-events"

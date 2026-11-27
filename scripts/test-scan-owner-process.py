@@ -85,9 +85,11 @@ class Broker:
         if listener is None:
             self.socket, inherited = socket.socketpair()
             self.socket.settimeout(3)
+            mode = 'relay-connected'
         else:
             self.socket, inherited = None, listener
-        self.process = subprocess.Popen([str(binaries['broker-test']), 'relay', str(binaries['guard-test']),
+            mode = 'relay-listener'
+        self.process = subprocess.Popen([str(binaries['broker-test']), mode, str(binaries['guard-test']),
             str(self.directory), 'missing_ready' if missing else 'normal'],
             stdin=inherited, stdout=self.log, stderr=subprocess.STDOUT, close_fds=True)
         if listener is None:
@@ -113,6 +115,93 @@ class Broker:
             self.socket.close()
         self.process.wait(timeout=18)
         self.log.close()
+        assert self.process.returncode == 0, ('broker exit', self.process.returncode, self.directory)
+
+
+def relay_bootstrap_checks(binaries, base):
+    """Harness modes are explicit, not authorization; reject before guard exec."""
+    checks = 0
+
+    def denied(case, mode, inherited, operation):
+        nonlocal checks
+        directory = base / ('bootstrap-' + case)
+        directory.mkdir(mode=0o700)
+        result = subprocess.run([str(binaries['broker-test']), mode, str(binaries['guard-test']),
+            str(directory), 'normal'], stdin=inherited, capture_output=True, text=True, timeout=3)
+        (directory / 'broker.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+        assert result.returncode == 90, (case, result.returncode, result.stderr)
+        assert 'RELAY_BOOTSTRAP_FAIL component=' in result.stderr and ' errno=' in result.stderr
+        assert 'operation=' + operation + ' ' in result.stderr, (case, result.stderr)
+        assert 'INHERITED_FD_ALLOWLIST_EOF' not in result.stdout
+        assert not any((directory / name).exists() for name in ('events', 'fence', 'active.lock'))
+        print('SCAN_OWNER_RELAY_BOOTSTRAP_DENIED=' + case)
+        checks += 1
+
+    with open(os.devnull, 'rb') as invalid:
+        denied('invalid_mode', 'relay', invalid, 'require-explicit-mode')
+        denied('non_socket_fd', 'relay-connected', invalid, 'getsockopt-SO_TYPE')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as datagram:
+        denied('datagram_fd', 'relay-connected', datagram, 'require-stream')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unconnected:
+        denied('unconnected_unix', 'relay-connected', unconnected, 'getpeername')
+    left, right = socket.socketpair()
+    with left, right:
+        denied('unix_as_listener', 'relay-listener', right, 'require-family')
+    # Real bound/listening TCP sockets and connected endpoints, no simulated FD.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bound:
+        bound.bind(('127.0.0.1', 0))
+        denied('not_listening', 'relay-listener', bound, 'accept')
+        bound.listen(1)
+        denied('tcp_as_unix', 'relay-connected', bound, 'require-family')
+        with socket.create_connection(bound.getsockname(), timeout=3) as client:
+            accepted, _ = bound.accept()
+            with accepted:
+                denied('connected_as_listener', 'relay-listener', accepted, 'accept')
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as wildcard:
+        wildcard.bind(('0.0.0.0', 0))
+        wildcard.listen(1)
+        denied('non_loopback_listener', 'relay-listener', wildcard, 'require-loopback-port')
+    # Same listener path used by all three Simulator process cases. Guard is
+    # spawned only after accept, so Simulator launch does not consume READY time.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        address = listener.getsockname()
+        broker = Broker(binaries, base / 'bootstrap-listener-positive', listener=listener)
+        broker.socket = socket.create_connection(address, timeout=3)
+    finally:
+        listener.close()
+    try:
+        broker.exchange(ARM, fragments=True)
+        broker.exchange(TAKEOVER)
+        broker.exchange(COMPLETE, flags=7, status=1)
+        broker.exchange(RESTORE)
+        # Broker has consumed and closed its one-shot listening descriptor.
+        try:
+            extra = socket.create_connection(address, timeout=1)
+        except OSError:
+            pass
+        else:
+            extra.close()
+            raise AssertionError('listener remained available after one-shot accept')
+    finally:
+        broker.close()
+    events = (broker.directory / 'events').read_text(encoding='ascii')
+    assert events.count('INERT_RESTORE_ONCE') == 1 and 'RETURN_CLEAN_EXITED' in events
+    assert 'INHERITED_FD_ALLOWLIST_EOF' in (broker.directory / 'broker.log').read_text(encoding='ascii')
+    checks += 1
+    # Connected socket EOF is lifecycle loss, not a claimed completion/restore.
+    broker = Broker(binaries, base / 'bootstrap-connected-eof')
+    broker.exchange(ARM)
+    broker.exchange(TAKEOVER)
+    broker.close()
+    wait_text(broker.directory / 'events', 'INERT_RESTORE_ONCE')
+    events = (broker.directory / 'events').read_text(encoding='ascii')
+    assert events.count('INERT_RESTORE_ONCE') == 1 and events.count('DELEGATE_ONCE') == 1
+    assert 'PARENT_EXIT_OBSERVED' in events and 'RETURN_CLEAN_EXITED' not in events
+    checks += 1
+    return checks
 
 
 def runtime_checks(binaries, base):
@@ -261,6 +350,7 @@ def runtime_checks(binaries, base):
                              capture_output=True, timeout=3)
     assert invalid.returncode == 78
     checks += 1
+    checks += relay_bootstrap_checks(binaries, base)
     print('SCAN_OWNER_REAL_PROCESS_CASES_OK=' + str(checks))
     print('PROCESS_BOUNDARY=real-POSIX-owner-core-guard-exec-fs-IPC;injected-admission-and-inert-Trial-effects')
 

@@ -9,6 +9,8 @@
 #include "../theos/scan-owner/ScanLeaseChannel.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <stddef.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -22,6 +24,61 @@
 #error Test broker must never compile as deployment source
 #endif
 #define CHECK(x) do { if(!(x)) { fprintf(stderr,"PROCESS_ASSERT=%s line=%d\n",#x,__LINE__); exit(90); } } while(0)
+static void relay_failure(const char *component,const char *operation,int error) {
+    fprintf(stderr,"RELAY_BOOTSTRAP_FAIL component=%s operation=%s errno=%d\n",component,operation,error);
+    exit(90);
+}
+static void stream_socket(int fd,const char *component) {
+    int type=0; socklen_t n=sizeof(type);
+    if(getsockopt(fd,SOL_SOCKET,SO_TYPE,&type,&n)) { relay_failure(component,"getsockopt-SO_TYPE",errno); }
+    if(n!=sizeof(type)||type!=SOCK_STREAM) { relay_failure(component,"require-stream",0); }
+}
+static void socket_address(int fd,bool peer,int family,const char *component) {
+    struct sockaddr_storage address={0}; socklen_t n=sizeof(address);
+    int r=peer?getpeername(fd,(struct sockaddr *)&address,&n):getsockname(fd,(struct sockaddr *)&address,&n);
+    if(r) { relay_failure(component,peer?"getpeername":"getsockname",errno); }
+    if(n<offsetof(struct sockaddr,sa_family)+sizeof(address.ss_family)||address.ss_family!=family) {
+        relay_failure(component,"require-family",0);
+    }
+    if(family==AF_INET) {
+        const struct sockaddr_in *in=(const struct sockaddr_in *)&address;
+        if(n!=sizeof(*in)||in->sin_addr.s_addr!=htonl(INADDR_LOOPBACK)||!in->sin_port) {
+            relay_failure(component,"require-loopback-port",0);
+        }
+    }
+}
+static void relay_descriptor(int fd) {
+    int flags=fcntl(fd,F_GETFD);
+    if(flags<0||fcntl(fd,F_SETFD,flags|FD_CLOEXEC)) { relay_failure("descriptor","fcntl-CLOEXEC",errno); }
+    flags=fcntl(fd,F_GETFL);
+    if(flags<0||fcntl(fd,F_SETFL,flags|O_NONBLOCK)) { relay_failure("descriptor","fcntl-NONBLOCK",errno); }
+}
+static int relay_input(const char *mode) {
+    /* Explicit harness contract, never deployment provenance/authorization.
+     * Do not infer listener state from SO_ACCEPTCONN on connected Darwin Unix
+     * sockets. A listener proves its state by actually accepting one peer. */
+    int input=STDIN_FILENO;
+    stream_socket(input,"inherited");
+    bool listener=!strcmp(mode,"relay-listener");
+    socket_address(input,false,listener?AF_INET:AF_UNIX,"inherited-local");
+    relay_descriptor(input);
+    if(!listener) { socket_address(input,true,AF_UNIX,"inherited-peer"); return input; }
+    int accepted=accept(input,NULL,NULL);
+    if(accepted<0&&(errno==EAGAIN||errno==EWOULDBLOCK)) {
+        struct pollfd p={input,POLLIN,0};
+        int r=poll(&p,1,45000);
+        if(r<0) { relay_failure("listener","poll",errno); }
+        if(r!=1||!(p.revents&POLLIN)) { relay_failure("listener","require-accept-ready",0); }
+        accepted=accept(input,NULL,NULL);
+    }
+    if(accepted<0) { relay_failure("listener","accept",errno); }
+    close(input); /* One-shot listener: only the accepted connection survives. */
+    stream_socket(accepted,"accepted");
+    socket_address(accepted,false,AF_INET,"accepted-local");
+    socket_address(accepted,true,AF_INET,"accepted-peer");
+    relay_descriptor(accepted);
+    return accepted;
+}
 static void pause_ms(int ms) { (void)poll(NULL,0,ms); }
 static pid_t spawn_guard(const char *exe,int dir,int *client,bool missing) {
     int pair[2]; CHECK(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));
@@ -148,28 +205,26 @@ int main(int argc,char **argv) {
     if(argc==2&&!strcmp(argv[1],"clock")) { printf("%lld\n",(long long)ohc_lease_now()); return 0; }
     /* Harness-owned arguments, no deployment entry uses this parser. */
     CHECK(argc==5); const char *mode=argv[1],*guardExe=argv[2],*directory=argv[3],*which=argv[4];
+    if(strcmp(mode,"owner")&&strcmp(mode,"relay-connected")&&strcmp(mode,"relay-listener")) {
+        relay_failure("mode","require-explicit-mode",0);
+    }
     int dir=open(directory,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW); CHECK(dir>=0);
     int channel;
     if(!strcmp(mode,"owner")) {
         pid_t guard=spawn_guard(guardExe,dir,&channel,!strcmp(which,"missing_ready"));
         return owner_case(which,dir,channel,guard);
     }
-    CHECK(!strcmp(mode,"relay"));
     /* Relay test-only inherited stdin (Python-created AF_UNIX socket or loopback
      * listener). Guard remains private child of this broker. It never considers
      * a Simulator/loopback connection authenticated deployment provenance. */
-    int input=STDIN_FILENO; int listening=0; socklen_t n=sizeof(listening);
-    CHECK(!getsockopt(input,SOL_SOCKET,SO_ACCEPTCONN,&listening,&n));
-    if(listening) {
-        struct pollfd p={input,POLLIN,0}; CHECK(poll(&p,1,45000)==1);
-        input=accept(STDIN_FILENO,NULL,NULL); CHECK(input>=0); close(STDIN_FILENO);
-    }
+    int input=relay_input(mode);
+    printf("RELAY_BOOTSTRAP_OK mode=%s\n",mode); fflush(stdout);
     (void)spawn_guard(guardExe,dir,&channel,!strcmp(which,"missing_ready"));
 #ifdef __APPLE__
     int one=1; CHECK(!setsockopt(input,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one)));
     CHECK(!setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one)));
 #endif
-    CHECK(!fcntl(input,F_SETFL,O_NONBLOCK)); CHECK(!fcntl(channel,F_SETFL,O_NONBLOCK));
+    relay_descriptor(channel);
     for(;;) {
         struct pollfd p={input,POLLIN,0};
         if(poll(&p,1,15000)!=1) { break; }

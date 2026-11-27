@@ -21,7 +21,11 @@ kotlin {
     }
 
     sourceSets {
-        commonMain.dependencies {}
+        commonMain.dependencies {
+            // Exact version used by reference 8132399; common JSON DOM only,
+            // no compiler plugin or new crypto implementation.
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+        }
         jvmMain.dependencies {
             implementation("org.bouncycastle:bcprov-jdk18on:1.79")
         }

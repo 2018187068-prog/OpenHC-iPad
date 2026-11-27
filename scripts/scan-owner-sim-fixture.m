@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+int openhc_fe36_auth_fixture(OHCBScanReceiverEvent *handoff);
 /* Static labels only: never include QR, PIN, keys or identity in diagnostics. */
 #define OWNER_CHECK(condition, label) do { \
     if (!(condition)) { \
@@ -127,6 +128,10 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
                 handoff++;
                 OWNER_CHECK([pin isEqualToString:e.pinCode],"handoff_same_pin");
                 OWNER_CHECK(coreClear!=0,"handoff_after_owner_revoke");
+                /* Real owner/common event and original PIN enter the actual
+                 * exported auth bridge. Separately coded test phone, real crypto
+                 * and socket bytes; no radio or production listener enabled. */
+                OWNER_CHECK(openhc_fe36_auth_fixture(e)==0,"real_fe36_auth_bridge_exchange");
             }
         } fflush(trace);
     };

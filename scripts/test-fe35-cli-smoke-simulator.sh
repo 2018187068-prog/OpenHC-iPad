@@ -44,6 +44,7 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   "$repo_root/theos/scan-owner/ScanLeaseProtocol.c" \
   "$repo_root/theos/scan-owner/ScanLeaseChannel.c" \
   "$repo_root/scripts/scan-owner-sim-fixture.m" \
+  "$repo_root/scripts/hicar-auth-sim-fixture.m" \
   "$repo_root/theos/scan-ui/ScanQRCode.m" \
   "$RUNNER_TEMP/owner-ScanQRBitmap.o" "$RUNNER_TEMP/owner-qrcodegen.o" \
   "$repo_root/scripts/fe35-inbound-sim-probe-stubs.c" \

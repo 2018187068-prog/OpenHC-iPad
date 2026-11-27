@@ -494,6 +494,9 @@ def run_scan_case(args, case, owner=False, process=False):
               "explicit synthetic effect boundary, real integrated code")
         check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,
               "same common PIN one-shot handoff; not authentication success")
+        if case == "success":
+            check("FE36_AUTH_OBJC_SOCKET_CASES_OK=4" in status,
+                  "actual owner handoff feeds exported Native auth, four real-crypto socket cases")
     if process:
         # Simulator executable has returned; closing host relay transfers no
         # restore authority. Guard observes its actual host-broker parent exit.

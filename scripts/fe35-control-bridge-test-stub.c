@@ -1,5 +1,7 @@
 #include "../theos/fe35-control-bridge.h"
+#include "../theos/Fe35BridgeBounds.h"
 #include <stdio.h>
+#include <assert.h>
 #include <string.h>
 
 typedef struct {
@@ -26,6 +28,13 @@ static fe35_bridge_batch set_event(const char *kind, const uint8_t *frame, size_
 }
 
 fe35_bridge_handle fe35_bridge_create(const fe35_bridge_input *input) {
+    size_t checked = 99;
+    assert(!fe35_bridge_checked_length(-1, 16, &checked));
+    assert(checked == 99);
+    assert(fe35_bridge_checked_length(0, 16, &checked) && checked == 0);
+    assert(fe35_bridge_checked_length(16, 16, &checked) && checked == 16);
+    assert(!fe35_bridge_checked_length(17, 16, &checked));
+    assert(!fe35_bridge_checked_length(0, 16, NULL));
     static const char expected[] = "synthetic-device";
     if (!input || (strcmp(input->device_id, expected) != 0 &&
         strcmp(input->device_id, "synthetic-exception") != 0) || input->root_key_size != 16 ||

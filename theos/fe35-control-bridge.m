@@ -2,6 +2,7 @@
 #import <OpenHCBridge/OpenHCBridge.h>
 #import <CoreFoundation/CoreFoundation.h>
 #include "fe35-control-bridge.h"
+#include "Fe35BridgeBounds.h"
 #include <string.h>
 #import "Fe36AuthTransport.h"
 
@@ -102,14 +103,12 @@ int fe35_bridge_copy_event(fe35_bridge_batch batch, size_t index, fe35_bridge_ev
     out->channel = source.channel;
     OHCBKotlinByteArray *uuid = source.serviceUuid;
     if (uuid) {
-        if (uuid.size > sizeof(out->uuid)) return -1;
-        out->uuid_size = (size_t)uuid.size;
+        if (!fe35_bridge_checked_length(uuid.size, sizeof(out->uuid), &out->uuid_size)) return -1;
         for (int32_t i = 0; i < uuid.size; ++i) out->uuid[i] = (uint8_t)[uuid getIndex:i];
     }
     OHCBKotlinByteArray *frame = source.frame;
     if (frame) {
-        if ((size_t)frame.size > sizeof(out->frame)) return -1;
-        out->frame_size = (size_t)frame.size;
+        if (!fe35_bridge_checked_length(frame.size, sizeof(out->frame), &out->frame_size)) return -1;
         for (int32_t i = 0; i < frame.size; ++i) out->frame[i] = (uint8_t)[frame getIndex:i];
     }
     return 0;

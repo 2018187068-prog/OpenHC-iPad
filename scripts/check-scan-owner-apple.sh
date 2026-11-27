@@ -24,6 +24,7 @@ for name in (
     'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'bridge/build.gradle.kts',
     '.github/workflows/scan-app-focused.yml',
     'theos/btstack-probe.c', 'theos/fe35-control-bridge.h', 'theos/fe35-control-bridge.m',
+    'theos/Fe35BridgeBounds.h',
     'theos/main.m', 'theos/fe35-bridge-smoke.m',
     'theos/session-owner-probe.c', 'theos/scan-supervisor/ScanHelperClient.h',
     'theos/scan-supervisor/ScanHelperClient.m',

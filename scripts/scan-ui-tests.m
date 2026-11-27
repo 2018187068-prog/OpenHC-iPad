@@ -7,6 +7,14 @@
 
 static NSUInteger assertions;
 static BOOL waitingForBackground;
+@interface OHCDeferredHelperController : OHCScanDemoController
+@property(nonatomic, copy) void (^pendingHelper)(NSString *reply);
+@end
+@implementation OHCDeferredHelperController
+- (void)probeIndependentHelperWithCompletion:(void (^)(NSString *))completion {
+    self.pendingHelper = completion;
+}
+@end
 static void check(BOOL condition, const char *name) {
     assertions++;
     if (!condition) { fprintf(stderr, "SCAN_UI_FAILED=%s\n", name); exit(2); }
@@ -84,11 +92,39 @@ static void qrTests(void) {
     puts("SCAN_UI_QR_UTF8_INTEGER_SCALE_CASES_OK=3");
 }
 
+static void helperIsolationTests(void) {
+    OHCDeferredHelperController *c = [OHCDeferredHelperController new];
+    [c loadViewIfNeeded];
+    c.provider.automaticReady = NO;
+    [c.startButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    void (^oldReply)(NSString *) = c.pendingHelper;
+    oldReply(@"PONG");
+    absent(c); // PONG alone must never make a QR or mark either FE35 ready.
+    check([c.provider.session.state isEqualToString:@"STARTING"], "PING is not FE35 readiness");
+    [c.stopButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    oldReply(@"PONG");
+    check([c.helperStatusLabel.text isEqualToString:@"独立 helper：未探测"], "late PONG after Stop ignored");
+    [c.startButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    oldReply(@"PONG");
+    check([c.helperStatusLabel.text isEqualToString:@"独立 helper：请求中…"], "old attempt cannot mark new helper request successful");
+    c.pendingHelper(@"PONG");
+    check([c.helperStatusLabel.text containsString:@"固定合成响应"], "current PONG remains explicitly synthetic");
+    absent(c);
+    void (^currentReply)(NSString *) = c.pendingHelper;
+    [c invalidateForBackground];
+    currentReply(@"PONG");
+    check([c.helperStatusLabel.text isEqualToString:@"独立 helper：未探测"], "late background PONG ignored");
+    absent(c);
+    c.pendingHelper = nil;
+    puts("SCAN_UI_CASE_OK=synthetic_helper_isolation");
+}
+
 void OHCCheckScanUI(OHCScanDemoController *c) {
     check(NSThread.isMainThread, "UI checks on main thread");
     c.provider.automaticReady = NO;
     absent(c);
     qrTests();
+    helperIsolationTests();
     screenshot(c, @"scan-ui-idle.png");
     ready(c);
     screenshot(c, @"scan-ui-ready.png");
@@ -113,7 +149,7 @@ void OHCCheckScanUI(OHCScanDemoController *c) {
     puts("SCAN_UI_CASE_OK=transport_failure");
     // Produce real pairing events from a separate common session, then deliver
     // them after our controller advanced to a new generation.
-    OHCScanDemoProvider *old = [OHCScanDemoProvider new];
+    OHCScanDemoProvider *old = [OHCScanDemoProvider syntheticDemoProvider];
     old.automaticReady = NO;
     __block NSArray *oldReady;
     old.events = ^(NSArray *events) {

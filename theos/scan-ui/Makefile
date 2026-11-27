@@ -12,8 +12,9 @@ override _THEOS_PLATFORM_DPKG_DEB := $(THEOS_PROJECT_DIR)/../../scripts/scan-dem
 APPLICATION_NAME = OpenHCScanDemo
 OpenHCScanDemo_FILES = main.m ScanDemo.m ScanQRCode.m ScanQRBitmap.c vendor/qrcodegen/qrcodegen.c ../scan-supervisor/ScanHelperClient.m
 OpenHCScanDemo_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore OpenHCBridge
-OpenHCScanDemo_CFLAGS = -F$(THEOS_PROJECT_DIR)/../../artifacts/iosArm64
-OpenHCScanDemo_LDFLAGS = -F$(THEOS_PROJECT_DIR)/../../artifacts/iosArm64
+OPENHC_BRIDGE_FRAMEWORK_DIR ?= $(THEOS_PROJECT_DIR)/../../artifacts/iosArm64
+OpenHCScanDemo_CFLAGS = -F$(OPENHC_BRIDGE_FRAMEWORK_DIR)
+OpenHCScanDemo_LDFLAGS = -F$(OPENHC_BRIDGE_FRAMEWORK_DIR)
 OpenHCScanDemo_OBJCFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/application.mk

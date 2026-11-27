@@ -119,7 +119,9 @@ class ScanReceiverSession internal constructor(
 
     /** Native transport boundary, solely for the initial FE35 listener. Every callback
      * carries the generation captured before registration; late callbacks cannot revive it.
-     * CLEANED acknowledges platform teardown and terminates a still-active session. */
+     * CLEANED marks the platform worker teardown tail and terminates a still-active
+     * session. It does not confirm remote cleanup or authorize lease recovery;
+     * the native caller must inspect its separate typed completion after return. */
     fun onTransportEvent(generation: Long, kind: String, channel: Int, nowMillis: Long): List<ScanReceiverEvent> =
         when (kind) {
             "RFCOMM_READY" -> onControlRfcommReady(generation, channel, nowMillis)

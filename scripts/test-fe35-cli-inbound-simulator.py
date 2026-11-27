@@ -32,6 +32,15 @@ ASSERTIONS = 0
 ASSERTION_LOCK = threading.Lock()
 
 
+def preserve_case_evidence(documents, guard, label):
+    destination = ROOT / "artifacts/scan-owner/simulator-cases" / label
+    destination.mkdir(parents=True, exist_ok=True)
+    for source in (guard / "scan-events", documents / "fe35-cli-status.log",
+                   documents / "fe35-cli-result"):
+        if source.is_file():
+            shutil.copyfile(source, destination / source.name)
+
+
 def check(condition, label):
     global ASSERTIONS
     with ASSERTION_LOCK:
@@ -311,6 +320,7 @@ def run_case(args, case):
     check(not worker.is_alive(), "synthetic peer completed")
     cli_log = documents / "fe35-cli-status.log"
     cli_status = cli_log.read_text(encoding="ascii", errors="replace") if cli_log.exists() else "missing"
+    preserve_case_evidence(documents, guard, "fe35-" + case)
     check(not errors, "synthetic peer assertions: " + repr(errors) + "; CLI status log: " + cli_status)
     check(actual_status == str(expected_status),
           "CLI result status expected=" + str(expected_status) + " actual=" + actual_status +
@@ -324,10 +334,10 @@ def run_case(args, case):
     print("FE35_KN_INBOUND_CASE_ASSERTIONS=" + str(ASSERTIONS - started_assertions))
 
 
-def run_scan_case(args, case):
-    """Real C/ObjC/common Kotlin session, mocked only at the daemon socket."""
+def run_scan_case(args, case, owner=False):
+    """Real transport/common; owner cases also inject test-only OS/lease effects."""
     documents = Path(args.data_dir) / "Documents"
-    guard = documents / ("scan-guard-" + case)
+    guard = documents / (("owner-guard-" if owner else "scan-guard-") + case)
     guard.mkdir(parents=True, exist_ok=True)
     (guard / "ready").write_text("READY\n", encoding="ascii")
     (guard / "deadline").write_text(str(int(time.time()) + 120) + "\n", encoding="ascii")
@@ -367,6 +377,9 @@ def run_scan_case(args, case):
         try:
             with server.accept()[0] as conn:
                 conn.settimeout(6)
+                if owner and case == "success":
+                    drive_peer(conn, "success", lambda _: None)
+                    return
                 read_command(conn, 1, b"")
                 send_event(conn, 0x60, bytes([2]))
                 if case in ("stop_rfcomm_wait", "deadline_wait"):
@@ -399,7 +412,13 @@ def run_scan_case(args, case):
                     return
                 if case == "stop_sdp_wait":
                     # Deliver a late successful ack after Stop revoked the session.
-                    time.sleep(.10)
+                    if owner:
+                        (guard / "stop").write_text("STOP\n", encoding="ascii")
+                        revoke_deadline = time.monotonic() + 1
+                        while not trace_has("EVENT=CLEAR_PAIRING") and time.monotonic() < revoke_deadline:
+                            time.sleep(.01)
+                    else:
+                        time.sleep(.10)
                     check(trace_has("EVENT=CLEAR_PAIRING"), "Stop during SDP wait revoked pairing")
                     send_event(conn, 0x90, bytes([0]) + struct.pack("<I", 0x10001))
                     cleanup(conn, sdp=False)
@@ -412,7 +431,8 @@ def run_scan_case(args, case):
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
-        "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name, case],
+        "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name,
+        ("owner_" if owner else "") + case],
         capture_output=True, text=True, timeout=30)
     check(launch.returncode == 0, "scan fixture launched")
     for _ in range(60):
@@ -423,20 +443,32 @@ def run_scan_case(args, case):
     thread.join(8)
     server.close()
     status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
+    preserve_case_evidence(documents, guard, ("owner-" if owner else "scan-") + case)
     check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
     check(result_file.read_text(encoding="ascii").strip() == "0", "real common sink assertions " + status)
     trace = (guard / "scan-events").read_text(encoding="ascii")
-    expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure"))
+    expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure", "background", "disconnect", "success"))
     check(trace.count("EVENT=PAIRING_READY\n") == expected_ready, "dual readiness once " + trace)
-    check(trace.count("EVENT=CLEAR_PAIRING\n") == 1, "clear exactly once " + trace)
+    expected_clear = 2 if owner and case == "success" else 1
+    check(trace.count("EVENT=CLEAR_PAIRING\n") == expected_clear, "clear for accepted/terminal transition " + trace)
     check(trace.count("EVENT=CLOSE_CONTROL_TRANSPORT\n") == 1, "close exactly once " + trace)
     check(trace.count("CALLBACK=CLEANED\n") == 1, "cleaned exactly once " + trace)
-    check("COUNTS=" + str(expected_ready) + ",1,1,1" in trace, "late and old callbacks inert")
+    check("COUNTS=" + str(expected_ready) + "," + str(expected_clear) + ",1,1" in trace, "late and old callbacks inert")
+    expected_cleanup = int(case in ("ready_stop", "ready_timeout", "rfcomm_failure", "sdp_failure", "background", "disconnect", "success"))
+    completion = "COMPLETION=1," + str(expected_cleanup) + (",0\n" if owner and case == "success" else ",1\n")
+    check(trace.count(completion) == 1, "typed worker return and independent cleanup certainty " + trace)
+    check(trace.index("CALLBACK=CLEANED\n") < trace.index(completion),
+          "CLEANED precedes typed return and is not cleanup success")
     check("hicar://" not in status + trace, "QR never enters diagnostic output")
+    if owner:
+        check("OWNER_BOUNDARIES=synthetic-OS-and-lease-real-owner-native-common" in trace,
+              "explicit synthetic effect boundary, real integrated code")
+        check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,
+              "same common PIN one-shot handoff; not authentication success")
     check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
           "scan never owns power heartbeat")
     shutil.rmtree(guard)
-    print("SCAN_NATIVE_SOCKET_CASE_OK=" + case)
+    print(("SCAN_OWNER_NATIVE_COMMON_CASE_OK=" if owner else "SCAN_NATIVE_SOCKET_CASE_OK=") + case)
 
 
 def main():
@@ -452,6 +484,10 @@ def main():
                  "stop_sdp_wait", "deadline_wait", "ready_timeout", "cleanup_failure"):
         run_scan_case(args, case)
     print("SCAN_NATIVE_SOCKET_TESTS_OK=8")
+    for case in ("success", "ready_stop", "background", "disconnect", "rfcomm_failure", "sdp_failure",
+                 "stop_rfcomm_wait", "stop_sdp_wait", "deadline_wait", "ready_timeout", "cleanup_failure"):
+        run_scan_case(args, case, owner=True)
+    print("SCAN_OWNER_NATIVE_COMMON_CASES_OK=11")
     print("FE35_AND_SCAN_KN_ASSERTIONS=" + str(ASSERTIONS))
 
 

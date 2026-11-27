@@ -677,7 +677,7 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, fe35_bridge_handle bridge
  * Peer addresses, session bytes, UUIDs, and key material are never logged.
  */
 static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge,
-                              fe35_scan_transport *scan) {
+                              fe35_scan_transport *scan, bool *cleanup_confirmed) {
     uint8_t state[3], reply[7], owned_channel = 0;
     uint32_t handle = 0;
     uint16_t cid = 0, packet_type = 0, packet_channel = 0;
@@ -686,6 +686,8 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     size_t size = 0;
     int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
     int listener_ready = 0, session_started = 0;
+    int registration_pending = 0, cleanup_uncertain = 0;
+    if (cleanup_confirmed) *cleanup_confirmed = false;
     unsigned status = 0;
     const char *stage = "GUARD";
     if (current_scan || (scan && (!scan->notify || scan->generation <= 0))) {
@@ -704,9 +706,11 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     stage = "RFCOMM_LISTEN";
     for (uint8_t channel = 16; channel <= 23; ++channel) {
         uint8_t params[] = {channel, 0, 2};
+        registration_pending = 1;
         if (exchange(fd, 0x42, params, sizeof(params), 0x85, reply, 4)) goto done;
         status = reply[2];
         if (reply[3] != channel) goto done;
+        registration_pending = 0;
         if (status == 0) { owned_channel = channel; break; }
         if (status != 0x71) goto done;
     }
@@ -717,11 +721,14 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     {
         uint8_t record[64];
         size_t record_size = service_record(record, 0xfe35, owned_channel);
+        registration_pending = 1;
         if (exchange(fd, 0x30, record, record_size, 0x90, reply, 7)) goto done;
         status = reply[2];
         uint32_t candidate = le32(reply + 3);
-        if (status || candidate < 0x10000) goto done;
+        if (status) { registration_pending = 0; goto done; }
+        if (candidate < 0x10000) goto done;
         handle = candidate;
+        registration_pending = 0;
     }
     if (scan_poll() || scan_event("SDP_READY", owned_channel)) goto done;
 
@@ -790,7 +797,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
             &auth_handle, auth_uuid, deadline, run_dir);
         fe35_bridge_release_batch(batch);
-        if (dispatched) goto done;
+        if (dispatched) { cleanup_uncertain = 1; goto done; }
     }
 
     stage = "CONTROL_STREAM";
@@ -837,7 +844,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
             int dispatched = dispatch_bridge_batch(fd, cid, bridge, batch, &auth_channel,
                 &auth_handle, auth_uuid, now_ms() + 4000, run_dir);
             fe35_bridge_release_batch(batch);
-            if (dispatched) { stage = "BRIDGE_EVENT_DISPATCH"; goto done; }
+            if (dispatched) { cleanup_uncertain = 1; stage = "BRIDGE_EVENT_DISPATCH"; goto done; }
             if (auth_channel) listener_ready = 1;
         }
     }
@@ -894,7 +901,12 @@ done:
             if (query(fd, 1, 0x60, barrier, sizeof(barrier))) cleanup_ok = 0;
         }
         if (!cleanup_ok) { result = 1; stage = "CLEANUP_UNCONFIRMED"; }
-        close(fd); /* daemon client teardown also releases any pending CID */
+        /* Socket teardown alone does not confirm an unacknowledged registration
+         * or pending CID. Preserve protocol status; report certainty separately. */
+        int close_ok = close(fd) == 0;
+        if (cleanup_confirmed)
+            *cleanup_confirmed = cleanup_ok && close_ok && !registration_pending &&
+                !cleanup_uncertain && (!cid || opened || disconnected);
     }
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
     else {
@@ -903,6 +915,8 @@ done:
     }
     if (bridge) fe35_bridge_close(bridge);
     if (scan) {
+        /* Teardown-tail notification only, including CLEANUP_UNCONFIRMED.
+         * The typed return, not this callback, carries cleanup certainty. */
         (void)scan->notify(scan->context, scan->generation, "CLEANED", 0, now_ms());
         scan_ended = 0;
     }
@@ -927,19 +941,21 @@ static int inbound_with_bridge(const char *path, const char *run_dir) {
         puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_CREATE");
         return 1;
     }
-    return transport_inbound(path, run_dir, bridge, NULL);
+    return transport_inbound(path, run_dir, bridge, NULL, NULL);
 }
 
-int openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle bridge,
-                               fe35_scan_transport *scan) {
-    if (!scan) { if (bridge) fe35_bridge_close(bridge); return 1; }
+fe35_scan_completion openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle bridge,
+                                                fe35_scan_transport *scan) {
+    fe35_scan_completion completion = { .returned = true, .cleanup_confirmed = false, .status = 1 };
+    if (!scan) { if (bridge) fe35_bridge_close(bridge); return completion; }
 #ifdef OPENHC_FE35_SIMULATOR_TEST
     const char *path = getenv("OPENHC_FE35_TEST_SOCKET");
-    if (!path || !*path) { if (bridge) fe35_bridge_close(bridge); return 1; }
-    return transport_inbound(path, run_dir, bridge, scan);
+    if (!path || !*path) { if (bridge) fe35_bridge_close(bridge); return completion; }
 #else
-    return transport_inbound("/tmp/BTstack", run_dir, bridge, scan);
+    const char *path = "/tmp/BTstack";
 #endif
+    completion.status = transport_inbound(path, run_dir, bridge, scan, &completion.cleanup_confirmed);
+    return completion;
 }
 
 static int remove_services(int fd, uint8_t channels[2], uint32_t handles[2]) {

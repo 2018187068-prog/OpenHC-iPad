@@ -12,9 +12,17 @@ static int64_t scanNow(void) {
 @interface OHCScanDemoProvider ()
 @property(nonatomic, strong) OHCBScanReceiverSession *session;
 @property(nonatomic, strong) NSTimer *timer;
+#ifndef OPENHC_SCAN_UI_TEST
+@property(nonatomic) BOOL automaticReady;
+#endif
+- (instancetype)initSyntheticDemo;
+- (void)ready;
 @end
 @implementation OHCScanDemoProvider
-- (instancetype)init {
++ (instancetype)syntheticDemoProvider {
+    return [[self alloc] initSyntheticDemo];
+}
+- (instancetype)initSyntheticDemo {
     if ((self = [super init])) {
         OHCBHostIdentity *host = [[OHCBHostIdentity alloc] initWithModelId:@"A1B2C3"
             subModelId:@"D4" brand:@"Synthetic" deviceName:@"合成演示车机"];
@@ -73,6 +81,8 @@ static int64_t scanNow(void) {
 @property(nonatomic) BOOL accepting;
 @property(nonatomic) BOOL foreground;
 @property(nonatomic) NSUInteger readyCount;
+@property(nonatomic) NSUInteger helperRequest;
+- (void)receive:(NSArray<OHCBScanReceiverEvent *> *)events;
 @end
 @implementation OHCScanDemoController
 - (void)viewDidLoad {
@@ -128,7 +138,7 @@ static int64_t scanNow(void) {
         [self.qrView.widthAnchor constraintEqualToConstant:280],
         [self.qrView.heightAnchor constraintEqualToConstant:280]
     ]];
-    self.provider = [OHCScanDemoProvider new];
+    self.provider = [OHCScanDemoProvider syntheticDemoProvider];
     __weak typeof(self) weakSelf = self;
     self.provider.events = ^(NSArray *events) { [weakSelf receive:events]; };
     [self clearPairing];
@@ -153,13 +163,19 @@ static int64_t scanNow(void) {
     self.startButton.enabled = NO;
     self.stopButton.enabled = YES;
     [self.provider start];
+    NSUInteger request = ++self.helperRequest;
+    // PONG is a separate synthetic diagnostic, never transport readiness or
+    // authorization. Its late completion must not survive this UI attempt.
     [self probeIndependentHelperWithCompletion:^(NSString *reply) {
+        if (request != self.helperRequest || !self.accepting || !self.foreground) return;
         self.helperStatusLabel.text = [reply isEqualToString:@"PONG"]
             ? @"独立 helper：PONG（固定合成响应）" : @"独立 helper：请求失败";
     }];
 }
 - (void)stopDemo {
+    self.helperRequest++;
     self.accepting = NO;
+    self.helperStatusLabel.text = @"独立 helper：未探测";
     [self clearPairing]; // synchronous, before provider cleanup/events
     self.startButton.enabled = self.foreground;
     self.stopButton.enabled = NO;
@@ -185,6 +201,8 @@ static int64_t scanNow(void) {
         } else if ([event.kind isEqualToString:@"CLEAR_PAIRING"]) {
             [self clearPairing];
         } else if ([event.kind isEqualToString:@"FAILED"] || [event.kind isEqualToString:@"STOPPED"]) {
+            self.helperRequest++;
+            self.helperStatusLabel.text = @"独立 helper：未探测";
             [self clearPairing];
             self.accepting = NO;
             self.startButton.enabled = self.foreground;

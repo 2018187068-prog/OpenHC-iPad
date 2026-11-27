@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define FE35_BRIDGE_MAX_FRAME 65552
 #define FE35_BRIDGE_MAX_EVENTS 32
@@ -64,7 +65,22 @@ typedef struct {
 } fe35_scan_binding;
 int fe35_scan_notify(void *binding, int64_t generation, const char *kind,
                      int channel, int64_t now_ms);
-int openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle control_bridge,
-                               fe35_scan_transport *scan);
+/* Returned by value only after the synchronous worker returns. status retains
+ * the original 0=protocol success/nonzero=failure convention independently of
+ * cleanup. cleanup_confirmed means known resources were released using the
+ * existing unregister processing barrier/CID-close acknowledgement, with no
+ * unresolved registration; not a remote absence query, process-exit, power or
+ * restoration proof. false includes rejected/not-attempted/uncertain cleanup.
+ * CLEANED is only the final teardown callback, emitted even on cleanup failure
+ * before this return; never infer cleanup_confirmed or lease authority from it.
+ * A zero-initialized result is not a completed worker. No result exists if the
+ * worker has not returned; an external owner must handle that independently. */
+typedef struct {
+    bool returned;
+    bool cleanup_confirmed;
+    int status;
+} fe35_scan_completion;
+fe35_scan_completion openhc_btstack_scan_inbound(
+    const char *run_dir, fe35_bridge_handle control_bridge, fe35_scan_transport *scan);
 
 #endif

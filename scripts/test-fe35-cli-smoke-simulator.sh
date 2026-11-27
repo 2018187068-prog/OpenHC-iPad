@@ -23,14 +23,26 @@ with open(sys.argv[1], "wb") as stream:
     }, stream)
 PY
 
+for qr_source in ScanQRBitmap vendor/qrcodegen/qrcodegen; do
+  xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
+    -std=c11 -Wall -Wextra -Werror -c "$repo_root/theos/scan-ui/$qr_source.c" \
+    -o "$RUNNER_TEMP/owner-$(basename "$qr_source").o"
+done
 xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   -fobjc-arc -DOPENHC_CLI_NO_MAIN -DOPENHC_FE35_SIMULATOR_TEST \
-  -DOPENHC_TRANSPORT_TEST_TIMEOUTS \
+  -DOPENHC_TRANSPORT_TEST_TIMEOUTS -DOPENHC_SCAN_OWNER_TEST \
   -F"$(dirname "$framework")" -framework OpenHCBridge -framework Foundation -framework CoreFoundation \
+  -framework UIKit -framework CoreGraphics \
   "$repo_root/theos/main.m" "$repo_root/theos/fe35-bridge-smoke.m" \
   "$repo_root/theos/fe35-control-bridge.m" "$repo_root/theos/btstack-probe.c" \
   "$repo_root/scripts/fe35-cli-smoke-runner.m" \
   "$repo_root/scripts/scan-transport-sim-fixture.m" \
+  "$repo_root/theos/scan-owner/ScanOwner.c" "$repo_root/theos/scan-owner/ScanOwnerPeer.c" \
+  "$repo_root/theos/scan-owner/ScanOwnerRuntime.m" \
+  "$repo_root/theos/scan-owner/ScanOwnerForeground.m" \
+  "$repo_root/scripts/scan-owner-sim-fixture.m" \
+  "$repo_root/theos/scan-ui/ScanQRCode.m" \
+  "$RUNNER_TEMP/owner-ScanQRBitmap.o" "$RUNNER_TEMP/owner-qrcodegen.o" \
   "$repo_root/scripts/fe35-inbound-sim-probe-stubs.c" \
   -o "$app/fe35-cli-smoke"
 codesign --force --sign - "$app"
@@ -49,12 +61,33 @@ raise SystemExit("No available iPhone simulator")
 PY
 )"
 booted_by_test=0
+data_dir=""
 if ! xcrun simctl list devices | grep -F "$udid" | grep -F '(Booted)' >/dev/null; then
   xcrun simctl boot "$udid"
   booted_by_test=1
 fi
 cleanup() {
+  status=$?
+  trap - EXIT
+  if [[ -n "$data_dir" && -d "$data_dir/Documents" ]]; then
+    if ! python3 - "$data_dir/Documents" "$repo_root/artifacts/scan-owner/simulator-last-case" <<'PY'
+from pathlib import Path
+import shutil, sys
+source, destination = map(Path, sys.argv[1:])
+destination.mkdir(parents=True, exist_ok=True)
+for name in ('fe35-cli-status.log', 'fe35-cli-result'):
+    p = source / name
+    if p.is_file(): shutil.copyfile(p, destination / name)
+for pattern in ('scan-guard-*/scan-events', 'owner-guard-*/scan-events'):
+    for p in source.glob(pattern):
+        shutil.copyfile(p, destination / (p.parent.name + '-events.log'))
+PY
+    then
+      if [[ "$status" == 0 ]]; then status=1; fi
+    fi
+  fi
   if [[ "$booted_by_test" == 1 ]]; then xcrun simctl shutdown "$udid" || true; fi
+  exit "$status"
 }
 trap cleanup EXIT
 xcrun simctl bootstatus "$udid" -b

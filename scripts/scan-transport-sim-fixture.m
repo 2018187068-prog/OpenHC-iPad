@@ -24,6 +24,7 @@ typedef struct {
     int cleaned;
     int invalid;
     int64_t generation;
+    fe35_scan_completion completion;
 } fixture;
 
 static int64_t monotonic_ms(void) {
@@ -89,6 +90,8 @@ static int notify(void *context, int64_t generation, const char *kind, int chann
     if (!strcmp(kind, "CLEANED")) {
         f->cleaned++;
         if (f->clear != 1 || f->close != 1) f->invalid = 1;
+        /* Callback is before function return, including cleanup failure. */
+        if (f->completion.returned || f->completion.cleanup_confirmed) f->invalid = 1;
     }
     int result = fe35_scan_notify(&f->binding, generation, kind, channel, now);
     /* Duplicate/foreign callbacks travel through the actual ObjC/common bridge.
@@ -129,7 +132,12 @@ int openhc_scan_transport_fixture(const char *run_dir, const char *scenario) {
         start_timer(&f);
     }
     fe35_scan_transport transport = {&f, f.generation, f.stop_pipe[0], notify};
-    int result = openhc_btstack_scan_inbound(run_dir, bridge, &transport);
+    f.completion = openhc_btstack_scan_inbound(run_dir, bridge, &transport);
+    int expect_cleanup = !strcmp(scenario, "ready_stop") || !strcmp(scenario, "ready_timeout") ||
+        !strcmp(scenario, "rfcomm_failure") || !strcmp(scenario, "sdp_failure");
+    fprintf(f.trace, "COMPLETION=%d,%d,%d\n", f.completion.returned,
+        f.completion.cleanup_confirmed, f.completion.status);
+    if (!f.completion.returned || f.completion.cleanup_confirmed != expect_cleanup) f.invalid = 1;
     if (f.timer_started) pthread_join(f.timer, NULL);
     /* Terminal callbacks and a previous generation remain inert after cleanup. */
     for (int i = 0; i < 2; ++i) {
@@ -141,7 +149,7 @@ int openhc_scan_transport_fixture(const char *run_dir, const char *scenario) {
     int expect_ready = !strcmp(scenario, "ready_stop") || !strcmp(scenario, "ready_timeout") ||
         !strcmp(scenario, "cleanup_failure");
     fprintf(f.trace, "COUNTS=%d,%d,%d,%d\n", f.ready, f.clear, f.close, f.cleaned);
-    if (f.ready != expect_ready || f.clear != 1 || f.close != 1 || f.cleaned != 1 || result != 1)
+    if (f.ready != expect_ready || f.clear != 1 || f.close != 1 || f.cleaned != 1 || f.completion.status != 1)
         f.invalid = 1;
     (void)[session startNowMillis:monotonic_ms()];
     (void)fe35_scan_notify(&f.binding, f.generation, "RFCOMM_READY", 16, monotonic_ms());

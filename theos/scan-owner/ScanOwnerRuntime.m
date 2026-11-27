@@ -145,17 +145,19 @@ disconnect:
 }
 - (void)effect:(ohc_owner_effect)e generation:(uint64_t)g {
     switch(e) {
-    case OHC_ARM_GUARD:
+    case OHC_ARM_GUARD: {
         _keepAlive=self;
         [self publishKind:@"STARTED" generation:g qr:nil pin:nil];
         [_lease arm:g deadline:_owner.deadline result:^(BOOL ready) {
             dispatch_async(self->_executor,^{ohc_owner_guard_ready(&self->_owner,g,ready,ownerNow());});
         }]; break;
-    case OHC_TAKEOVER:
+    }
+    case OHC_TAKEOVER: {
         [_lease takeover:g result:^(BOOL working) {
             dispatch_async(self->_executor,^{ohc_owner_working(&self->_owner,g,working,ownerNow());});
         }]; break;
-    case OHC_RUN_WORKER:
+    }
+    case OHC_RUN_WORKER: {
         /* Defer: no state-machine reentrancy from an effect handler. */
         dispatch_async(_executor,^{
             if(self->_owner.state==OHC_RUNNING && self->_owner.generation==g) [self launchWorker];
@@ -165,6 +167,7 @@ disconnect:
                 ohc_owner_completed(&self->_owner,g,(fe35_scan_completion){true,true,1},true,ownerNow());
             }
         }); break;
+    }
     case OHC_CLEAR:
         _pairingPIN=nil;
         [self publishKind:@"CLEAR_PAIRING" generation:g qr:nil pin:nil];
@@ -174,10 +177,11 @@ disconnect:
         if (_stop[1]>=0) { ssize_t n=write(_stop[1],"S",1); (void)n; } break;
     case OHC_HEARTBEAT: [_lease heartbeat:g]; break;
     case OHC_STOP_HEARTBEAT: [_lease stopHeartbeat:g]; break;
-    case OHC_REQUEST_RESTORE:
+    case OHC_REQUEST_RESTORE: {
         [_lease requestRestore:g result:^(BOOL verified) {
             dispatch_async(self->_executor,^{ohc_owner_recovered(&self->_owner,g,verified);});
         }]; break;
+    }
     case OHC_DELEGATE_GUARD: [_lease delegateOnce:g]; break;
     case OHC_RELEASED: _keepAlive=nil; break;
     }

@@ -7,7 +7,10 @@ static int checks;
 typedef struct { int n[OHC_RELEASED+1]; int order[128]; int used; int64_t deadline; } logbook;
 static void emit(void *p, ohc_owner_effect e, uint64_t g, int64_t d) {
     logbook *l=p; CHECK(g>0); CHECK(l->used<128); l->n[e]++; l->order[l->used++]=e;
-    if (!l->deadline) l->deadline=d; CHECK(l->deadline==d);
+    if (!l->deadline) {
+        l->deadline=d;
+    }
+    CHECK(l->deadline==d);
 }
 static ohc_owner_peer peer(void) {
     ohc_owner_peer p={0}; p.token[1]=501; p.token[2]=501; p.token[5]=123; p.token[7]=10;
@@ -52,9 +55,24 @@ int main(void) {
     /* Connection, process incarnation, complete token and endpoint policy freshness. */
     for (int i=0;i<6;i++) {
         running(&o,&c,&l,&p); ohc_owner_peer fresh=p;
-        if(i==0)fresh.token[7]++; if(i==1)fresh.token[5]++;
-        if(i==2)fresh.endpoint_inode++; if(i==3)fresh.policy_epoch++;
-        if(i==4)fresh.connection++; if(i==5)fresh.kernel_verified=false;
+        if (i==0) {
+            fresh.token[7]++;
+        }
+        if (i==1) {
+            fresh.token[5]++;
+        }
+        if (i==2) {
+            fresh.endpoint_inode++;
+        }
+        if (i==3) {
+            fresh.policy_epoch++;
+        }
+        if (i==4) {
+            fresh.connection++;
+        }
+        if (i==5) {
+            fresh.kernel_verified=false;
+        }
         CHECK(!ohc_owner_feed(&o,&c,&fresh,NULL,0,103));
         CHECK(o.revoked && l.n[OHC_CANCEL_WORKER]==1);
         CHECK(l.order[l.used-2]==OHC_CLEAR && l.order[l.used-1]==OHC_CANCEL_WORKER);
@@ -108,7 +126,11 @@ int main(void) {
     /* Guard readiness failure / no reply: no worker, takeover or heartbeat. */
     for(int i=0;i<2;i++) {
         init(&o,&l); CHECK(ohc_owner_open(&c,&p)); CHECK(frame(&o,&c,&p,"START\n",100));
-        if(i)ohc_owner_tick(&o,3100); else ohc_owner_guard_ready(&o,o.generation,false,101);
+        if (i) {
+            ohc_owner_tick(&o,3100);
+        } else {
+            ohc_owner_guard_ready(&o,o.generation,false,101);
+        }
         CHECK(o.state==OHC_DELEGATED && !l.n[OHC_RUN_WORKER] && !l.n[OHC_TAKEOVER] && !l.n[OHC_HEARTBEAT]);
     }
     running(&o,&c,&l,&p); int64_t absolute=o.deadline;

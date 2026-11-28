@@ -43,7 +43,9 @@ for name in (
     'docs/FE36-CONSOLIDATED-DIAGNOSTIC-MATRIX.md',
     'scripts/test-fe36-negative-terminal.py',
     'theos/Fe36AuthTransport.h',
-    'theos/NearbyWifiTransport.h', 'scripts/test-nearby-wifi-harness.py',
+    'theos/NearbyWifiTransport.h', 'theos/NearbyWifiListener.h',
+    'scripts/test-nearby-wifi-harness.py', 'scripts/test-nearby-wifi-listener.py',
+    'scripts/nearby-wifi-listener-test.c', 'docs/FE36-NEARBY-LISTENER-CORRECTION.md',
     'scripts/fe35-inbound-sim-probe-stubs.c', 'scripts/test-fe35-cli-smoke-simulator.sh',
     'scripts/fe35-control-bridge-test-stub.c', 'scripts/btstack-sigpipe-test.c',
     'scripts/test-btstack-probe.py', 'scripts/test-btstack-transport-socket.py',
@@ -72,6 +74,9 @@ python3 scripts/test-fe36-wifi-diagnostics.py 2>&1 | tee artifacts/logs/owner-fe
 python3 scripts/test-fe36-cancellation-order.py 2>&1 | tee artifacts/logs/owner-fe36-cancellation-order.log
 python3 scripts/test-fe36-case-matrix.py 2>&1 | tee artifacts/logs/owner-fe36-case-matrix.log
 python3 scripts/test-nearby-wifi-harness.py 2>&1 | tee artifacts/logs/owner-nearby-wifi-harness.log
+python3 scripts/test-nearby-wifi-listener.py 2>&1 | tee artifacts/logs/owner-nearby-wifi-listener.log
+clang -std=c11 -Wall -Wextra -Werror scripts/nearby-wifi-listener-test.c -o "$RUNNER_TEMP/nearby-wifi-listener-test"
+"$RUNNER_TEMP/nearby-wifi-listener-test" 2>&1 | tee artifacts/logs/owner-nearby-production-listener.log
 for suite in btstack-probe btstack-transport-socket session-owner-probe; do
   python3 "scripts/test-$suite.py" 2>&1 | tee "artifacts/logs/owner-darwin-$suite.log"
 done

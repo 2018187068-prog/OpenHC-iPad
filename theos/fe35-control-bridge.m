@@ -6,6 +6,7 @@
 #include <string.h>
 #import "Fe36AuthTransport.h"
 #import "NearbyWifiTransport.h"
+#include "NearbyWifiListener.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -238,17 +239,12 @@ static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p c
                 [_networkLock lock];int socketFD=-1;NSString *peerAddress=nil;
                 @try { socketFD=[_network openListener];peerAddress=[_network acceptedPeerIPv4]; }
                 @finally { [_networkLock unlock]; }
-                struct sockaddr_in local={0};socklen_t size=sizeof(local);struct in_addr expected={0},car={0};
-                int accepting=0;socklen_t flagSize=sizeof(accepting);
-                int flags=socketFD>=0?fcntl(socketFD,F_GETFL):-1;
-                if(socketFD<0 || getsockname(socketFD,(struct sockaddr *)&local,&size) || size!=sizeof(local) ||
-                    local.sin_family!=AF_INET || !ntohs(local.sin_port) ||
-                    inet_pton(AF_INET,_networkConfig.carIp.UTF8String,&car)!=1 || car.s_addr!=local.sin_addr.s_addr ||
+                struct in_addr expected={0},car={0};uint16_t port=0;
+                if(inet_pton(AF_INET,_networkConfig.carIp.UTF8String,&car)!=1 ||
                     !peerAddress || inet_pton(AF_INET,peerAddress.UTF8String,&expected)!=1 ||
-                    getsockopt(socketFD,SOL_SOCKET,SO_ACCEPTCONN,&accepting,&flagSize) || !accepting ||
-                    flags<0 || !(flags&O_NONBLOCK)) return NULL;
+                    !ohc_nearby_prepare_listener(socketFD,car.s_addr,&port)) return NULL;
                 *listener=socketFD;*peer=expected.s_addr;
-                return retainEvents([b wifiListeningGeneration:_generation connection:1 port:ntohs(local.sin_port) nowMillis:now]);
+                return retainEvents([b wifiListeningGeneration:_generation connection:1 port:port nowMillis:now]);
             }
             if(event!=FE35_WIFI_NETWORK) return NULL;
             if(_ready) return retainEvents(@[]);

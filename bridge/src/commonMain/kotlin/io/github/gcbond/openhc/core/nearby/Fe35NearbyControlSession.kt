@@ -43,6 +43,21 @@ class Fe35NearbyControlSession internal constructor(
     private var encrypted = false
     private var seen = 0
     private var handshakeDeadline: Long? = null
+    private var wifi: NearbyWifiJoin? = null
+
+    /** Trusted internal continuation, called only after real authentication and auth-CID cleanup.
+     * Uses the captured original owner/common absolute deadline; never starts another budget. */
+    fun authenticated(generation: Long, connection: Long, deadline: Long, now: Long): List<Fe35SessionEvent> {
+        check(isHandshakeComplete && wifi == null)
+        wifi = NearbyWifiJoin(generation, connection, deadline, now, ::sendFrame)
+        return emptyList()
+    }
+    fun networkReady(g: Long, c: Long, info: WifiNetworkConfig, now: Long): List<Fe35SessionEvent> =
+        checkNotNull(wifi).ready(g, c, info, now)
+    fun wifiListening(g: Long, c: Long, port: Int, now: Long): List<Fe35SessionEvent> =
+        checkNotNull(wifi).listening(g, c, port, now)
+    fun tcpAccepted(g: Long, c: Long, now: Long): List<Fe35SessionEvent> =
+        checkNotNull(wifi).accepted(g, c, now)
 
     init {
         require(deviceIdText.isNotEmpty() && deviceIdText.length <= MAX_DEVICE_ID_TEXT) { "DEVICE_ID_TEXT_INVALID" }
@@ -91,6 +106,7 @@ class Fe35NearbyControlSession internal constructor(
             try {
                 out += process(frame)
             } catch (_: Exception) {
+                if (wifi != null) { close(); return listOf(Fe35SessionEvent("WIFI_JOIN_FAILED")) }
                 out += Fe35SessionEvent("INPUT_DISCARDED", byteCount = frame.payloadView().size)
             }
         }
@@ -110,6 +126,7 @@ class Fe35NearbyControlSession internal constructor(
     }
 
     fun onTick(nowMillis: Long): List<Fe35SessionEvent> {
+        wifi?.let { return it.tick(nowMillis) }
         val deadline = handshakeDeadline ?: return emptyList()
         if (nowMillis < deadline || closed) return emptyList()
         close()
@@ -123,6 +140,8 @@ class Fe35NearbyControlSession internal constructor(
         decoder.clear()
         negotiator.close()
         cipher.close()
+        wifi?.close()
+        wifi = null
         deviceId.fill(0)
     }
 
@@ -130,13 +149,27 @@ class Fe35NearbyControlSession internal constructor(
         "Fe35NearbyControlSession(handshake=$isHandshakeComplete, encrypted=$encrypted, closed=$closed)"
 
     private fun process(frame: NearbyFrame): List<Fe35SessionEvent> {
+        if (wifi != null && (frame.outerType == ChannelManagement.OUTER_TYPE ||
+                frame.outerType == SocketMessages.OUTER_TYPE_MESSAGE)) {
+            close()
+            return listOf(Fe35SessionEvent("WIFI_JOIN_FAILED"))
+        }
         val payload = cipher.open(frame)
         return when (frame.outerType) {
             ChannelManagement.OUTER_TYPE -> handleHandshake(payload)
             SocketMessages.OUTER_TYPE_MESSAGE -> handleMessageLayer(payload)
+            SocketMessages.OUTER_TYPE_RESOURCE -> wifi?.resource(payload) ?: rejectDataChannel(payload)
+            33 -> wifi?.wifi(payload) ?: listOf(Fe35SessionEvent("WIFI_JOIN_FAILED"))
             else -> listOf(Fe35SessionEvent("IGNORED_FRAME"))
         }
     }
+
+    private fun rejectDataChannel(payload: ByteArray): List<Fe35SessionEvent> =
+        Tlv.parseAll(payload).map {
+            require(it.tag == DataChannelMessages.CMD_REQUEST)
+            val r = DataChannelMessages.parseRequest(it.valueView())
+            sendFrame(4, DataChannelMessages.refusePayload(r.dataChannel, DataChannelRefusal.BUSY))
+        }
 
     private fun handleHandshake(payload: ByteArray): List<Fe35SessionEvent> {
         val items = ChannelManagement.decode(payload)

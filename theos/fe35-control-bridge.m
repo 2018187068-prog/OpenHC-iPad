@@ -5,6 +5,10 @@
 #include "Fe35BridgeBounds.h"
 #include <string.h>
 #import "Fe36AuthTransport.h"
+#import "NearbyWifiTransport.h"
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
 static OHCBKotlinByteArray *kotlinBytes(const uint8_t *bytes, size_t size) {
     if (size > INT32_MAX) return nil;
@@ -159,6 +163,113 @@ int fe35_scan_notify(void *context, int64_t generation, const char *kind,
 - (int)step:(enum fe36_io_event)event incarnation:(int64_t)incarnation
     bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now
     send:(fe36_io_send)send context:(void *)context;
+@end
+
+@interface OHCNearbyWifiTransport () {
+    NSLock *_stateLock, *_networkLock;
+    id<OHCNearbyNetwork> _network;
+    BOOL (^_accept)(OHCNearbyWifiTransport *,int,int64_t);
+    int64_t _generation, _deadline;
+    BOOL _cancelled, _keyStored, _keyTaken, _ready, _begun;
+    OHCBWifiNetworkConfig *_networkConfig;
+    uint8_t _key[16];
+}
+- (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
+    now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer;
+@end
+static void wipeSessionKey(uint8_t *bytes) {
+    volatile uint8_t *p=bytes;for(size_t i=0;i<16;i++)p[i]=0;
+}
+static fe35_bridge_batch wifiStep(void *p,enum fe35_wifi_io e,fe35_bridge_handle b,int64_t n,
+                                  int fd,int *listener,uint32_t *peer) {
+    return [(__bridge OHCNearbyWifiTransport *)p step:e bridge:b now:n descriptor:fd listener:listener peer:peer];
+}
+static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p cancel]; }
+@implementation OHCNearbyWifiTransport
+- (instancetype)initWithNetwork:(id<OHCNearbyNetwork>)network
+    accept:(BOOL (^)(OHCNearbyWifiTransport *,int,int64_t))accept {
+    if(!network || !accept) return nil;
+    if((self=[super init])) {
+        _network=network; _accept=[accept copy]; _stateLock=[NSLock new]; _networkLock=[NSLock new];
+    } return self;
+}
+- (BOOL)handoffGeneration:(int64_t)g deadline:(int64_t)d {
+    [_stateLock lock];
+    BOOL valid=!_cancelled && !_generation && g>0 && d>0;
+    if(valid) { _generation=g; _deadline=d; }
+    [_stateLock unlock]; return valid;
+}
+- (BOOL)storeKey:(const uint8_t [16])key {
+    [_stateLock lock]; BOOL valid=key && !_cancelled && !_keyStored && _generation>0;
+    if(valid) { memcpy(_key,key,16); _keyStored=YES; }
+    [_stateLock unlock]; return valid;
+}
+- (BOOL)deliverTo:(OHCWifiBoundary)sink owner:(uint64_t)owner descriptor:(int)fd {
+    uint8_t copy[16]={0};
+    [_stateLock lock]; BOOL valid=!_cancelled && _keyStored && !_keyTaken && sink && fd>=0;
+    if(valid) { memcpy(copy,_key,16);wipeSessionKey(_key);_keyTaken=YES; }
+    [_stateLock unlock];
+    BOOL accepted=NO;
+    @try { if(valid) accepted=sink(owner,_generation,1,fd,copy); }
+    @finally { wipeSessionKey(copy); }
+    return accepted;
+}
+- (fe35_wifi_transport)binding { return (fe35_wifi_transport){(__bridge void *)self,wifiStep,wifiCancel}; }
+- (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
+    now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer {
+    @autoreleasepool {
+        [_stateLock lock];
+        BOOL valid=!_cancelled && _keyStored && _generation>0 && now>=0 && now<_deadline;
+        if(event==FE35_WIFI_BEGIN) { valid=valid && !_begun; if(valid) _begun=YES; }
+        else valid=valid && _begun;
+        [_stateLock unlock];
+        if(!valid) return NULL;
+        OHCBFe35ControlBridge *b=(__bridge OHCBFe35ControlBridge *)bridge;
+        @try {
+            if(event==FE35_WIFI_BEGIN) return retainEvents([b authenticatedGeneration:_generation connection:1 deadlineMillis:_deadline nowMillis:now]);
+            if(event==FE35_WIFI_ACCEPT) {
+                NSArray<OHCBFe35ControlBridgeEvent *> *events=[b tcpAcceptedGeneration:_generation connection:1 nowMillis:now];
+                if(events.count!=1 || ![events[0].kind isEqualToString:@"TCP_CONTROL_ACCEPTED"] ||
+                    !_accept(self,fd,now)) return NULL;
+                return retainEvents(events);
+            }
+            if(event==FE35_WIFI_LISTEN) {
+                if(!_ready || !_networkConfig) return NULL;
+                [_networkLock lock];int socketFD=-1;NSString *peerAddress=nil;
+                @try { socketFD=[_network openListener];peerAddress=[_network acceptedPeerIPv4]; }
+                @finally { [_networkLock unlock]; }
+                struct sockaddr_in local={0};socklen_t size=sizeof(local);struct in_addr expected={0},car={0};
+                int accepting=0;socklen_t flagSize=sizeof(accepting);
+                int flags=socketFD>=0?fcntl(socketFD,F_GETFL):-1;
+                if(socketFD<0 || getsockname(socketFD,(struct sockaddr *)&local,&size) || size!=sizeof(local) ||
+                    local.sin_family!=AF_INET || !ntohs(local.sin_port) ||
+                    inet_pton(AF_INET,_networkConfig.carIp.UTF8String,&car)!=1 || car.s_addr!=local.sin_addr.s_addr ||
+                    !peerAddress || inet_pton(AF_INET,peerAddress.UTF8String,&expected)!=1 ||
+                    getsockopt(socketFD,SOL_SOCKET,SO_ACCEPTCONN,&accepting,&flagSize) || !accepting ||
+                    flags<0 || !(flags&O_NONBLOCK)) return NULL;
+                *listener=socketFD;*peer=expected.s_addr;
+                return retainEvents([b wifiListeningGeneration:_generation connection:1 port:ntohs(local.sin_port) nowMillis:now]);
+            }
+            if(event!=FE35_WIFI_NETWORK) return NULL;
+            if(_ready) return retainEvents(@[]);
+            [_networkLock lock];
+            OHCBWifiNetworkConfig *info=nil;
+            @try { info=[_network poll]; }
+            @finally { [_networkLock unlock]; }
+            if(!info) return retainEvents(@[]);
+            _networkConfig=info;_ready=YES;
+            return retainEvents([b networkReadyGeneration:_generation connection:1 info:info nowMillis:now]);
+        } @catch(__unused NSException *e) { return NULL; }
+    }
+}
+- (BOOL)cancel {
+    [self revoke];_networkConfig=nil;
+    [_networkLock lock]; BOOL closed=NO;
+    @try { closed=[_network close]; } @catch(__unused NSException *e) { closed=NO; }
+    @finally { [_networkLock unlock]; } return closed;
+}
+- (void)revoke { [_stateLock lock];_cancelled=YES;wipeSessionKey(_key);[_stateLock unlock]; }
+- (void)dealloc { wipeSessionKey(_key); }
 @end
 static int authStep(void *p, enum fe36_io_event event, int64_t incarnation,
                     const uint8_t *bytes, size_t size, int64_t now, fe36_io_send send, void *context) {

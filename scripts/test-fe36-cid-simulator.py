@@ -17,6 +17,90 @@ CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_p
          'wrong_data_cid', 'reopened_cid', 'wrong_listener',
          'control_close', 'auth_disconnect', 'stop', 'background', 'deadline', 'send_failure', 'cleanup_failure', 'pending_stop',
          'late_cleanup_data')
+WIFI_CASES = ('wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_stop', 'wifi_expiry',
+              'wifi_malformed', 'wifi_unsupported', 'wifi_tcp_failure', 'wifi_disconnect',
+              'wifi_cleanup_failure')
+
+
+def wifi_negotiate(conn, h, guard, case, phase):
+    """Actual Nearby wire packets; injected loopback network, no WiFi hardware effects."""
+    cid = 0x2345
+
+    def tlv(tag, value=b''):
+        return h.ea(tag) + h.ea(len(value)) + value
+
+    def send(outer, payload):
+        frame = h.encrypted_frame(outer, payload, bytes(range(0xe1, 0xe9)))
+        for at in range(0, len(frame), 17):
+            h.send_packet(conn, 7, cid, frame[at:at + 17])
+
+    def receive(outer):
+        kind, channel, body = h.read_packet(conn)
+        h.check((kind, channel) == (7, cid), 'FE35 retained for authenticated WiFi negotiation')
+        got, encrypted, payload = h.decode_frame(body)
+        h.check((got, encrypted) == (outer, 1), 'actual encrypted Nearby WiFi frame')
+        return payload
+
+    phase('wifi-resource-request')
+    if case == 'wifi_malformed':
+        send(4, tlv(1, b'\x83'))  # missing required capability TLV
+        return
+    channel = 8 if case == 'wifi_unsupported' else 3
+    request = tlv(1, h.ea(channel) + tlv(3))
+    send(4, request)
+    if case == 'wifi_pending':
+        # Safe typed state marker is flushed by the actual C loop only after the common
+        # pending-request event. No arbitrary delay or new protocol/owner deadline.
+        status = guard.parent / 'fe35-cli-status.log'
+        bound = time.monotonic() + 2
+        while time.monotonic() < bound:
+            if status.exists() and 'BTSTACK_WIFI_NETWORK_PENDING' in status.read_text():
+                break
+            time.sleep(.005)
+        h.check(status.exists() and 'BTSTACK_WIFI_NETWORK_PENDING' in status.read_text(),
+                'actual common request is pending before network readiness')
+        h.check(not (guard / 'tcp-port').exists(), 'listener cannot start before confirmed negotiation')
+        (guard / 'network-ready').write_text('SYNTHETIC_READY\n', encoding='ascii')
+    reply = receive(4)
+    if case == 'wifi_unsupported':
+        h.check(reply == tlv(2, h.ea(8) + h.ea(255)), 'unsupported channel NO_CHANNEL')
+        (guard / 'stop').write_text('STOP\n', encoding='ascii')
+        return
+    expected = tlv(2, h.ea(3) + h.ea(1) + tlv(3, b'\x01' + h.ea(2437)))
+    h.check(reply == expected, 'pinned WiFi data-channel acceptance role and frequency')
+    if case == 'wifi_duplicate':
+        send(4, request)
+        h.check(receive(4) == expected, 'duplicate request repeats original frequency')
+    result = tlv(7, h.ea(3) + h.ea(1))
+    send(4, result)
+    h.check(receive(33) == tlv(1), 'network and listener ready before peer MAC request')
+    if case == 'wifi_duplicate':
+        send(4, result)  # must not create another listener/MAC request
+    send(33, tlv(2, b'02:12:34:56:78:9a'))
+    connection = receive(33)
+    port = int((guard / 'tcp-port').read_text())
+    expected_info = ('127.0.0.2##SYNTHETIC\n02:11:22:33:44:55\nsynthetic-pass\n2437'
+                     '##version:3##' + str(port) + '##hicarApIp:127.0.0.1').encode()
+    h.check(connection == tlv(3, expected_info), 'reference connection info uses actual listening TCP port')
+    phase('wifi-info-sent-control-still-owned')
+    if case == 'wifi_duplicate':
+        send(33, tlv(2, b'02:12:34:56:78:9a'))  # no second connection-info send
+    if case == 'wifi_stop':
+        (guard / 'stop').write_text('STOP\n', encoding='ascii')
+        return
+    if case == 'wifi_expiry':
+        return  # retain original owner deadline; cleanup parser waits for expiry, no new budget
+    if case == 'wifi_disconnect':
+        h.send_event(conn, 0x81, struct.pack('<H', cid))
+        return
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+        tcp.settimeout(6)
+        # This is the injected network proxy's real source, not configured phone WiFi.
+        # The negative case supplies a different trusted association to the actual C accept gate.
+        tcp.bind(('127.0.0.1', 0))
+        tcp.connect(('127.0.0.1', port))
+        phase('wifi-actual-tcp-connect')
+        h.check(tcp.recv(1) == b'', 'owned TCP boundary is closed at bounded slice completion')
 
 
 def consume_negative_auth_close(kind, channel, body, auth_cid):
@@ -99,7 +183,7 @@ def run_case(args, h, case):
         h.check((kind, channel, body) == (1, 0, struct.pack('<HB', 0xf400 | ocf, len(params)) + params),
                 'CID cleanup command component=' + hex(ocf))
 
-    def cleanup(conn, owned_auth=True, remote_auth_closed=False):
+    def cleanup(conn, owned_auth=True, remote_auth_closed=False, auth_services=True):
         step[0] = 'typed_cleanup'
         if owned_auth and not remote_auth_closed:
             command(conn, 0x41, struct.pack('<HB', auth_cid, 0))
@@ -108,10 +192,11 @@ def run_case(args, h, case):
                 h.check(conn.recv(1) == b'', 'pending verified candidate revoked before unacknowledged close')
                 return
             h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
-        command(conn, 0x31, struct.pack('<I', 0x10002))
-        command(conn, 0x43, bytes([17, 0]))
-        command(conn, 1, b'')
-        h.send_event(conn, 0x60, bytes([2]))
+        if auth_services:
+            command(conn, 0x31, struct.pack('<I', 0x10002))
+            command(conn, 0x43, bytes([17, 0]))
+            command(conn, 1, b'')
+            h.send_event(conn, 0x60, bytes([2]))
         command(conn, 0x41, struct.pack('<HB', control_cid, 0))
         if case == 'late_cleanup_data':
             # A real crypto candidate exists; this unexpected FE35 payload
@@ -250,9 +335,21 @@ def run_case(args, h, case):
                         terminal_auth_closed)
                     phase('auth-close-ack-0x81-sent')
                     break
-            h.check(case != 'success' or exchange == 3, 'complete handshake PAKE1 PAKE2 signed exchange')
+            h.check(case not in ('success',) + WIFI_CASES or exchange == 3,
+                    'complete handshake PAKE1 PAKE2 signed exchange')
         if case in ('wrong_pin', 'forged_signature'):
             h.check(terminal_auth_closed, 'negative auth terminal close acknowledged')
+        if case in WIFI_CASES:
+            phase('wifi-auth-cid-confirmed-release')
+            command(conn, 0x41, struct.pack('<HB', auth_cid, 0))
+            h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
+            command(conn, 0x31, struct.pack('<I', 0x10002))
+            command(conn, 0x43, bytes([17, 0]))
+            command(conn, 1, b'')
+            h.send_event(conn, 0x60, bytes([2]))
+            wifi_negotiate(conn, h, guard, case, phase)
+            cleanup(conn, owned_auth=False, auth_services=False)
+            return
         cleanup(conn, owned_auth=not terminal_auth_closed,
                 remote_auth_closed=terminal_auth_closed)
 
@@ -290,7 +387,8 @@ def run_case(args, h, case):
     h.check(result.exists() and result.read_text().strip() == '0', 'CID production-code assertions ' + case)
     trace = (guard / 'scan-events').read_text()
     h.check('CID_ASSERT_FAIL=' not in trace, 'all named CID assertions passed')
-    h.check(trace.count('TRUSTED_KEY_CALLBACK') == (1 if case == 'success' else 0), 'no key after failed/cancelled transport')
+    boundary = case in ('success', 'wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_cleanup_failure')
+    h.check(trace.count('TRUSTED_KEY_CALLBACK') == int(boundary), 'only bounded-auth or owned TCP boundary consumes key')
     h.check((guard / 'heartbeat').read_text() == 'POWER_DRIVER_OWNS_THIS\n', 'lease remains sole heartbeat owner')
     shutil.rmtree(guard)
     print('FE36_CID_TRANSPORT_AUTH_CASE_OK=' + case)
@@ -300,3 +398,6 @@ def run_all(args, harness):
     for case in CASES:
         run_case(args, harness, case)
     print('FE36_CID_TRANSPORT_AUTH_CASES_OK=' + str(len(CASES)))
+    for case in WIFI_CASES:
+        run_case(args, harness, case)
+    print('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=' + str(len(WIFI_CASES)))

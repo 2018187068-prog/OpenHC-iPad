@@ -86,7 +86,9 @@ fe35_scan_completion openhc_btstack_scan_inbound(
 /* Optional trusted, borrowed authentication binding, never populated from wire
  * input. step: 0=waiting, 1=verified candidate, -1=failed. SEND effects occur
  * outside bridge locks and must complete before step may return a candidate.
- * commit runs only after confirmed transport cleanup and a final owner poll;
+ * Bounded-auth commit runs after confirmed transport cleanup and a final owner poll.
+ * Explicit WiFi continuation commits privately after auth-CID/listener cleanup while
+ * retaining FE35, original owner/lease/deadline, and revocable continuing-session secret;
  * it must independently serialize owner/generation/deadline validation with
  * one-shot key delivery. An unconfigured binding must reject, never use defaults.
  * incarnation is assigned by this transport (not the daemon's reusable CID). */
@@ -102,5 +104,20 @@ typedef struct {
 fe35_scan_completion openhc_btstack_scan_auth_inbound(
     const char *run_dir, fe35_bridge_handle control_bridge,
     fe35_scan_transport *scan, fe36_auth_transport *auth);
+
+/* Explicit opt-in continuation; no default network provider. Provider owns its listener through
+ * cancel; C owns accepted TCP until final close. No detached session/key is returned. step returns
+ * a retained common batch, including empty waiting batches. Peer IPv4 is in network byte order.
+ * cancel must revoke secrets and release its resources; false delegates unknown cleanup. */
+enum fe35_wifi_io { FE35_WIFI_BEGIN, FE35_WIFI_NETWORK, FE35_WIFI_LISTEN, FE35_WIFI_ACCEPT };
+typedef struct {
+    void *context;
+    fe35_bridge_batch (*step)(void *, enum fe35_wifi_io, fe35_bridge_handle, int64_t now_ms,
+                              int accepted_fd, int *listener_fd, uint32_t *peer_ipv4);
+    bool (*cancel)(void *);
+} fe35_wifi_transport;
+fe35_scan_completion openhc_btstack_scan_wifi_inbound(
+    const char *run_dir, fe35_bridge_handle control_bridge,
+    fe35_scan_transport *scan, fe36_auth_transport *auth, fe35_wifi_transport *wifi);
 
 #endif

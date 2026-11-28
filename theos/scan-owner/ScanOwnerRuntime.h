@@ -3,6 +3,7 @@
 #include "ScanOwner.h"
 #import "ScanLeaseAdapter.h"
 #import "../Fe36AuthTransport.h"
+#import "../NearbyWifiTransport.h"
 NS_ASSUME_NONNULL_BEGIN
 typedef void (^OHCScanOwnerKeySink)(uint64_t ownerGeneration, int64_t commonGeneration,
                                     int64_t incarnation, const uint8_t key[_Nonnull 16]);
@@ -28,6 +29,11 @@ typedef void (^OHCScanOwnerKeySink)(uint64_t ownerGeneration, int64_t commonGene
  * sink is synchronous on owner executor and must not reenter the runtime. */
 - (BOOL)configureAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
     keySink:(OHCScanOwnerKeySink)sink;
+/* Alternative opt-in, once before START. Retains original control/owner/lease until an owned
+ * TCP boundary, then cleans up. No deployed provider and no encrypted TCP/media implementation.
+ * boundary is borrowed synchronous inspection, NOT a transferred live-session lease. */
+- (BOOL)configureContinuingAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    network:(id<OHCNearbyNetwork>)network boundary:(OHCWifiBoundary)boundary;
 /* Ownership of accepted fd transfers here. Nonblocking read, fresh kernel and
  * endpoint sampling each tick, fixed bounded grammar. No claimed identity. */
 - (void)acceptConnectedDescriptor:(int)fd;

@@ -749,8 +749,88 @@ static int auth_stream(int fd,const char *run_dir,fe36_auth_transport *auth,
     }
     return -1;
 }
+/* All effects stay on the existing synchronous transport worker. Provider only supplies an
+ * already owned listener/config; no radio configuration or detached lease is introduced. */
+static int wifi_batch(int fd,uint16_t cid,uint16_t mtu,fe35_bridge_batch batch,
+                       int *listen_requested,int *wait_tcp,int *accepted,int64_t deadline,const char *dir) {
+    if(!batch) return -1;
+    int failed=0;size_t count=fe35_bridge_event_count(batch);
+    if(count>FE35_BRIDGE_MAX_EVENTS) failed=1;
+    for(size_t i=0;!failed && i<count;i++) {
+        fe35_bridge_event e;
+        if(fe35_bridge_copy_event(batch,i,&e)) {failed=1;break;}
+        if(!strcmp(e.kind,"SEND_FRAME")) {
+            if(!e.frame_size || e.frame_size>FE35_BRIDGE_MAX_FRAME) failed=1;
+            for(size_t at=0;!failed && at<e.frame_size;) {
+                size_t n=e.frame_size-at;if(n>mtu)n=mtu;
+                if(scan_poll() || send_btstack_packet(fd,7,cid,e.frame+at,n,deadline,dir)) failed=1;
+                at+=n;
+            }
+        } else if(!strcmp(e.kind,"WIFI_LISTEN")) *listen_requested=1;
+        else if(!strcmp(e.kind,"WIFI_WAIT_TCP")) *wait_tcp=1;
+        else if(!strcmp(e.kind,"TCP_CONTROL_ACCEPTED")) *accepted=1;
+        else if(!strcmp(e.kind,"WIFI_NETWORK_REQUESTED")) {
+#ifdef OPENHC_FE35_SIMULATOR_TEST
+            puts("BTSTACK_WIFI_NETWORK_PENDING");fflush(stdout);
+#endif
+        } else if(strcmp(e.kind,"IGNORED_FRAME")) failed=1;
+        memset(&e,0,sizeof(e));
+    }
+    fe35_bridge_release_batch(batch);return failed?-1:0;
+}
+static int wifi_stream(int fd,const char *dir,fe35_bridge_handle bridge,fe35_wifi_transport *wifi,
+                         uint16_t cid,uint16_t mtu,int *tcp,int *disconnected,int *uncertain) {
+    int listener=-1,wants_listen=0,wait_tcp=0,accepted=0,reported_listen=0;
+    uint32_t peer=0;
+    int64_t last=now_ms();
+    if(wifi_batch(fd,cid,mtu,wifi->step(wifi->context,FE35_WIFI_BEGIN,bridge,last,-1,&listener,&peer),
+        &wants_listen,&wait_tcp,&accepted,last+4000,dir)) return -1;
+    for(unsigned iterations=0;iterations<20000;iterations++) {
+        int64_t now=now_ms();
+        if(now<last || scan_poll()) return -1;
+        last=now;
+        if(wifi_batch(fd,cid,mtu,fe35_bridge_tick(bridge,now),&wants_listen,&wait_tcp,&accepted,now+4000,dir)) return -1;
+        if(wifi_batch(fd,cid,mtu,wifi->step(wifi->context,FE35_WIFI_NETWORK,bridge,now,-1,&listener,&peer),
+            &wants_listen,&wait_tcp,&accepted,now+4000,dir)) return -1;
+        if(wants_listen && !reported_listen) {
+            reported_listen=1;
+            if(wifi_batch(fd,cid,mtu,wifi->step(wifi->context,FE35_WIFI_LISTEN,bridge,now,-1,&listener,&peer),
+                &wants_listen,&wait_tcp,&accepted,now+4000,dir)) return -1;
+            if(listener<0) return -1;
+        }
+        struct pollfd p[2]={{fd,POLLIN,0},{wait_tcp?listener:-1,POLLIN,0}};
+        int ready=poll(p,2,20);if(ready<0) {if(errno==EINTR)continue;return -1;}
+        /* Bluetooth cancellation/EOF always wins over an accept ready in the same poll. */
+        if(p[0].revents) {
+            uint8_t body[1024];uint16_t type,channel;size_t size;
+            if(receive_transport_packet(fd,UINT16_MAX,&type,&channel,body,&size,now+4000,dir)) return -1;
+            if(type==4) {
+                if(body[0]==0x81 && le16(body+2)==cid) *disconnected=1;
+                else *uncertain=1;
+                return -1; /* before accepted TCP, FE35 EOF is fatal */
+            }
+            if(type!=7 || channel!=cid || !size || size>mtu) {*uncertain=1;return -1;}
+            fe35_bridge_batch batch=fe35_bridge_feed(bridge,body,size);memset(body,0,sizeof(body));
+            if(wifi_batch(fd,cid,mtu,batch,&wants_listen,&wait_tcp,&accepted,now+4000,dir)) return -1;
+            continue; /* re-poll original owner before accepting TCP */
+        }
+        if(p[1].revents) {
+            if(!(p[1].revents&POLLIN) || scan_poll()) return -1;
+            struct sockaddr_in address={0};socklen_t size=sizeof(address);
+            *tcp=accept(listener,(struct sockaddr *)&address,&size);
+            if(*tcp<0 || size!=sizeof(address) || address.sin_family!=AF_INET ||
+               address.sin_addr.s_addr!=peer || fcntl(*tcp,F_SETFD,FD_CLOEXEC) ||
+               fcntl(*tcp,F_SETFL,O_NONBLOCK) || scan_poll()) return -1;
+            if(wifi_batch(fd,cid,mtu,wifi->step(wifi->context,FE35_WIFI_ACCEPT,bridge,now_ms(),*tcp,&listener,&peer),
+                &wants_listen,&wait_tcp,&accepted,now+4000,dir) || !accepted || scan_poll()) return -1;
+            return 0;
+        }
+    }
+    return -1;
+}
 static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge,
-                              fe35_scan_transport *scan, bool *cleanup_confirmed,fe36_auth_transport *auth) {
+                              fe35_scan_transport *scan, bool *cleanup_confirmed,fe36_auth_transport *auth,
+                              fe35_wifi_transport *wifi) {
     uint8_t state[3], reply[7], owned_channel = 0;
     uint32_t handle = 0;
     uint16_t cid = 0, packet_type = 0, packet_channel = 0, control_mtu=512;
@@ -760,13 +840,15 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     int auth_opened=0, auth_disconnected=0, auth_verified=0;
     size_t size = 0;
     int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
+    int tcp=-1;
     int listener_ready = 0, session_started = 0;
     int registration_pending = 0, cleanup_uncertain = 0;
     if (cleanup_confirmed) *cleanup_confirmed = false;
     unsigned status = 0;
     const char *stage = "GUARD";
     if (current_scan || (scan && (!scan->notify || scan->generation <= 0)) ||
-        (auth && (!scan || !auth->context || !auth->step || !auth->commit || !auth->cancel))) {
+        (auth && (!scan || !auth->context || !auth->step || !auth->commit || !auth->cancel)) ||
+        (wifi && (!auth || !wifi->context || !wifi->step || !wifi->cancel))) {
         if (bridge) fe35_bridge_close(bridge);
         return 1;
     }
@@ -937,7 +1019,23 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     if (session_started && listener_ready && (!auth || auth_verified)) {
         result = 0;
     } else stage = disconnected ? "CONTROL_DISCONNECTED_EARLY" : "SESSION_DEADLINE";
+    if(wifi && !result) {
+        stage="WIFI_AUTH_RELEASE";
+        uint8_t params[]={(uint8_t)auth_cid,(uint8_t)(auth_cid>>8),0};
+        if(!auth_cid || command(fd,0x41,params,sizeof(params),now_ms()+4000)) {result=1;goto done;}
+        if(receive_transport_packet(fd,auth_cid,&packet_type,&packet_channel,body,&size,now_ms()+4000,run_dir) ||
+            packet_type!=4 || body[0]!=0x81 || le16(body+2)!=auth_cid) {result=1;cleanup_uncertain=1;goto done;}
+        auth_disconnected=1;
+        if(close_auth_listener(fd,auth_channel,auth_handle)) {result=1;cleanup_uncertain=1;goto done;}
+        auth_channel=0;auth_handle=0;
+        /* This is private one-shot transfer into the continuing owner, not final success. */
+        if(scan_poll() || auth->commit(auth->context,1,now_ms()) || scan_poll()) {result=1;goto done;}
+        stage="WIFI_NEGOTIATION_TCP";
+        if(wifi_stream(fd,run_dir,bridge,wifi,cid,control_mtu,&tcp,&disconnected,&cleanup_uncertain)) result=1;
+    }
 done:
+    if(tcp>=0 && close(tcp)) {result=1;cleanup_uncertain=1;stage="WIFI_TCP_CLOSE_UNCONFIRMED";}
+    if(wifi && !wifi->cancel(wifi->context)) {result=1;cleanup_uncertain=1;stage="WIFI_NETWORK_CLEANUP_UNCONFIRMED";}
     /* Revoke pairing before touching resources. The common model emits CLOSE
      * once; a later CLEANED/failed callback cannot request a second cleanup. */
     if (scan && (!auth || result)) {
@@ -1018,8 +1116,8 @@ done:
                 !cleanup_uncertain && (!cid || opened || disconnected) &&
                 (!auth_cid || auth_disconnected);
         if (cleanup_confirmed) *cleanup_confirmed = confirmed;
-        if(auth && !result && (!confirmed || scan_poll() || auth->commit(auth->context,1,now_ms()))) {
-            result=1; stage="AUTH_COMMIT_REVOKED";
+        if(auth && !result && (!confirmed || scan_poll() || (!wifi && auth->commit(auth->context,1,now_ms())))) {
+            result=1; stage=wifi?"WIFI_COMPLETION_REVOKED":"AUTH_COMMIT_REVOKED";
         }
     }
     if(auth) {
@@ -1031,6 +1129,7 @@ done:
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
     else {
         puts("BTSTACK_FE35_BRIDGE_SESSION_OK");
+        if(wifi) puts("BTSTACK_NEARBY_TCP_BOUNDARY_CLEANED");
         if (disconnected) puts("BTSTACK_FE35_DISCONNECT_CONFIRMED");
     }
     if (bridge) fe35_bridge_close(bridge);
@@ -1062,7 +1161,7 @@ static int inbound_with_bridge(const char *path, const char *run_dir) {
         puts("BTSTACK_FE35_INBOUND_FAILED=BRIDGE_CREATE");
         return 1;
     }
-    return transport_inbound(path, run_dir, bridge, NULL, NULL,NULL);
+    return transport_inbound(path, run_dir, bridge, NULL, NULL,NULL,NULL);
 }
 
 fe35_scan_completion openhc_btstack_scan_inbound(const char *run_dir, fe35_bridge_handle bridge,
@@ -1071,6 +1170,10 @@ fe35_scan_completion openhc_btstack_scan_inbound(const char *run_dir, fe35_bridg
 }
 fe35_scan_completion openhc_btstack_scan_auth_inbound(const char *run_dir, fe35_bridge_handle bridge,
                                                 fe35_scan_transport *scan,fe36_auth_transport *auth) {
+    return openhc_btstack_scan_wifi_inbound(run_dir,bridge,scan,auth,NULL);
+}
+fe35_scan_completion openhc_btstack_scan_wifi_inbound(const char *run_dir, fe35_bridge_handle bridge,
+    fe35_scan_transport *scan,fe36_auth_transport *auth,fe35_wifi_transport *wifi) {
     fe35_scan_completion completion = { .returned = true, .cleanup_confirmed = false, .status = 1 };
     if (!scan) { if (bridge) fe35_bridge_close(bridge); return completion; }
 #ifdef OPENHC_FE35_SIMULATOR_TEST
@@ -1079,7 +1182,7 @@ fe35_scan_completion openhc_btstack_scan_auth_inbound(const char *run_dir, fe35_
 #else
     const char *path = "/tmp/BTstack";
 #endif
-    completion.status = transport_inbound(path, run_dir, bridge, scan, &completion.cleanup_confirmed,auth);
+    completion.status = transport_inbound(path, run_dir, bridge, scan, &completion.cleanup_confirmed,auth,wifi);
     return completion;
 }
 

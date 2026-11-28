@@ -4,6 +4,7 @@ import io.github.gcbond.openhc.core.nearby.Fe35NearbyControlSession
 import io.github.gcbond.openhc.core.nearby.Fe35RandomSource
 import io.github.gcbond.openhc.core.nearby.Fe35SessionEvent
 import io.github.gcbond.openhc.core.nearby.nearbySecureRandomBytes
+import io.github.gcbond.openhc.core.nearby.WifiNetworkConfig
 
 /** Copy-owning event DTO exported by the iOS framework. Payload bytes are never logged. */
 class Fe35ControlBridgeEvent internal constructor(event: Fe35SessionEvent) {
@@ -51,6 +52,15 @@ class Fe35ControlBridge private constructor(
         invoke { session.onAuthListenerReady(channel) }
 
     fun tick(nowMillis: Long): List<Fe35ControlBridgeEvent> = invoke { session.onTick(nowMillis) }
+
+    fun authenticated(generation: Long, connection: Long, deadlineMillis: Long, nowMillis: Long): List<Fe35ControlBridgeEvent> =
+        invoke { session.authenticated(generation, connection, deadlineMillis, nowMillis) }
+    fun networkReady(generation: Long, connection: Long, info: WifiNetworkConfig, nowMillis: Long): List<Fe35ControlBridgeEvent> =
+        invoke { session.networkReady(generation, connection, info, nowMillis) }
+    fun wifiListening(generation: Long, connection: Long, port: Int, nowMillis: Long): List<Fe35ControlBridgeEvent> =
+        invoke { session.wifiListening(generation, connection, port, nowMillis) }
+    fun tcpAccepted(generation: Long, connection: Long, nowMillis: Long): List<Fe35ControlBridgeEvent> =
+        invoke { session.tcpAccepted(generation, connection, nowMillis) }
 
     fun close() = lock.withLock {
         if (!closed) {

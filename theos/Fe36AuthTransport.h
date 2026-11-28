@@ -5,8 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 @class OHCFe36AuthTransport;
 /* Internal borrowed key, valid for callback duration only. No diagnostic/event
  * representation. This is not a radio/network grant or a transferred lease.
- * A future next stage must copy privately and own cancellation/lease transfer;
- * the current bounded scan worker still tears down and returns to its guard. */
+ * Bounded callers tear down before delivery. The explicit WiFi continuation copies privately
+ * under the SAME owner/deadline, retains FE35 through TCP acceptance, then tears down.
+ * Neither callback transfers a durable live-session lease. */
 typedef void (^OHCFe36KeySink)(int64_t generation, int64_t incarnation, const uint8_t key[_Nonnull 16]);
 @interface OHCFe36AuthTransport : NSObject
 - (instancetype)init NS_UNAVAILABLE;

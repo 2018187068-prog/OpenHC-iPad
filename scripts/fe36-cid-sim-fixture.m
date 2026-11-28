@@ -13,6 +13,49 @@ NSData *openhc_fe36_transport_phone(OHCBScanReceiverEvent *,int,int);
 @interface OHCCIDLease : NSObject <OHCScanLeaseAdapter>
 @property(nonatomic,copy) NSString *privateRunDirectory;
 @end
+#include <fcntl.h>
+/* Injected local network only. Exercises actual listen/accept ownership; never configures WiFi. */
+@interface OHCCIDNetwork : NSObject <OHCNearbyNetwork>
+@property(nonatomic,copy) NSString *directory;
+@property(nonatomic,copy) NSString *scenario;
+@property(nonatomic) int socketFD;
+@property(nonatomic,strong) OHCBWifiNetworkConfig *info;
+@end
+@implementation OHCCIDNetwork
+- (instancetype)init { if((self=[super init])) _socketFD=-1;return self; }
+- (OHCBWifiNetworkConfig *)poll {
+    if([_scenario isEqualToString:@"wifi_pending"] &&
+       access([[_directory stringByAppendingPathComponent:@"network-ready"] fileSystemRepresentation],F_OK)) return nil;
+    if(!_info) _info=[[OHCBWifiNetworkConfig alloc] initWithMode:OHCBWifiMode.direct phoneIp:@"127.0.0.2"
+        ssid:@"SYNTHETIC" bssid:@"02:11:22:33:44:55" passphrase:@"synthetic-pass"
+        frequencyMhz:2437 carIp:@"127.0.0.1"];
+    return _info;
+}
+- (int)openListener {
+    if(_socketFD>=0) return -1;
+    int fd=socket(AF_INET,SOCK_STREAM,0);struct sockaddr_in local={0};
+    local.sin_family=AF_INET;local.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    socklen_t size=sizeof(local);
+    if(fd<0 || bind(fd,(struct sockaddr *)&local,size) || listen(fd,1) ||
+       getsockname(fd,(struct sockaddr *)&local,&size) ||
+       fcntl(fd,F_SETFD,FD_CLOEXEC) || fcntl(fd,F_SETFL,O_NONBLOCK)) {
+        if(fd>=0)close(fd);[NSException raise:@"CIDNetwork" format:@"synthetic-listener"];return -1;
+    }
+    _socketFD=fd;
+    [[NSString stringWithFormat:@"%u",(unsigned)ntohs(local.sin_port)] writeToFile:
+        [_directory stringByAppendingPathComponent:@"tcp-port"] atomically:YES encoding:NSASCIIStringEncoding error:NULL];
+    return fd;
+}
+- (BOOL)close {
+    BOOL result=YES;if(_socketFD>=0) {result=close(_socketFD)==0;_socketFD=-1;}_info=nil;
+    return result && ![_scenario isEqualToString:@"wifi_cleanup_failure"];
+}
+- (NSString *)acceptedPeerIPv4 {
+    /* Loopback proxy address, not the advertised phone's synthetic assigned WiFi address.
+     * No loopback alias/interface mutation is needed on macOS. Wrong peer remains real C reject. */
+    return [_scenario isEqualToString:@"wifi_tcp_failure"]?@"192.0.2.99":@"127.0.0.1";
+}
+@end
 @implementation OHCCIDLease
 - (void)arm:(uint64_t)g deadline:(int64_t)d result:(void (^)(BOOL))r { (void)g;(void)d;r(YES); }
 - (void)takeover:(uint64_t)g result:(void (^)(BOOL))r { (void)g;r(YES); }
@@ -27,7 +70,9 @@ static int rejectSend(void *context,const uint8_t *bytes,size_t size) {
 }
 int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     NSString *name=[NSString stringWithUTF8String:scenario],*directory=[NSString stringWithUTF8String:run_dir];
-    BOOL cryptoCase=[@[@"success",@"wrong_pin",@"forged_signature",@"cleanup_failure",@"pending_stop",@"late_cleanup_data"] containsObject:name];
+    BOOL wifiCase=[name hasPrefix:@"wifi_"];
+    BOOL boundaryCase=[@[@"wifi_success",@"wifi_pending",@"wifi_duplicate",@"wifi_cleanup_failure"] containsObject:name];
+    BOOL cryptoCase=wifiCase || [@[@"success",@"wrong_pin",@"forged_signature",@"cleanup_failure",@"pending_stop",@"late_cleanup_data"] containsObject:name];
     __block _Atomic int invalid=0;
     FILE *trace=fopen([[directory stringByAppendingPathComponent:@"scan-events"] fileSystemRepresentation],"w");
     if(!trace) return 91;
@@ -47,12 +92,41 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     NSLock *secretLock=[NSLock new];
     __block NSData *receivedKey=nil,*expectedKey=nil;
     __block int keys=0,handed=0,cleared=0;
-    CID_CHECK([runtime configureAuthentication:auth trust:trust keySink:^(uint64_t ownerGeneration,int64_t generation,int64_t incarnation,const uint8_t key[16]) {
+    __block BOOL completed=NO;
+    OHCScanOwnerKeySink recordKey=^(uint64_t ownerGeneration,int64_t generation,int64_t incarnation,const uint8_t key[16]) {
         CID_CHECK(ownerGeneration==1 && generation==1 && incarnation==1,"trusted_generation_incarnation");
         CID_CHECK(cleared>=1 && handed==1,"authority_cleared_before_key_callback");
         [secretLock lock];keys++;receivedKey=[NSData dataWithBytes:key length:16];[secretLock unlock];
         fprintf(trace,"TRUSTED_KEY_CALLBACK\n");fflush(trace);
-    }],"explicit_trusted_configuration");
+    };
+    if(wifiCase) {
+        OHCCIDNetwork *network=[OHCCIDNetwork new];network.directory=directory;network.scenario=name;
+        CID_CHECK([runtime configureContinuingAuthentication:auth trust:trust network:network
+            boundary:^BOOL(uint64_t ownerGeneration,int64_t generation,int64_t incarnation,int fd,const uint8_t key[16]) {
+                struct sockaddr_in address={0};socklen_t size=sizeof(address);
+                CID_CHECK(!getpeername(fd,(struct sockaddr *)&address,&size) && address.sin_family==AF_INET,
+                    "actual_owned_tcp_accept");
+                CID_CHECK(!completed,"tcp_boundary_before_worker_completion");
+                recordKey(ownerGeneration,generation,incarnation,key);
+                /* Actual private adapter replay/revoke contract, on the serial executor.
+                 * This probe has synthetic bytes and does not grant another auth/lease. */
+                OHCNearbyWifiTransport *probe=[[OHCNearbyWifiTransport alloc] initWithNetwork:network
+                    accept:^BOOL(OHCNearbyWifiTransport *p,int f,int64_t n) {(void)p;(void)f;(void)n;return NO;}];
+                CID_CHECK([probe handoffGeneration:1 deadline:100],"continuation_probe_captured_deadline");
+                CID_CHECK(![probe handoffGeneration:2 deadline:200],"continuation_handoff_replay_rejected");
+                CID_CHECK([probe storeKey:key] && ![probe storeKey:key],"continuation_key_transfer_one_shot");
+                __block int calls=0;
+                OHCWifiBoundary once=^BOOL(uint64_t o,int64_t g,int64_t c,int f,const uint8_t k[16]) {
+                    (void)o;(void)g;(void)c;(void)f;(void)k;calls++;return YES;
+                };
+                CID_CHECK([probe deliverTo:once owner:1 descriptor:fd] &&
+                    ![probe deliverTo:once owner:1 descriptor:fd] && calls==1,"continuation_key_delivery_one_shot");
+                [probe revoke];
+                CID_CHECK(![probe storeKey:key] && ![probe deliverTo:once owner:1 descriptor:fd],
+                    "continuation_cancel_denies_late_transfer_and_callback");
+                fprintf(trace,"OWNED_TCP_CONTROL_BOUNDARY\n");fflush(trace);return YES;
+            }],"explicit_continuing_configuration");
+    } else CID_CHECK([runtime configureAuthentication:auth trust:trust keySink:recordKey],"explicit_trusted_configuration");
     __block NSString *originalPIN=nil;
     runtime.events=^(NSArray<OHCBScanReceiverEvent *> *events) {
         for(OHCBScanReceiverEvent *event in events) {
@@ -102,11 +176,12 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
             }
         } fflush(trace);
     };
-    __block BOOL completed=NO;
     runtime.finished=^(fe35_scan_completion c,BOOL delegated) {
-        BOOL success=[name isEqualToString:@"success"];
+        BOOL success=[name isEqualToString:@"success"] ||
+            [@[@"wifi_success",@"wifi_pending",@"wifi_duplicate"] containsObject:name];
         BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"late_cleanup_data",@"wrong_peer",
-            @"wrong_cid",@"control_cid_reuse",@"extra_connection",@"wrong_listener",@"wrong_data_cid",@"reopened_cid"] containsObject:name];
+            @"wrong_cid",@"control_cid_reuse",@"extra_connection",@"wrong_listener",@"wrong_data_cid",@"reopened_cid",
+            @"wifi_cleanup_failure"] containsObject:name];
         CID_CHECK(c.returned && c.status==(success?0:1),"typed_protocol_completion");
         CID_CHECK(c.cleanup_confirmed==!uncertain,"independent_cleanup_certainty");
         CID_CHECK(delegated==uncertain,"uncertainty_delegates");
@@ -132,7 +207,7 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     if(cryptoCase) CID_CHECK(!dispatch_semaphore_wait(phoneDone,dispatch_time(DISPATCH_TIME_NOW,8*NSEC_PER_SEC)),"phone_completed");
     CID_CHECK(runtime.testHandoffCount==1,"final_executor_barrier");
     [secretLock lock];
-    BOOL success=[name isEqualToString:@"success"];
+    BOOL success=[name isEqualToString:@"success"] || boundaryCase;
     CID_CHECK(keys==(success?1:0),"key_once_only_on_verified_current_success");
     if(success) CID_CHECK(expectedKey.length==16 && [expectedKey isEqual:receivedKey],"actual_transport_same_pin_key_matches_phone");
     else CID_CHECK(receivedKey==nil,"cancelled_no_key");

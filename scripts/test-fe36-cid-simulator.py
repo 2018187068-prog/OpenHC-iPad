@@ -130,6 +130,7 @@ def run_case(args, h, case):
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
             return  # Actual reset; send/read/cleanup must fail without key.
         step[0] = 'same_pin_real_crypto_proxy'
+        terminal_auth_closed = False
         with phone.accept()[0] as peer_socket:
             peer_socket.settimeout(6)
             for exchange in range(4):
@@ -146,7 +147,20 @@ def run_case(args, h, case):
                 while True:
                     kind, channel, body = h.read_packet(conn)
                     if kind == 1:
-                        pending.append((kind, channel, body))
+                        # A negative authenticator result is followed by the
+                        # production transport's typed auth-CID close. That
+                        # close is the terminal acknowledgement for this
+                        # exchange and must not be replayed into cleanup(),
+                        # which would wait for a second close and then report
+                        # a misleading EOF. Preserve unrelated commands for
+                        # the normal cleanup parser.
+                        if (len(body) >= 5 and
+                                body[:2] == struct.pack('<H', 0xf441) and
+                                body[2:4] == struct.pack('<H', auth_cid) and
+                                body[4] == 0):
+                            terminal_auth_closed = True
+                        else:
+                            pending.append((kind, channel, body))
                         failed = True
                         break
                     h.check((kind, channel) == (7, auth_cid) and 0 < len(body) <= 37,
@@ -165,7 +179,10 @@ def run_case(args, h, case):
                     h.check(case in ('wrong_pin', 'forged_signature'), 'positive pairing cannot terminate before reply')
                     break
             h.check(case != 'success' or exchange == 3, 'complete handshake PAKE1 PAKE2 signed exchange')
-        cleanup(conn)
+        if case in ('wrong_pin', 'forged_signature'):
+            h.check(terminal_auth_closed, 'negative auth terminal close acknowledged')
+        cleanup(conn, owned_auth=not terminal_auth_closed,
+                remote_auth_closed=terminal_auth_closed)
 
     def serve():
         try:

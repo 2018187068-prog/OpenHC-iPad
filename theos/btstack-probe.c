@@ -895,6 +895,25 @@ static int wifi_stream(int fd,const char *dir,fe35_bridge_handle bridge,fe35_wif
     }
     return -1;
 }
+static const char *inbound_primary_stage(const char *stage) {
+    /* Fixed labels only; never render transport bytes or exception text. */
+    static const char *const labels[] = {
+        "GUARD", "CONNECT", "STATE", "RFCOMM_LISTEN", "RFCOMM_CHANNELS_BUSY",
+        "FE35_SDP", "INCOMING_TIMEOUT", "INCOMING_EVENT_REJECTED",
+        "INCOMING_EVENT_SHAPE", "INCOMING_CID_INVALID", "RFCOMM_ACCEPT",
+        "INCOMING_OPEN", "OPEN_EVENT_REJECTED", "ACCEPT_FAILED",
+        "INCOMING_OPEN_PROFILE", "BRIDGE_START", "CONTROL_STREAM",
+        "BRIDGE_TICK_FAILED", "HANDSHAKE_TIMEOUT", "CONTROL_PACKET_REJECTED",
+        "CONTROL_IO", "CONTROL_PACKET_SHAPE", "BRIDGE_FEED_FAILED",
+        "BRIDGE_EVENT_INVALID", "BRIDGE_EVENT_DISPATCH", "AUTH_STREAM",
+        "CONTROL_DISCONNECTED_EARLY", "SESSION_DEADLINE",
+        "WIFI_AUTH_RELEASE", "WIFI_NEGOTIATION_TCP"
+    };
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i)
+        if (stage && strcmp(stage, labels[i]) == 0) return labels[i];
+    return "UNCLASSIFIED";
+}
+
 static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_handle bridge,
                               fe35_scan_transport *scan, bool *cleanup_confirmed,fe36_auth_transport *auth,
                               fe35_wifi_transport *wifi) {
@@ -1101,7 +1120,10 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         stage="WIFI_NEGOTIATION_TCP";
         if(wifi_stream(fd,run_dir,bridge,wifi,cid,control_mtu,&tcp,&disconnected,&tcp_control_settled,&cleanup_uncertain)) result=1;
     }
-done:
+done:;
+    /* Immutable pre-cleanup observation. Final failure/cleanup certainty below
+     * remains independent. No packet-loop IO or protocol/timing changes. */
+    const char *const primary_failure_stage = result ? inbound_primary_stage(stage) : "NONE";
     if(tcp>=0 && close(tcp)) {result=1;cleanup_uncertain=1;stage="WIFI_TCP_CLOSE_UNCONFIRMED";}
     if(wifi && !wifi->cancel(wifi->context)) {result=1;cleanup_uncertain=1;stage="WIFI_NETWORK_CLEANUP_UNCONFIRMED";}
     /* Revoke pairing before touching resources. The common model emits CLOSE
@@ -1194,6 +1216,7 @@ done:
     }
     current_scan=NULL; auth_strict_exchange=0;
     memset(peer,0,sizeof(peer));
+    printf("BTSTACK_FE35_INBOUND_PRIMARY_STAGE=%s\n", primary_failure_stage);
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
     else {
         puts("BTSTACK_FE35_BRIDGE_SESSION_OK");

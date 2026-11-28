@@ -70,6 +70,7 @@ def safe_label(value):
         'listener cannot start before confirmed negotiation': 'wifi-listener-premature',
         'owned TCP boundary is closed at bounded slice completion': 'wifi-tcp-close',
         'CID fixture launch': 'fixture-launch',
+        'diagnostic capacity retained': 'diagnostic-capacity',
         'CID transport socket released': 'transport-socket-release',
         'complete handshake PAKE1 PAKE2 signed exchange': 'auth-exchange-complete',
         'negative auth terminal close acknowledged': 'auth-negative-close-ack',
@@ -142,6 +143,33 @@ def safe_exception_name(error):
              'ValueError', 'UnicodeError', 'struct.error'}
     name = type(error).__name__
     return name if name in known else 'other'
+
+
+def observe_early_packet(branch, kind, channel, size, opcode, length, phase):
+    # Fixed branch names and numeric fields only: no payload or exception text.
+    if branch not in ('initial-state', 'control-listener', 'control-sdp',
+                      'incoming-accept', 'bridge-start'):
+        raise ValueError('unknown early packet branch')
+    fields = (kind, channel, size, opcode, length)
+    if any(value is not None and (type(value) is not int or not 0 <= value <= 65535)
+           for value in fields):
+        raise ValueError('invalid early packet metadata')
+    phase('early-' + branch + '-kind-' + str(kind) + '-channel-' + str(channel) +
+          '-size-' + str(size) + '-opcode-' + ('unavailable' if opcode is None else str(opcode)) +
+          '-declared-length-' + ('unavailable' if length is None else str(length)))
+
+
+def flush_proxy_evidence(guard, diagnostics, timings):
+    # Called only after socket/thread teardown; no diagnostic disk IO in the
+    # incoming/open critical path. Even early launch/protocol errors get a flush.
+    failed = False
+    for name, lines in (('proxy-phases.log', diagnostics), ('proxy-timing.log', timings)):
+        try:
+            (guard / name).write_text('\n'.join(lines) + '\n', encoding='ascii')
+        except OSError:
+            failed = True
+    if failed:
+        raise OSError('proxy-evidence-write-failed')
 
 
 def observe_handshake_packet(kind, channel, body, crc16, phase):
@@ -446,14 +474,19 @@ def _run_case(args, h, case, isolation):
     errors, step = [], ['accept']
     diagnostics = []
     timings = []
+    diagnostic_overflow = [False]
     def phase(label):
         step[0] = label
         if diagnostics and diagnostics[-1] == label:
             return
+        if len(diagnostics) >= 4095:
+            if not diagnostic_overflow[0]:
+                diagnostic_overflow[0] = True
+                diagnostics.append('diagnostic-capacity-exceeded')
+                timings.append(str(time.monotonic_ns()) + ' diagnostic-capacity-exceeded')
+            return
         diagnostics.append(label)
-        (guard / 'proxy-phases.log').write_text('\n'.join(diagnostics) + '\n', encoding='ascii')
         timings.append(str(time.monotonic_ns()) + ' ' + label)
-        (guard / 'proxy-timing.log').write_text('\n'.join(timings) + '\n', encoding='ascii')
     pending = []
     socket_lock = threading.Lock()
     sockets, closing = [daemon, phone], [False]
@@ -656,7 +689,9 @@ def _run_case(args, h, case, isolation):
                 conn.settimeout(6)
                 h.drive_peer(conn, 'success', phase, auth_flow=flow,
                              observe_packet=lambda k, c, b: observe_handshake_packet(
-                                 k, c, b, h.crc16_arc, phase))
+                                 k, c, b, h.crc16_arc, phase),
+                             observe_early=lambda branch, k, c, s, o, n: observe_early_packet(
+                                 branch, k, c, s, o, n, phase))
         except Exception as error:
             label = safe_label(str(error)) if isinstance(error, AssertionError) else 'none'
             errors.append((step[0], safe_exception_name(error), label))
@@ -708,13 +743,17 @@ def _run_case(args, h, case, isolation):
                 isolation['failure_label'] = 'host-process-observation-failed'
             isolation['safe'] = isolation['thread_stopped'] and isolation['process_exited']
         finally:
-            h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
-            destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
-            for name in ('proxy-phases.log', 'proxy-timing.log'):
-                if (guard / name).is_file():
-                    shutil.copyfile(guard / name, destination / name)
+            try:
+                flush_proxy_evidence(guard, list(diagnostics), list(timings))
+            finally:
+                h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
+                destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
+                for name in ('proxy-phases.log', 'proxy-timing.log'):
+                    if (guard / name).is_file():
+                        shutil.copyfile(guard / name, destination / name)
     if not isolation.get('safe'):
         raise UnsafeCaseFailure(isolation.get('failure_label', 'process-or-daemon-still-live'))
+    h.check(not diagnostic_overflow[0], 'diagnostic capacity retained')
     h.check(not thread.is_alive() and not errors, 'CID daemon completed: ' + repr(errors))
     h.check(result.exists() and result.read_text().strip() == '0', 'CID production-code assertions ' + case)
     trace = (guard / 'scan-events').read_text()

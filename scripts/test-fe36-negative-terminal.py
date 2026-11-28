@@ -149,7 +149,8 @@ def loopback_negative(case, code, cleanup_failure=False):
             return SimpleNamespace(returncode=0, stdout='synthetic: 12345\n')
         harness = SimpleNamespace(ROOT=root, check=checked, exact=base.exact, read_packet=base.read_packet,
             send_packet=base.send_packet, send_event=base.send_event, read_command=base.read_command,
-            drive_peer=lambda conn, case, phase, auth_flow, observe_packet=None: auth_flow(conn))
+            # This negative-auth-only substitute has no early inbound reads.
+            drive_peer=lambda conn, case, phase, auth_flow, observe_packet=None, observe_early=None: auth_flow(conn))
         def preserve(documents, guard, label):
             (root / 'artifacts/scan-owner/simulator-cases' / label).mkdir(parents=True, exist_ok=True)
         harness.preserve_case_evidence = preserve

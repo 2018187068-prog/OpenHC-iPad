@@ -256,7 +256,6 @@ class EvidenceTests(unittest.TestCase):
             def launch(*_, **__):
                 guard = root / 'Documents/auth-cid-wrong_pin'
                 (guard / 'scan-events').write_text('CID_PHONE_EXCEPTION name=AuthFixture reason=static-assertion\n')
-                (guard / 'proxy-phases.log').write_text('exchange-2-phone-response-write\n')
                 if exception:
                     raise subprocess.TimeoutExpired('synthetic', 30)
                 return subprocess.CompletedProcess([], 1)
@@ -266,7 +265,10 @@ class EvidenceTests(unittest.TestCase):
                     cid.run_case(args, sim, 'wrong_pin')
             evidence = root / 'artifacts/scan-owner/simulator-cases/fe36-cid-wrong_pin'
             self.assertIn('AuthFixture', (evidence / 'scan-events').read_text())
-            self.assertEqual((evidence / 'proxy-phases.log').read_text(), 'exchange-2-phone-response-write\n')
+            # Injected Thread never starts: the finally flush must still persist
+            # the empty in-memory observation, rather than invent peer progress.
+            self.assertEqual((evidence / 'proxy-phases.log').read_text(), '\n')
+            self.assertEqual((evidence / 'proxy-timing.log').read_text(), '\n')
 
     def test_cid_launch_failure(self): self.cid_failure(False)
     def test_cid_launch_exception(self): self.cid_failure(True)

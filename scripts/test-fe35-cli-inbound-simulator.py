@@ -94,9 +94,15 @@ def exact(conn, count):
     return bytes(result)
 
 
-def read_packet(conn):
+def read_packet(conn, observe_typed=None):
     kind, channel, size = struct.unpack("<HHH", exact(conn, 6))
-    return kind, channel, exact(conn, size)
+    if observe_typed is not None:
+        observe_typed(kind, channel, size, None, None)
+    body = exact(conn, size)
+    if observe_typed is not None and kind == 1 and size >= 3:
+        opcode, length = struct.unpack("<HB", body[:3])
+        observe_typed(kind, channel, size, opcode, length)
+    return kind, channel, body
 
 
 def send_packet(conn, kind, channel, body):
@@ -107,12 +113,22 @@ def send_event(conn, code, params):
     send_packet(conn, 4, 0, bytes([code, len(params)]) + params)
 
 
-def read_command(conn, ocf, params):
+def read_command(conn, ocf, params, observe_typed=None):
     kind, channel, size = struct.unpack("<HHH", exact(conn, 6))
+    prefix = b""
+    if observe_typed is not None:
+        observe_typed(kind, channel, size, None, None)
+        # Capture only the fixed command header before the unchanged shape
+        # assertion. Never drain or accept an unexpected cleanup command.
+        # This uses the existing socket bound, with no retry or new timeout.
+        if kind == 1 and size >= 3:
+            prefix = exact(conn, 3)
+            opcode, length = struct.unpack("<HB", prefix)
+            observe_typed(kind, channel, size, opcode, length)
     check((kind, channel, size) == (1, 0, len(params) + 3),
           "command header expected_ocf=" + hex(0xF400 | ocf) +
           " actual=(kind=" + str(kind) + ",channel=" + str(channel) + ",size=" + str(size) + ")")
-    packet = exact(conn, size)
+    packet = prefix + exact(conn, size - len(prefix))
     opcode, length = struct.unpack("<HB", packet[:3])
     body = packet[3:]
     check(opcode == (0xF400 | ocf), "command opcode")
@@ -207,8 +223,8 @@ def assert_service_record(params, uuid, channel):
     check(b"\x09\x00\x04\x35\x0c" in params, "SDP protocol descriptor")
 
 
-def register_channel(conn, channel, status):
-    read_command(conn, 0x42, bytes([channel, 0, 2]))
+def register_channel(conn, channel, status, observe_typed=None):
+    read_command(conn, 0x42, bytes([channel, 0, 2]), observe_typed)
     send_event(conn, 0x85, bytes([status, channel]))
 
 
@@ -229,16 +245,21 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
     send_event(conn, 0x60, bytes([2]))
 
 
-def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None):
+def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None, observe_early=None):
+    def early(branch):
+        if observe_early is None:
+            return None
+        return lambda k, c, s, o, n: observe_early(branch, k, c, s, o, n)
+
     set_step("initial_state")
     conn.settimeout(4)
-    read_command(conn, 1, b"")
+    read_command(conn, 1, b"", early('initial-state'))
     send_event(conn, 0x60, bytes([2]))
     set_step("register_control_channel")
-    register_channel(conn, 16, 0)
+    register_channel(conn, 16, 0, early('control-listener'))
 
     set_step("register_fe35_sdp")
-    kind, channel, sdp = read_packet(conn)
+    kind, channel, sdp = read_packet(conn, early('control-sdp'))
     check((kind, channel, sdp[:3]) == (1, 0, bytes([0x30, 0xf4, len(sdp) - 3])), "control SDP command")
     check(b"\x19\xfe\x35" in sdp[3:], "FE35 service registration")
     assert_service_record(sdp[3:], b"\x19\xfe\x35", 16)
@@ -251,11 +272,11 @@ def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None):
     cid = 0x2345
     set_step("incoming_and_open")
     send_event(conn, 0x82, bytes.fromhex("a1a2a3a4a5a6") + bytes([16]) + struct.pack("<H", cid))
-    read_command(conn, 0x44, struct.pack("<H", cid))
+    read_command(conn, 0x44, struct.pack("<H", cid), early('incoming-accept'))
     send_event(conn, 0x80, bytes([0]) + bytes.fromhex("a1a2a3a4a5a6" if auth_flow else "010203040506") +
                struct.pack("<H", 0x5678) + bytes([16]) + struct.pack("<HHB", cid, 512, 1))
 
-    kind, channel, start = read_packet(conn)
+    kind, channel, start = read_packet(conn, early('bridge-start'))
     set_step("bridge_start")
     check((kind, channel) == (7, cid), "bridge start transport header")
     start_outer, start_flag, _ = decode_frame(start)

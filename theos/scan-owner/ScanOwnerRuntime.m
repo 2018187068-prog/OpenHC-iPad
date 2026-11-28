@@ -287,7 +287,7 @@ disconnect:
                     });return accepted;
                 }];
             if(!_wifiTransport) {[self failedLaunch:93];return;}
-            if(_liveControl && ![_wifiTransport enableLiveControl:&_input]) {[self failedLaunch:93];return;}
+            if(_liveControl && ![_wifiTransport enableLiveControl:&_input receiverConfig:_config]) {[self failedLaunch:93];return;}
         }
         _authTransport=[[OHCFe36AuthTransport alloc] initWithConfig:_authConfig trust:_authTrust
             commit:^BOOL(OHCFe36AuthTransport *adapter,int64_t incarnation,int64_t now) {

@@ -47,6 +47,7 @@ for name in (
     'theos/Fe36AuthTransport.h',
     'theos/NearbyWifiTransport.h', 'theos/NearbyWifiListener.h', 'theos/NearbyReceiverSockets.h',
     'scripts/nearby-receiver-sockets-test.c', 'docs/FE36-RECEIVER-SETUP-LIFECYCLE.md',
+    'docs/FE36-DEVICE-MESSAGES.md',
     'scripts/test-nearby-wifi-harness.py', 'scripts/test-nearby-wifi-listener.py',
     'scripts/nearby-wifi-listener-test.c', 'docs/FE36-NEARBY-LISTENER-CORRECTION.md',
     'scripts/nearby-tcp-test-phone.py', 'docs/FE36-LIVE-TCP-CONTROL.md',

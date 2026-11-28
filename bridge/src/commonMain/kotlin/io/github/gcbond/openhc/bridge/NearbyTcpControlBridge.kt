@@ -8,6 +8,8 @@ import io.github.gcbond.openhc.core.nearby.*
  * No timer or detached key creates new authority. */
 class NearbyTcpControlBridge(deviceIdText: String, rootKey: ByteArray, constA: ByteArray, constB: ByteArray) {
     private val lock = Fe35ControlBridgeLock()
+    private val expectedDeviceId=deviceIdText
+    private var receiverConfigured=false
     private val session = Fe35NearbyControlSession(deviceIdText, rootKey, constA, constB,
         Fe35RandomSource(::nearbySecureRandomBytes), wifiControl = true)
     private var key: ByteArray? = null
@@ -24,6 +26,11 @@ class NearbyTcpControlBridge(deviceIdText: String, rootKey: ByteArray, constA: B
     private val receiver = NearbyReceiverLifecycle { checkNotNull(key) }
 
     init { session.wifiSocketRequest = ::socketRequest }
+
+    fun configureReceiver(config: NearbyReceiverDeviceConfig): Boolean = lock.withLock {
+        if(started || closed || receiverConfigured || config.deviceId!=expectedDeviceId) return@withLock false
+        receiver.configure(config);receiverConfigured=true;true
+    }
 
     fun start(generation: Long, connection: Long, deadlineMillis: Long, nowMillis: Long,
               sessionKey: ByteArray): List<Fe35ControlBridgeEvent> = lock.withLock {
@@ -87,7 +94,8 @@ class NearbyTcpControlBridge(deviceIdText: String, rootKey: ByteArray, constA: B
             if (events.any { it.kind in setOf("INPUT_DISCARDED", "OUT_OF_ORDER", "HANDSHAKE_TIMED_OUT") })
                 return@withLock finish("TCP_REJECTED")
             val result = events.map(::Fe35ControlBridgeEvent)
-            if (events.any { it.kind in setOf("TCP_DISCONNECT","DMSDP_CAPABILITY_REQUIRED") }) finish("TCP_CLOSED")
+            if (events.any { it.kind in setOf("TCP_DISCONNECT","DMSDP_CAPABILITY_REQUIRED",
+                    "DMSDP_CONFIG_REQUIRED","DMSDP_HISIGHT_REQUIRED") }) finish("TCP_CLOSED")
             result
         } catch (_: Exception) { finish("TCP_REJECTED") }
     }

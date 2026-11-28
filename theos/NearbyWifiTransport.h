@@ -28,7 +28,7 @@ typedef BOOL (^OHCWifiBoundary)(uint64_t, int64_t, int64_t, int, const uint8_t k
  * each tcp_step revalidates through the original serialized owner accept block.
  * Exact DMSDP business20/channel3 requests may open worker-owned session/control
  * listeners. No service/media capability or production network provider is supplied. */
-- (BOOL)enableLiveControl:(const fe35_bridge_input *)input;
+- (BOOL)enableLiveControl:(const fe35_bridge_input *)input receiverConfig:(OHCBScanReceiverConfig *)config;
 - (BOOL)deliverTo:(OHCWifiBoundary)sink owner:(uint64_t)owner descriptor:(int)fd;
 - (fe35_wifi_transport)binding;
 - (void)revoke;

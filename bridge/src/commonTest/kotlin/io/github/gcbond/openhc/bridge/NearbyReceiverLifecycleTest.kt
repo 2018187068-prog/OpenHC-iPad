@@ -3,7 +3,10 @@ package io.github.gcbond.openhc.bridge
 import io.github.gcbond.openhc.bridge.auth.invoke
 import io.github.gcbond.openhc.core.common.ByteWriter
 import io.github.gcbond.openhc.core.common.codec.Crc16Arc
+import io.github.gcbond.openhc.core.common.codec.Ea
+import io.github.gcbond.openhc.core.common.identity.HostIdentity
 import io.github.gcbond.openhc.core.nearby.*
+import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class NearbyReceiverLifecycleTest {
@@ -11,8 +14,11 @@ class NearbyReceiverLifecycleTest {
     private val a=ByteArray(16){(0x10+it).toByte()}
     private val b=ByteArray(16){(0x20+it).toByte()}
     private val key=ByteArray(16){0x41}
-    private fun bridge():NearbyTcpControlBridge {
+    private fun deviceConfig(id:String="SYNTHETIC")=NearbyReceiverDeviceConfig(
+        HostIdentity("A1B2C3","D4","Synthetic","Synthetic"),id,"A0:B1:C2:D3:E4:F5","127.0.0.1","127.0.0.1")
+    private fun bridge(configured:Boolean=false):NearbyTcpControlBridge {
         val s=NearbyTcpControlBridge("SYNTHETIC",root,a,b)
+        if(configured)assertTrue(s.configureReceiver(deviceConfig()))
         s.start(7,9,50000,1,key)
         s.feed(7,9,encrypted(0,ByteWriter().tlv(2,byteArrayOf(2)).tlv(4,byteArrayOf(0x53))
             .tlv(6,byteArrayOf(1)).toByteArray()),2)
@@ -28,13 +34,29 @@ class NearbyReceiverLifecycleTest {
         val crc=Crc16Arc.compute(head);return head+byteArrayOf(crc.toByte(),(crc ushr 8).toByte())
     }
     private fun frame(data:ByteArray):ByteArray=byteArrayOf(0,(data.size ushr 8).toByte(),data.size.toByte())+data
-    private fun setup():NearbyTcpControlBridge {
-        val s=bridge();assertEquals("DMSDP_LISTEN",s.feed(7,9,request(),3).single().kind)
+    private fun setup(configured:Boolean=false):NearbyTcpControlBridge {
+        val s=bridge(configured);assertEquals("DMSDP_LISTEN",s.feed(7,9,request(),3).single().kind)
         s.listenerReady(7,9,1,1234,3);s.endpointConnected(7,9,1,3)
         assertEquals(2,s.endpointData(7,9,1,negotiation(),3).single().channel)
         s.listenerReady(7,9,2,2345,3);return s
     }
     private fun select(udp:String="0")=frame("SET_PARAMETER * DMSDP/1.0\r\nCSeq: 2\r\nCryptoVer: 1\r\nCryptoSwitch: 222\r\nCryptoAlg: aes128-ctr\r\nUdpKA: $udp\r\n\r\n".encodeToByteArray())
+    private fun deviceReady(configured:Boolean=true)=setup(configured).also{
+        it.endpointConnected(7,9,2,3);it.endpointData(7,9,2,select(),4)
+    }
+    private fun cipherFeed(s:NearbyTcpControlBridge,bytes:ByteArray):List<Fe35ControlBridgeEvent> {
+        return s.endpointData(7,9,2,cipherFrame(bytes),5)
+    }
+    private fun cipherFrame(bytes:ByteArray):ByteArray {
+        val iv=ByteArray(16){0x62};val data=iv+assertNotNull(invoke(14,key=key,a=iv,c=bytes,size=bytes.size))
+        return byteArrayOf(0xab.toByte(),(data.size ushr 8).toByte(),data.size.toByte())+data
+    }
+    private fun open(event:Fe35ControlBridgeEvent):ByteArray {
+        val raw=assertNotNull(event.frame);assertEquals(0xab,raw[0].toInt() and 255)
+        return assertNotNull(invoke(14,key=key,a=raw.copyOfRange(3,19),c=raw.copyOfRange(19,raw.size),size=raw.size-19))
+    }
+    private fun command(n:Int,body:ByteArray)=NearbyDeviceRecords.encode(3,-1,Ea.encode(n)+body)
+    private fun info(id:String="PHONE")=buildJsonObject{put("deviceId",id);put("deviceType",3)}.toString().encodeToByteArray()
 
     @Test fun exactResourceRequestWaitsForActualReadyAndRepeatsSamePort() {
         val s=bridge()
@@ -148,5 +170,74 @@ class NearbyReceiverLifecycleTest {
         assertEquals(listOf("DMSDP_CAPABILITY_REQUIRED"),out.map{it.kind});assertFalse(s.hasPrivateKey)
         val flood=bridge();repeat(8){flood.feed(7,9,request(),3)}
         assertEquals("TCP_REJECTED",flood.feed(7,9,request(),3).single().kind);assertFalse(flood.hasPrivateKey)
+    }
+    @Test fun recordWireUsesUnsignedModuleSignedTypeAndExactLengths() {
+        val wire=byteArrayOf(0x24,0,0,0,3,-1,-1,-1,-1,0,1,0xe5.toByte())
+        val r=NearbyDeviceRecords.parse(wire).single()
+        assertEquals(3L,r.module);assertEquals(-1,r.type);assertContentEquals(byteArrayOf(0xe5.toByte()),r.data)
+        assertContentEquals(wire,NearbyDeviceRecords.encode(3,-1,r.data))
+        assertEquals(2,NearbyDeviceRecords.parse(wire+wire).size)
+        for(bad in listOf(wire.copyOf(11),wire.copyOf(5),wire+byteArrayOf(0),wire.copyOf().also{it[0]=0}))
+            assertFails{NearbyDeviceRecords.parse(bad)}
+    }
+    @Test fun receiverConfigIsOneShotSameIdentityAndRedacted() {
+        val s=NearbyTcpControlBridge("SYNTHETIC",root,a,b)
+        assertFalse(s.configureReceiver(deviceConfig("OTHER")))
+        assertTrue(s.configureReceiver(deviceConfig()));assertFalse(s.configureReceiver(deviceConfig()))
+        s.start(7,9,50000,1,key);assertFalse(s.configureReceiver(deviceConfig()));s.close()
+        assertEquals("NearbyReceiverDeviceConfig(redacted; services=0)",deviceConfig().toString())
+    }
+    @Test fun device101RepliesOnceWithActualConfigurationAndNoMediaProperties() {
+        val s=deviceReady();val first=cipherFeed(s,command(101,info()))
+        assertEquals(listOf("DMSDP_WRITE","DMSDP_PEER_DEVICE_INFO"),first.map{it.kind})
+        val r=NearbyDeviceRecords.parse(open(first[0])).single();val(cmd,at)=NearbyDeviceRecords.ea(r.data,0)
+        assertEquals(101,cmd);val obj=Json.parseToJsonElement(r.data.copyOfRange(at,r.data.size).decodeToString()).jsonObject
+        assertEquals(deviceConfig().deviceObject(),obj)
+        assertEquals(setOf("2003"),obj.getValue("properties").jsonObject.keys)
+        assertEquals(listOf("DMSDP_PEER_DEVICE_INFO"),cipherFeed(s,command(101,info())).map{it.kind});s.close()
+    }
+    @Test fun changedPeerIdentityAndMissingLocalConfigRevokeRatherThanEcho() {
+        val s=deviceReady();cipherFeed(s,command(101,info()))
+        assertEquals("TCP_REJECTED",cipherFeed(s,command(101,info("OTHER"))).single().kind);assertFalse(s.hasPrivateKey)
+        val missing=deviceReady(false)
+        assertEquals("DMSDP_CONFIG_REQUIRED",cipherFeed(missing,command(101,info())).single().kind);assertFalse(missing.hasPrivateKey)
+    }
+    @Test fun peerServiceCommandsAreValidatedButNoUnsupportedServiceIsAdvertised() {
+        val s=deviceReady();val service=buildJsonObject{
+            put("deviceId","PHONE");put("deviceName","Synthetic");put("serviceId","peer1");put("serviceType",8)
+            put("properties",buildJsonObject{});put("status",buildJsonObject{})
+        }.toString().encodeToByteArray()
+        val data=command(102,service)+command(103,byteArrayOf(0,0,0,0xca.toByte())+service)+
+            command(104,byteArrayOf(-1,-1,-1,-1))+command(105,byteArrayOf(0,0,0,1))
+        assertEquals(listOf("DMSDP_PEER_SERVICE_INFO","DMSDP_SERVICE_STATUS","DMSDP_SERVICES_EMPTY","DMSDP_DISCONNECT_NOTIFIED"),
+            cipherFeed(s,data).map{it.kind});assertTrue(s.hasPrivateKey);s.close()
+    }
+    @Test fun malformedDeviceJsonUtf8AndRecordLengthsFailClosed() {
+        val badJson=listOf(byteArrayOf(0xff.toByte()),"[]".encodeToByteArray(),"{".encodeToByteArray(),
+            buildJsonObject{put("deviceId","PHONE");put("deviceType","3")}.toString().encodeToByteArray())
+        for(bytes in badJson) {val s=deviceReady();assertEquals("TCP_REJECTED",cipherFeed(s,command(101,bytes)).single().kind);assertFalse(s.hasPrivateKey)}
+        for(n in listOf(103,104,105)) {val s=deviceReady();assertEquals("TCP_REJECTED",cipherFeed(s,command(n,byteArrayOf(0))).single().kind);assertFalse(s.hasPrivateKey)}
+    }
+    @Test fun timeSyncRespondsInExistingCipherWithoutNewAuthorityOrMediaClaim() {
+        val s=deviceReady();val bytes="SET_PARAMETER * DMSDP/1.0\r\nTimeServerPort: 1234\r\nTimeUsHigh: 1\r\nTimeUsLow: -1\r\nCSeq: 8\r\n\r\n".encodeToByteArray()
+        val result=cipherFeed(s,bytes);assertEquals(listOf("DMSDP_WRITE","DMSDP_TIME_SYNC_ACKED"),result.map{it.kind})
+        assertEquals("DMSDP/1.0 200 OK\r\nCSeq: 8\r\n\r\n",open(result[0]).decodeToString())
+        assertEquals("TCP_REJECTED",s.tick(7,9,50000).single().kind);assertFalse(s.hasPrivateKey)
+    }
+    @Test fun displayPortReachesExplicitHiSightBoundaryWithoutFakeReadiness() {
+        val s=deviceReady();val request=NearbyDeviceRecords.encode(5,-1,Ea.encode(101)+Ea.encode(7236))
+        val event=cipherFeed(s,request).single();assertEquals("DMSDP_HISIGHT_REQUIRED",event.kind);assertEquals(7236,event.channel);assertFalse(s.hasPrivateKey)
+        for(data in listOf(Ea.encode(101),Ea.encode(101)+Ea.encode(0),Ea.encode(101)+Ea.encode(70000),Ea.encode(101)+Ea.encode(1)+byteArrayOf(0))) {
+            val malformed=deviceReady();assertEquals("TCP_REJECTED",cipherFeed(malformed,NearbyDeviceRecords.encode(5,-1,data)).single().kind);assertFalse(malformed.hasPrivateKey)
+        }
+    }
+    @Test fun terminalBoundaryStopsCoalescedRecordsAndControlFrames() {
+        val boundary=NearbyDeviceRecords.encode(5,-1,Ea.encode(101)+Ea.encode(7236))
+        val later=command(101,info())
+        for(bytes in listOf(cipherFrame(boundary+later),cipherFrame(boundary)+cipherFrame(later))) {
+            val s=deviceReady()
+            assertEquals(listOf("DMSDP_HISIGHT_REQUIRED"),s.endpointData(7,9,2,bytes,5).map{it.kind})
+            assertFalse(s.hasPrivateKey)
+        }
     }
 }

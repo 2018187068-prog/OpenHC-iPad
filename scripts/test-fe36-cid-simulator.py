@@ -109,6 +109,8 @@ def safe_label(value):
         'DMSDP encrypted TCP keepalive': 'dmsdp-tcp-keepalive',
         'DMSDP owned endpoints close': 'dmsdp-endpoints-close',
         'DMSDP frame bound': 'dmsdp-frame-bound',
+        'DMSDP device info response': 'dmsdp-device-info',
+        'DMSDP encrypted time sync ACK': 'dmsdp-time-sync',
     }
     # Dynamic assertion families emit only fixed tokens, never their suffix.
     if value.startswith('CID daemon completed: '):
@@ -477,6 +479,27 @@ def dmsdp_control(tcp,h,guard,case,phase,key=None):
                     sealed=iv+ctr(text,iv);control.sendall(b'\xab'+struct.pack('!H',len(sealed))+sealed)
                     flag,payload=read_control(control)
                     h.check(flag==0xab and ctr(payload[16:],payload[:16])==b'GET_PARAMETER * DMSDP/1.0\r\nCSeq: 2\r\n\r\n','DMSDP encrypted TCP keepalive')
+                    def send_payload(data,number):
+                        nonce=bytes([number])*16;sealed=nonce+ctr(data,nonce)
+                        control.sendall(b'\xab'+struct.pack('!H',len(sealed))+sealed)
+                    def record(module,data):
+                        return b'$'+struct.pack('!IiH',module,-1,len(data))+data
+                    # Existing authorized synthetic identity; no Native key export.
+                    info=h.ea(101)+json.dumps({'deviceId':'SYNTHETIC_PHONE','deviceType':3},separators=(',',':')).encode()
+                    send_payload(record(3,info)+record(3,h.ea(104)+struct.pack('!I',0xffffffff)),2)
+                    flag,payload=read_control(control);plain=ctr(payload[16:],payload[:16])
+                    command,at=h.read_ea(plain,11)
+                    expected={'deviceId':'CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F',
+                        'deviceName':'Synthetic','deviceType':4,'bluetoothMac':'A0:B1:C2:D3:E4:F5','btName':'Synthetic',
+                        'localIp':'127.0.0.1','remoteIp':'127.0.0.1','port':-1,'businessId':1,'properties':{'2003':'A1B2C3D4'}}
+                    h.check(flag==0xab and plain[:1]==b'$' and struct.unpack('!IiH',plain[1:11])==(3,-1,len(plain)-11)
+                        and command==101 and json.loads(plain[at:])==expected,'DMSDP device info response')
+                    sync=b'SET_PARAMETER * DMSDP/1.0\r\nTimeServerPort: 1234\r\nTimeUsHigh: 1\r\nTimeUsLow: -1\r\nCSeq: 8\r\n\r\n'
+                    # Duplicate101/empty104 produce no echo; next output is sync ACK.
+                    send_payload(record(3,info),3);send_payload(sync,4)
+                    flag,payload=read_control(control)
+                    h.check(flag==0xab and ctr(payload[16:],payload[:16])==b'DMSDP/1.0 200 OK\r\nCSeq: 8\r\n\r\n','DMSDP encrypted time sync ACK')
+                    send_payload(record(5,h.ea(101)+h.ea(7236)),5)
                 control.shutdown(socket.SHUT_WR)
             h.check(control.recv(1)==b'','DMSDP owned endpoints close')
         h.check(session.recv(1)==b'','DMSDP owned endpoints close')

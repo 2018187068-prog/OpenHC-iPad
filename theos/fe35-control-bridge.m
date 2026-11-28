@@ -176,6 +176,8 @@ int fe35_scan_notify(void *context, int64_t generation, const char *kind,
     OHCBWifiNetworkConfig *_networkConfig;
     uint8_t _key[16];
     OHCBNearbyTcpControlBridge *_tcpControl;
+    OHCBScanReceiverConfig *_receiverConfig;
+    NSString *_receiverDeviceId;
     BOOL _tcpStarted;
     ohc_receiver_sockets _receiverSockets;
     BOOL _receiverConfigured, _receiverInitialized;
@@ -194,7 +196,9 @@ static BOOL receiverTerminal(NSArray<OHCBFe35ControlBridgeEvent *> *events) {
         if([event.kind isEqualToString:@"TCP_REJECTED"] ||
            [event.kind isEqualToString:@"TCP_DISCONNECT"] ||
            [event.kind isEqualToString:@"TCP_CLOSED"] ||
-           [event.kind isEqualToString:@"DMSDP_CAPABILITY_REQUIRED"]) return YES;
+           [event.kind isEqualToString:@"DMSDP_CAPABILITY_REQUIRED"] ||
+           [event.kind isEqualToString:@"DMSDP_CONFIG_REQUIRED"] ||
+           [event.kind isEqualToString:@"DMSDP_HISIGHT_REQUIRED"]) return YES;
     return NO;
 }
 static fe35_bridge_batch wifiStep(void *p,enum fe35_wifi_io e,fe35_bridge_handle b,int64_t n,
@@ -235,8 +239,8 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
     @finally { wipeSessionKey(copy); }
     return accepted;
 }
-- (BOOL)enableLiveControl:(const fe35_bridge_input *)input {
-    if(!input || _tcpControl || _generation || !memchr(input->device_id,0,sizeof(input->device_id)) ||
+- (BOOL)enableLiveControl:(const fe35_bridge_input *)input receiverConfig:(OHCBScanReceiverConfig *)config {
+    if(!input || !config || _tcpControl || _generation || !memchr(input->device_id,0,sizeof(input->device_id)) ||
         !input->root_key_size || input->root_key_size>64 || !input->const_a_size || input->const_a_size>64 ||
         !input->const_b_size || input->const_b_size>64) return NO;
     OHCBKotlinByteArray *root=kotlinBytes(input->root_key,input->root_key_size);
@@ -246,6 +250,7 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
             rootKey:root constA:a constB:b];
     } @catch(__unused NSException *e) { return NO; }
     @finally { wipeKotlinBytes(root);wipeKotlinBytes(a);wipeKotlinBytes(b); }
+    _receiverConfig=config;_receiverDeviceId=[NSString stringWithUTF8String:input->device_id];
     return _tcpControl!=nil;
 }
 - (fe35_wifi_transport)binding {
@@ -267,6 +272,14 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
             length=sizeof(peer);
             if(getpeername(fd,(struct sockaddr *)&peer,&length) || length!=sizeof(peer) || peer.sin_family!=AF_INET) return NULL;
             _receiverSockets.local=local.sin_addr.s_addr;_receiverSockets.peer=peer.sin_addr.s_addr;_receiverConfigured=YES;
+            char localText[INET_ADDRSTRLEN],peerText[INET_ADDRSTRLEN];
+            if(!inet_ntop(AF_INET,&local.sin_addr,localText,sizeof(localText)) ||
+               !inet_ntop(AF_INET,&peer.sin_addr,peerText,sizeof(peerText)))return NULL;
+            OHCBNearbyReceiverDeviceConfig *config=[[OHCBNearbyReceiverDeviceConfig alloc]
+                initWithHost:_receiverConfig.host deviceId:_receiverDeviceId
+                bluetoothMac:_receiverConfig.bluetoothAddress localIp:[NSString stringWithUTF8String:localText]
+                phoneIp:[NSString stringWithUTF8String:peerText]];
+            if(![_tcpControl configureReceiverConfig:config])return NULL;
             OHCBKotlinByteArray *key=kotlinBytes(_key,16);
             _keyTaken=YES;wipeSessionKey(_key);
             @try { events=[_tcpControl startGeneration:_generation connection:1 deadlineMillis:_deadline nowMillis:now sessionKey:key]; }
@@ -306,7 +319,9 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
             for(int32_t i=0;i<data.size;i++)p[i]=(uint8_t)[data getIndex:i];
             BOOL ok=ohc_receiver_queue(&_receiverSockets,event.channel,p,copy.length);
             memset(p,0,copy.length);wipeKotlinBytes(data);if(!ok)return nil;
-        } else if(![event.kind isEqualToString:@"DMSDP_ENCRYPTED"]) {
+        } else if(![@[@"DMSDP_ENCRYPTED",@"DMSDP_PEER_DEVICE_INFO",@"DMSDP_PEER_SERVICE_INFO",
+                      @"DMSDP_SERVICE_STATUS",@"DMSDP_SERVICES_EMPTY",@"DMSDP_DISCONNECT_NOTIFIED",
+                      @"DMSDP_TIME_SYNC_ACKED"] containsObject:event.kind]) {
             [out addObject:event];if(receiverTerminal(@[event]))return out;
         }
     }

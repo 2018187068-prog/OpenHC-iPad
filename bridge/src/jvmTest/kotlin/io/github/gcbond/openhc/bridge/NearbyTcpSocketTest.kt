@@ -35,6 +35,10 @@ class NearbyTcpSocketTest {
 
     @Test fun independentPeerUsesRealSessionAndControlListenersUnderSameBridgeAndKey() {
         val link=NearbyTcpControlBridge("CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F",root,a,b)
+        assertTrue(link.configureReceiver(NearbyReceiverDeviceConfig(
+            io.github.gcbond.openhc.core.common.identity.HostIdentity("A1B2C3","D4","Synthetic","Synthetic"),
+            "CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F",
+            "A0:B1:C2:D3:E4:F5","127.0.0.1","127.0.0.1")))
         val listener=ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));listener.soTimeout=3000
         val listeners=linkedMapOf<Int,ServerSocket>();val sockets=linkedMapOf<Int,Socket>()
         var failure:Throwable?=null;val cancel=AtomicBoolean(false)
@@ -55,7 +59,8 @@ class NearbyTcpSocketTest {
                             val owned=checkNotNull(sockets[event.channel]);owned.getOutputStream().write(assertNotNull(event.frame));owned.getOutputStream().flush()
                         }
                         "TCP_CONTROL_DETACHED" -> detached=true
-                        "TCP_REJECTED","TCP_DISCONNECT","DMSDP_CAPABILITY_REQUIRED" -> running=false
+                        "TCP_REJECTED","TCP_DISCONNECT","DMSDP_CAPABILITY_REQUIRED",
+                        "DMSDP_CONFIG_REQUIRED","DMSDP_HISIGHT_REQUIRED" -> running=false
                     }
                 }
                 val key=ByteArray(16){0x41}

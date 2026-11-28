@@ -25,6 +25,8 @@ internal class NearbyReceiverLifecycle(private val key: () -> ByteArray) {
     private var heard = false
     private var misses = 0
     private var sequence = 2
+    private var devices:NearbyReceiverDeviceMessages?=null
+    fun configure(config:NearbyReceiverDeviceConfig) {check(devices==null);devices=NearbyReceiverDeviceMessages(config)}
 
     fun connected(endpoint: Int): List<Fe35SessionEvent> {
         if (endpoint == 1) { check(!sessionConnected); sessionConnected = true; return emptyList() }
@@ -82,15 +84,15 @@ internal class NearbyReceiverLifecycle(private val key: () -> ByteArray) {
                 val iv = raw.copyOfRange(0,16); val cipher = raw.copyOfRange(16,raw.size)
                 try { ctr(iv,cipher) } finally { iv.fill(0);cipher.fill(0);raw.fill(0) }
             } else raw
-            try { out += message(payload, now) } finally { payload.fill(0) }
+            val events=try { message(payload, now) } finally { payload.fill(0) }
+            out+=events
+            if(events.any{terminal(it.kind)})break
         }
         return out
     }
 
     private fun message(bytes: ByteArray, now: Long): List<Fe35SessionEvent> {
-        // Device/service/media records are a subsequent dependency. No readiness is invented.
-        if (encrypted && bytes.firstOrNull() == 0x24.toByte())
-            return listOf(Fe35SessionEvent("DMSDP_CAPABILITY_REQUIRED"))
+        if (encrypted && bytes.firstOrNull() == 0x24.toByte()) return records(bytes)
         require(bytes.all { it.toInt() in 0..127 })
         val text = bytes.decodeToString()
         val split = text.indexOf("\r\n\r\n"); require(split >= 0)
@@ -121,7 +123,38 @@ internal class NearbyReceiverLifecycle(private val key: () -> ByteArray) {
         if (first == "GET_PARAMETER * DMSDP/1.0" && cseq.any { it != '0' }) {
             heard = true;alive = true;return emptyList()
         }
+        if (first == "SET_PARAMETER * DMSDP/1.0" &&
+            listOf("timeserverport","timeushigh","timeuslow").all {headers[it]!=null}) {
+            // Pinned control ACK only. No new clock source, UDP connection or timer.
+            return listOf(write(2,seal("DMSDP/1.0 200 OK\r\nCSeq: $cseq\r\n\r\n".encodeToByteArray())),
+                Fe35SessionEvent("DMSDP_TIME_SYNC_ACKED"))
+        }
         return listOf(Fe35SessionEvent("DMSDP_CAPABILITY_REQUIRED"))
+    }
+
+    private fun records(bytes:ByteArray):List<Fe35SessionEvent> {
+        val parsed=NearbyDeviceRecords.parse(bytes);val out=arrayListOf<Fe35SessionEvent>()
+        try {for(record in parsed) {
+            val events=when {
+                record.type == -1 && record.module==3L -> devices?.handle(record.data)
+                    ?: listOf(Fe35SessionEvent("DMSDP_CONFIG_REQUIRED"))
+                record.type == -1 && record.module==5L -> {
+                    val(command,at)=NearbyDeviceRecords.ea(record.data,0)
+                    if(command==101) {
+                        val(port,end)=NearbyDeviceRecords.ea(record.data,at)
+                        require(end==record.data.size && port in 1..65535)
+                        listOf(Fe35SessionEvent("DMSDP_HISIGHT_REQUIRED",channel=port))
+                    } else listOf(Fe35SessionEvent("DMSDP_CAPABILITY_REQUIRED"))
+                }
+                else -> listOf(Fe35SessionEvent("DMSDP_CAPABILITY_REQUIRED"))
+            }
+            for(event in events) {
+                if(event.kind=="DMSDP_RECORD_REPLY") out+=write(2,seal(checkNotNull(event.frame)))
+                else out+=event
+            }
+            if(events.any{terminal(it.kind)})break
+        }} finally {parsed.forEach{it.data.fill(0)}}
+        return out
     }
 
     fun tick(now: Long): List<Fe35SessionEvent> {
@@ -130,19 +163,23 @@ internal class NearbyReceiverLifecycle(private val key: () -> ByteArray) {
         keepAliveAt = now + 1000
         if (!heard) return emptyList()
         val text = "GET_PARAMETER * DMSDP/1.0\r\nCSeq: ${sequence++}\r\n\r\n".encodeToByteArray()
-        val iv = nearbySecureRandomBytes(16)
-        val cipher = try { ctr(iv,text) } finally { text.fill(0) }
-        val payload=iv+cipher
-        val output=framed(0xab,payload)
-        iv.fill(0);cipher.fill(0);payload.fill(0)
-        return listOf(write(2,output))
+        return listOf(write(2,seal(text)))
     }
 
     fun closed(endpoint: Int) {
         if (endpoint == 1) { check(sessionConnected && !sessionClosed && session.size == 0 && port != 0);sessionClosed = true }
         else error("DMSDP_CONTROL_CLOSED_BEFORE_MEDIA")
     }
-    fun close() { session.array.fill(0); control.array.fill(0);session.clear();control.clear() }
+    fun close() { session.array.fill(0); control.array.fill(0);session.clear();control.clear();devices?.close();devices=null }
+    private fun terminal(kind:String)=kind in setOf("DMSDP_CONFIG_REQUIRED","DMSDP_HISIGHT_REQUIRED","DMSDP_CAPABILITY_REQUIRED")
+    private fun seal(bytes:ByteArray):ByteArray {
+        val iv=nearbySecureRandomBytes(16);var cipher:ByteArray?=null;var payload:ByteArray?=null
+        try {
+            require(bytes.isNotEmpty() && bytes.size<=65519)
+            cipher=ctr(iv,bytes);payload=iv+cipher
+            return framed(0xab,payload)
+        } finally {iv.fill(0);bytes.fill(0);cipher?.fill(0);payload?.fill(0)}
+    }
     private fun ctr(iv: ByteArray, input: ByteArray): ByteArray =
         invoke(14,key=key(),a=iv,c=input,size=input.size) ?: error("DMSDP_CTR_FAILED")
     private fun negotiation(): ByteArray {

@@ -198,7 +198,7 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
     send_event(conn, 0x60, bytes([2]))
 
 
-def drive_peer(conn, case, set_step, auth_flow=None):
+def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None):
     set_step("initial_state")
     conn.settimeout(4)
     read_command(conn, 1, b"")
@@ -235,8 +235,10 @@ def drive_peer(conn, case, set_step, auth_flow=None):
     set_step("fragmented_phone_first_and_encrypted_request")
     send_packet(conn, 7, cid, PHONE_FIRST[:split])
     send_packet(conn, 7, cid, PHONE_FIRST[split:] + request)
-    kind, channel, handshake_reply = read_packet(conn)
     set_step("encrypted_handshake_response")
+    kind, channel, handshake_reply = read_packet(conn)
+    if observe_packet is not None:
+        observe_packet(kind, channel, handshake_reply)
     check((kind, channel) == (7, cid), "handshake reply transport header")
     outer, flag, payload = decode_frame(handshake_reply)
     check((outer, flag, payload) == (0, 1, EXPECTED_HANDSHAKE_REPLY), "handshake reply frame bytes")

@@ -4,6 +4,8 @@ Length-prefix proxy is only a fixture control channel; FE36 sees raw JSON bytes.
 No frames, PIN, keys or identity values are included in assertion diagnostics.
 """
 import json
+import errno
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -11,6 +13,8 @@ import struct
 import subprocess
 import threading
 import time
+import re
+import sys
 
 CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_peer',
          'wrong_cid', 'control_cid_reuse', 'extra_connection', 'malformed_open',
@@ -38,8 +42,88 @@ def safe_label(value):
         'reference connection info uses actual listening TCP port': 'wifi-connection-info',
         'all auth SEND bytes use owned CID and negotiated MTU': 'auth-send-shape',
         'bounded auth JSON reply': 'auth-reply-bound',
+        'handshake reply transport header': 'handshake-transport-shape',
+        'handshake reply frame bytes': 'handshake-payload',
+        'unterminated EA': 'nearby-ea',
+        'command opcode': 'command-opcode',
+        'command parameter length': 'command-parameter-length',
+        'command parameters': 'command-parameters',
+        'SDP UUID bytes': 'sdp-uuid',
+        'SDP RFCOMM channel bytes': 'sdp-channel',
+        'SDP protocol descriptor': 'sdp-protocol',
+        'control SDP command': 'control-sdp-command',
+        'FE35 service registration': 'control-service-registration',
+        'bridge start transport header': 'bridge-start-transport',
+        'bridge start frame bytes': 'bridge-start-frame',
+        'auth SDP command': 'auth-sdp-command',
+        'auth SDP UUID128 callback': 'auth-sdp-uuid',
+        'listener response transport header': 'listener-response-transport',
+        'encrypted command4 frame marker': 'command4-frame',
+        'encrypted command4 plaintext bytes': 'command4-payload',
+        'command4 TLV tag': 'command4-tlv',
+        'command4 channel and business id': 'command4-channel-business',
+        'command4 UUID bytes': 'command4-uuid',
+        'actual common request is pending before network readiness': 'wifi-request-pending',
+        'listener cannot start before confirmed negotiation': 'wifi-listener-premature',
+        'owned TCP boundary is closed at bounded slice completion': 'wifi-tcp-close',
+        'CID fixture launch': 'fixture-launch',
+        'CID transport socket released': 'transport-socket-release',
+        'complete handshake PAKE1 PAKE2 signed exchange': 'auth-exchange-complete',
+        'negative auth terminal close acknowledged': 'auth-negative-close-ack',
+        'pending verified candidate revoked before unacknowledged close': 'auth-pending-revoked',
+        'bounded synthetic phone request': 'phone-request-bound',
+        'positive pairing cannot terminate before reply': 'auth-positive-premature-terminal',
+        'all named CID assertions passed': 'fixture-named-assertions',
+        'only bounded-auth or owned TCP boundary consumes key': 'key-delivery-count',
+        'lease remains sole heartbeat owner': 'lease-heartbeat-owner',
+        'auth envelope object required': 'auth-envelope-object',
+        'auth message object required': 'auth-message-object',
+        'unexpected auth INFORM terminal': 'auth-unexpected-inform',
+        'exact one-shot auth close required': 'auth-close-one-shot',
     }
+    # Dynamic assertion families emit only fixed tokens, never their suffix.
+    if value.startswith('CID daemon completed: '):
+        return 'daemon-failure'
+    if value.startswith('command header expected_ocf='):
+        return 'command-header'
+    if value in {'CID production-code assertions ' + c for c in CASES + WIFI_CASES}:
+        return 'fixture-result'
+    if value in {'CID cleanup command component=' + hex(c) for c in (1, 0x31, 0x41, 0x43)}:
+        return 'cleanup-command'
     return labels.get(value, 'unclassified')
+
+
+class IsolatedCaseFailure(AssertionError):
+    def __init__(self, label, exception='AssertionError'):
+        self.label, self.exception = label, exception
+        super().__init__('isolated case failed: ' + label)
+
+
+class UnsafeCaseFailure(AssertionError):
+    def __init__(self, label):
+        self.label = label
+        super().__init__('case isolation unproven: ' + label)
+
+
+def simulator_pid(launch, bundle_id):
+    # simctl reports its launched host process PID. Never parse arbitrary text
+    # as a PID and never signal a process to obtain isolation.
+    match = re.fullmatch(re.escape(bundle_id) + r': ([1-9][0-9]*)\s*', launch.stdout or '')
+    if not match or int(match[1]) <= 1:
+        raise UnsafeCaseFailure('launch-pid-unproven')
+    return int(match[1])
+
+
+def simulator_process_exited(pid):
+    if sys.platform != 'darwin':
+        raise UnsafeCaseFailure('host-process-observation-unavailable')
+    try:
+        os.kill(pid, 0)  # existence check only; Simulator processes run on host
+    except OSError as error:
+        if error.errno == errno.ESRCH:
+            return True
+        raise UnsafeCaseFailure('host-process-observation-failed') from error
+    return False  # includes PID reuse: fail closed rather than assume exit
 
 
 def safe_exception_name(error):
@@ -47,6 +131,20 @@ def safe_exception_name(error):
              'ValueError', 'UnicodeError', 'struct.error'}
     name = type(error).__name__
     return name if name in known else 'other'
+
+
+def observe_handshake_packet(kind, channel, body, crc16, phase):
+    # Only fixed field names, numeric transport metadata and validation states.
+    phase('handshake-packet-kind-' + str(kind) + '-channel-' + str(channel) +
+          '-size-' + str(len(body)))
+    if kind == 1 and len(body) >= 3:
+        opcode, length = struct.unpack('<HB', body[:3])
+        phase('handshake-command-opcode-' + str(opcode) + '-length-' + str(length) +
+              '-exact-length-' + str(len(body) == length + 3).lower())
+    if kind == 7:
+        metadata = inspect_nearby_frame(body, crc16)
+        phase('handshake-frame-' + '-'.join(str(k) + '-' + str(v).lower()
+                                             for k, v in metadata.items()))
 
 
 def inspect_nearby_frame(frame, crc16):
@@ -218,6 +316,15 @@ def consume_negative_auth_close(kind, channel, body, auth_cid):
     return kind == 1 and channel == 0 and body == expected
 
 
+def require_cleanup_command(packet, ocf, params, check, phase):
+    kind, channel, body = packet
+    if kind == 1 and len(body) >= 3:
+        opcode, length = struct.unpack('<HB', body[:3])
+        phase('received-command-' + hex(opcode) + '-length-' + str(length))
+    check((kind, channel, body) == (1, 0, struct.pack('<HB', 0xf400 | ocf, len(params)) + params),
+          'CID cleanup command component=' + hex(ocf))
+
+
 def negative_inform(response, case):
     outer = json.loads(response)
     if not isinstance(outer, dict):
@@ -245,15 +352,18 @@ def acknowledge_negative_close(packet, auth_cid, send_ack, already_closed=False)
     return True
 
 
-def run_case(args, h, case):
+def _run_case(args, h, case, isolation):
     documents = Path(args.data_dir) / 'Documents'
     guard = documents / ('auth-cid-' + case)
-    guard.mkdir(parents=True, exist_ok=True)
+    if guard.exists():
+        raise UnsafeCaseFailure('preexisting-case-directory')
+    guard.mkdir(parents=True)
     (guard / 'ready').write_text('READY\n', encoding='ascii')
     (guard / 'deadline').write_text(str(int(time.time()) + 120), encoding='ascii')
     (guard / 'heartbeat').write_text('POWER_DRIVER_OWNS_THIS\n', encoding='ascii')
     result = documents / 'fe35-cli-result'
     result.unlink(missing_ok=True)
+    (documents / 'fe35-cli-status.log').unlink(missing_ok=True)
     daemon = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     daemon.bind(('127.0.0.1', 0))
     daemon.listen(1)
@@ -265,13 +375,27 @@ def run_case(args, h, case):
     (guard / 'phone-port').write_text(str(phone.getsockname()[1]), encoding='ascii')
     errors, step = [], ['accept']
     diagnostics = []
+    timings = []
     def phase(label):
         step[0] = label
         if diagnostics and diagnostics[-1] == label:
             return
         diagnostics.append(label)
         (guard / 'proxy-phases.log').write_text('\n'.join(diagnostics) + '\n', encoding='ascii')
+        timings.append(str(time.monotonic_ns()) + ' ' + label)
+        (guard / 'proxy-timing.log').write_text('\n'.join(timings) + '\n', encoding='ascii')
     pending = []
+    socket_lock = threading.Lock()
+    sockets, closing = [daemon, phone], [False]
+
+    def accept(listener):
+        accepted = listener.accept()[0]
+        with socket_lock:
+            if closing[0]:
+                accepted.close()
+                raise UnsafeCaseFailure('accept-after-case-close')
+            sockets.append(accepted)
+        return accepted
     auth_cid, control_cid = 0x3456, 0x2345
     peer = bytes.fromhex('a1a2a3a4a5a6')
 
@@ -280,12 +404,7 @@ def run_case(args, h, case):
 
     def command(conn, ocf, params):
         phase('cleanup-command-' + hex(ocf))
-        kind, channel, body = packet(conn)
-        if kind == 1 and len(body) >= 3:
-            opcode, length = struct.unpack('<HB', body[:3])
-            phase('received-command-' + hex(opcode) + '-length-' + str(length))
-        h.check((kind, channel, body) == (1, 0, struct.pack('<HB', 0xf400 | ocf, len(params)) + params),
-                'CID cleanup command component=' + hex(ocf))
+        require_cleanup_command(packet(conn), ocf, params, h.check, phase)
 
     def cleanup(conn, owned_auth=True, remote_auth_closed=False, auth_services=True):
         step[0] = 'typed_cleanup'
@@ -356,6 +475,8 @@ def run_case(args, h, case):
             cleanup(conn, remote_auth_closed=True)
             return
         if case in ('stop', 'background', 'deadline'):
+            phase('cancellation-request-' + case if case != 'deadline' else
+                  'cancellation-await-original-deadline')
             if case in ('stop', 'background'):
                 (guard / 'stop').write_text('STOP\n', encoding='ascii')
             cleanup(conn)
@@ -369,7 +490,7 @@ def run_case(args, h, case):
             return  # Actual reset; send/read/cleanup must fail without key.
         phase('phone-accept')
         terminal_auth_closed = False
-        with phone.accept()[0] as peer_socket:
+        with accept(phone) as peer_socket:
             peer_socket.settimeout(6)
             for exchange in range(4):
                 phase('exchange-' + str(exchange) + '-phone-header-read')
@@ -459,9 +580,11 @@ def run_case(args, h, case):
 
     def serve():
         try:
-            with daemon.accept()[0] as conn:
+            with accept(daemon) as conn:
                 conn.settimeout(6)
-                h.drive_peer(conn, 'success', lambda s: step.__setitem__(0, s), auth_flow=flow)
+                h.drive_peer(conn, 'success', phase, auth_flow=flow,
+                             observe_packet=lambda k, c, b: observe_handshake_packet(
+                                 k, c, b, h.crc16_arc, phase))
         except Exception as error:
             label = safe_label(str(error)) if isinstance(error, AssertionError) else 'none'
             errors.append((step[0], safe_exception_name(error), label))
@@ -471,23 +594,55 @@ def run_case(args, h, case):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
+    pid = None
     try:
         launch = subprocess.run(['xcrun', 'simctl', 'launch', args.udid, args.bundle_id,
                              'tcp:' + str(daemon.getsockname()[1]), 'Documents/' + guard.name,
                              'auth_' + case], capture_output=True, text=True, timeout=30)
         h.check(launch.returncode == 0, 'CID fixture launch')
+        pid = simulator_pid(launch, args.bundle_id)
         for _ in range(80):
-            if result.exists():
+            if simulator_process_exited(pid):
                 break
             time.sleep(.25)
-        thread.join(8)
     finally:
-        daemon.close()
-        phone.close()
-        h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
-        destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
-        if (guard / 'proxy-phases.log').is_file():
-            shutil.copyfile(guard / 'proxy-phases.log', destination / 'proxy-phases.log')
+        try:
+            join_deadline = time.monotonic() + 8
+            try:
+                process_already_exited = pid is not None and simulator_process_exited(pid)
+            except UnsafeCaseFailure:
+                process_already_exited = False
+                isolation['process_observation_failed'] = True
+                isolation['failure_label'] = 'host-process-observation-failed'
+            if process_already_exited:
+                # Let a normal EOF/last ACK finish naturally before teardown.
+                # The same original eight-second join budget bounds both paths.
+                thread.join(max(0, join_deadline - time.monotonic()))
+            with socket_lock:
+                closing[0] = True
+                for sock in sockets:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    sock.close()
+            thread.join(max(0, join_deadline - time.monotonic()))
+            isolation['thread_stopped'] = not thread.is_alive()
+            try:
+                isolation['process_exited'] = pid is not None and simulator_process_exited(pid)
+            except UnsafeCaseFailure:
+                isolation['process_exited'] = False
+                isolation['process_observation_failed'] = True
+                isolation['failure_label'] = 'host-process-observation-failed'
+            isolation['safe'] = isolation['thread_stopped'] and isolation['process_exited']
+        finally:
+            h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
+            destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
+            for name in ('proxy-phases.log', 'proxy-timing.log'):
+                if (guard / name).is_file():
+                    shutil.copyfile(guard / name, destination / name)
+    if not isolation.get('safe'):
+        raise UnsafeCaseFailure(isolation.get('failure_label', 'process-or-daemon-still-live'))
     h.check(not thread.is_alive() and not errors, 'CID daemon completed: ' + repr(errors))
     h.check(result.exists() and result.read_text().strip() == '0', 'CID production-code assertions ' + case)
     trace = (guard / 'scan-events').read_text()
@@ -499,10 +654,59 @@ def run_case(args, h, case):
     print('FE36_CID_TRANSPORT_AUTH_CASE_OK=' + case)
 
 
-def run_all(args, harness):
-    for case in CASES:
-        run_case(args, harness, case)
+def run_case(args, h, case):
+    isolation = {'safe': False, 'process_exited': False, 'thread_stopped': False}
+    outcome = 'unsafe'
+    label = 'case-interrupted'
+    exception = 'none'
+    try:
+        _run_case(args, h, case, isolation)
+        outcome, label = 'passed', 'none'
+        return True
+    except Exception as error:
+        exception = safe_exception_name(error)
+        if isinstance(error, UnsafeCaseFailure):
+            label = error.label
+        else:
+            label = safe_label(str(error)) if isinstance(error, AssertionError) else 'case-exception'
+        if isolation['safe'] and isinstance(error, AssertionError) and not isinstance(error, UnsafeCaseFailure):
+            outcome = 'failed'
+            raise IsolatedCaseFailure(label, exception) from error
+        raise UnsafeCaseFailure(label) from error
+    finally:
+        destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / 'case-outcome.json').write_text(json.dumps({
+            'case': case, 'outcome': outcome, 'label': label,
+            'exception': exception, 'isolation': isolation}, sort_keys=True) + '\n', encoding='ascii')
+        h.preserve_case_evidence(Path(args.data_dir) / 'Documents',
+                                 Path(args.data_dir) / 'Documents' / ('auth-cid-' + case),
+                                 'fe36-cid-' + case)
+
+
+def run_all(args, harness, runner=None):
+    runner = run_case if runner is None else runner
+    matrix = [{'case': case, 'outcome': 'unrun', 'label': 'not-started'}
+              for case in CASES + WIFI_CASES]
+    destination = harness.ROOT / 'artifacts/scan-owner/simulator-cases'
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        for entry in matrix:
+            try:
+                if runner(args, harness, entry['case']) is not True:
+                    raise UnsafeCaseFailure('missing-isolation-certificate')
+                entry.update(outcome='passed', label='none')
+            except IsolatedCaseFailure as error:
+                entry.update(outcome='failed', label=error.label, exception=error.exception)
+            except Exception as error:
+                entry.update(outcome='unsafe', label=error.label if isinstance(error, UnsafeCaseFailure)
+                             else 'setup-or-unproven-isolation', exception=safe_exception_name(error))
+                break
+    finally:
+        (destination / 'fe36-matrix.json').write_text(json.dumps(matrix, indent=2) + '\n', encoding='ascii')
+        for entry in matrix:
+            print('FE36_CASE_OUTCOME=' + entry['case'] + ':' + entry['outcome'] + ':' + entry['label'])
+    if any(entry['outcome'] != 'passed' for entry in matrix):
+        raise AssertionError('FE36 matrix incomplete or failed; see fe36-matrix.json')
     print('FE36_CID_TRANSPORT_AUTH_CASES_OK=' + str(len(CASES)))
-    for case in WIFI_CASES:
-        run_case(args, harness, case)
     print('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=' + str(len(WIFI_CASES)))

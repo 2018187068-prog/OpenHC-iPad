@@ -146,18 +146,21 @@ def loopback_negative(case, code, cleanup_failure=False):
             checked(all(not thread.is_alive() for thread in workers), 'loopback bounded completion')
             (guard / 'scan-events').write_text('SYNTHETIC_PROXY_ONLY\n')
             (root / 'Documents/fe35-cli-result').write_text('0')
-            return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0, stdout='synthetic: 12345\n')
         harness = SimpleNamespace(ROOT=root, check=checked, exact=base.exact, read_packet=base.read_packet,
             send_packet=base.send_packet, send_event=base.send_event, read_command=base.read_command,
-            drive_peer=lambda conn, case, phase, auth_flow: auth_flow(conn))
+            drive_peer=lambda conn, case, phase, auth_flow, observe_packet=None: auth_flow(conn))
         def preserve(documents, guard, label):
             (root / 'artifacts/scan-owner/simulator-cases' / label).mkdir(parents=True, exist_ok=True)
         harness.preserve_case_evidence = preserve
-        with patch.object(module.subprocess, 'run', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(module.subprocess, 'run', side_effect=launch), \
+             patch.object(module, 'simulator_process_exited', return_value=True), \
+             contextlib.redirect_stdout(io.StringIO()):
             try:
                 module.run_case(SimpleNamespace(data_dir=folder, udid='synthetic', bundle_id='synthetic'), harness, case)
             except AssertionError as error:
-                checked(cleanup_failure and 'CID daemon completed' in str(error), 'unexpected proxy failure')
+                checked(cleanup_failure and isinstance(error, module.IsolatedCaseFailure) and
+                        error.label == 'daemon-failure', 'unexpected proxy failure')
             else:
                 checked(not cleanup_failure, 'cleanup failure hidden')
         assert observed.count('ack-once') == 1

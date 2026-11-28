@@ -21,12 +21,14 @@ class Socket:
     def settimeout(self, _): pass
     def getsockname(self): return ('127.0.0.1', 12345)
     def close(self): pass
+    def shutdown(self, _): pass
 
 
 class Thread:
     def __init__(self, **_): pass
     def start(self): pass
     def is_alive(self): return False
+    def join(self, _): pass
 
 
 class EvidenceTests(unittest.TestCase):
@@ -43,7 +45,7 @@ class EvidenceTests(unittest.TestCase):
                 return subprocess.CompletedProcess([], 1)
             with patch.object(sim, 'ROOT', root), patch.object(cid.socket, 'socket', return_value=Socket()), \
                  patch.object(cid.threading, 'Thread', Thread), patch.object(cid.subprocess, 'run', side_effect=launch):
-                with self.assertRaises(subprocess.TimeoutExpired if exception else AssertionError):
+                with self.assertRaises(cid.UnsafeCaseFailure):
                     cid.run_case(args, sim, 'wrong_pin')
             evidence = root / 'artifacts/scan-owner/simulator-cases/fe36-cid-wrong_pin'
             self.assertIn('AuthFixture', (evidence / 'scan-events').read_text())

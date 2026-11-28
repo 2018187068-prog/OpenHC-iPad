@@ -1,6 +1,9 @@
 #include "ScanOwner.h"
 #include <limits.h>
 #include <string.h>
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+#include <stdio.h>
+#endif
 
 static void effect(ohc_owner *o, ohc_owner_effect e) {
     if (o->emit) o->emit(o->context, e, o->generation, o->deadline);
@@ -105,11 +108,26 @@ void ohc_owner_disconnect(ohc_owner *o, ohc_owner_connection *c, int64_t now) {
 }
 void ohc_owner_tick(ohc_owner *o, int64_t now) {
     if (o->state == OHC_IDLE) return;
-    if (now < o->last_now || now > INT64_MAX - 3000) { stop(o, o->last_now); delegate(o); return; }
+    if (now < o->last_now || now > INT64_MAX - 3000) {
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+        fprintf(stderr,"OWNER_EXPIRY cause=clock state=%d now=%lld last_now=%lld\n",(int)o->state,(long long)now,(long long)o->last_now);
+#endif
+        stop(o, o->last_now); delegate(o); return;
+    }
     o->last_now = now;
-    if (now >= o->deadline) stop(o, now);
+    if (now >= o->deadline) {
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+        fprintf(stderr,"OWNER_EXPIRY cause=absolute state=%d now=%lld deadline=%lld\n",(int)o->state,(long long)now,(long long)o->deadline);
+#endif
+        stop(o, now);
+    }
     if ((o->state == OHC_ARMING || o->state == OHC_TAKING || o->state == OHC_STOPPING ||
-         o->state == OHC_RESTORING) && now >= o->phase_deadline) delegate(o);
+         o->state == OHC_RESTORING) && now >= o->phase_deadline) {
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+        fprintf(stderr,"OWNER_EXPIRY cause=phase state=%d now=%lld phase_deadline=%lld\n",(int)o->state,(long long)now,(long long)o->phase_deadline);
+#endif
+        delegate(o);
+    }
     if (o->heartbeat && now - o->last_heartbeat >= 2000 && now < o->deadline) {
         o->last_heartbeat = now; effect(o, OHC_HEARTBEAT);
     }

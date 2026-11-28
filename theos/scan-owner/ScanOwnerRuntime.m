@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 #include <unistd.h>
 
 static int64_t ownerNow(void) {
@@ -170,12 +171,23 @@ disconnect:
     dispatch_async(_executor,^{ ohc_owner_recovered(&self->_owner,generation,verified); });
 }
 - (void)effect:(ohc_owner_effect)e generation:(uint64_t)g {
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+    fprintf(stderr,"OWNER_PHASE effect=%d state=%d generation=%llu now=%lld deadline=%lld phase_deadline=%lld worker_started=%d\n",
+        (int)e,(int)_owner.state,(unsigned long long)g,(long long)ownerNow(),
+        (long long)_owner.deadline,(long long)_owner.phase_deadline,_owner.worker_started);
+#endif
     switch(e) {
     case OHC_ARM_GUARD: {
         _keepAlive=self;
         [self publishKind:@"STARTED" generation:g qr:nil pin:nil];
         [_lease arm:g deadline:_owner.deadline result:^(BOOL ready) {
-            dispatch_async(self->_executor,^{ohc_owner_guard_ready(&self->_owner,g,ready,ownerNow());});
+            dispatch_async(self->_executor,^{
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+                fprintf(stderr,"OWNER_ARM_RESULT ready=%d state=%d now=%lld phase_deadline=%lld\n",ready,
+                    (int)self->_owner.state,(long long)ownerNow(),(long long)self->_owner.phase_deadline);
+#endif
+                ohc_owner_guard_ready(&self->_owner,g,ready,ownerNow());
+            });
         }]; break;
     }
     case OHC_TAKEOVER: {

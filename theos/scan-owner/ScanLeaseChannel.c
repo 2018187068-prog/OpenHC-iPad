@@ -11,6 +11,15 @@
 #include <time.h>
 #include <unistd.h>
 #include <string.h>
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+#include <stdio.h>
+#define LEASE_NOTE(stage,op,g,seq,d,ok,error) \
+    fprintf(stderr,"LEASE_IO stage=%s op=%u generation=%llu sequence=%llu now=%lld deadline=%lld ok=%d errno=%d\n", \
+        stage,(unsigned)(op),(unsigned long long)(g),(unsigned long long)(seq), \
+        (long long)ohc_lease_now(),(long long)(d),(int)(ok),(error))
+#else
+#define LEASE_NOTE(stage,op,g,seq,d,ok,error) ((void)0)
+#endif
 int64_t ohc_lease_now(void) {
     struct timespec t;
     if(clock_gettime(CLOCK_MONOTONIC,&t)) { return -1; }
@@ -71,9 +80,20 @@ bool ohc_lease_adopt(ohc_lease_channel *c,int fd,uint64_t generation,int64_t dea
 bool ohc_lease_exchange(ohc_lease_channel *c,uint8_t op,uint32_t flags,int status) {
     if(c->failed || c->fd<0 || c->sequence==UINT64_MAX) { return false; }
     ohc_lease_frame f={op,c->generation,++c->sequence,c->deadline,flags,status},reply;
-    bool ok=ohc_lease_write(c->fd,&f,1000)&&ohc_lease_read(c->fd,&reply,1000)&&
+    LEASE_NOTE("request",op,f.generation,f.sequence,f.deadline,true,0);
+    errno=0; bool wrote=ohc_lease_write(c->fd,&f,1000);
+    LEASE_NOTE("write",op,f.generation,f.sequence,f.deadline,wrote,errno);
+    errno=0; bool read=wrote&&ohc_lease_read(c->fd,&reply,1000);
+    LEASE_NOTE("read",op,f.generation,f.sequence,f.deadline,read,errno);
+    bool ok=read&&
         reply.op==OHC_L_OK && reply.generation==f.generation && reply.sequence==f.sequence &&
         reply.deadline==f.deadline && !reply.flags && !reply.status;
+    LEASE_NOTE("validated-ack",op,f.generation,f.sequence,f.deadline,ok,0);
+#ifdef OPENHC_SCAN_OWNER_PROCESS_TEST
+    if(read&&!ok) fprintf(stderr,"LEASE_ACK_REJECT op_ok=%d generation_ok=%d sequence_ok=%d deadline_ok=%d flags_ok=%d status_ok=%d\n",
+        reply.op==OHC_L_OK,reply.generation==f.generation,reply.sequence==f.sequence,
+        reply.deadline==f.deadline,!reply.flags,!reply.status);
+#endif
     if(!ok) { ohc_lease_close(c); }
     return ok;
 }

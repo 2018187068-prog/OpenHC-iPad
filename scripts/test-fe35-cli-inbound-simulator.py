@@ -452,73 +452,101 @@ def run_scan_case(args, case, owner=False, process=False):
         except Exception as exc:
             errors.append(repr(exc))
 
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
-        "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name,
-        ("owner_" if owner else "") + ("process_" if process else "") + case],
-        capture_output=True, text=True, timeout=30)
-    check(launch.returncode == 0, "scan fixture launched")
-    for _ in range(60):
-        if result_file.exists():
-            break
-        time.sleep(.25)
-    check(result_file.exists(), "scan fixture bounded completion")
-    thread.join(8)
-    server.close()
-    status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
-    preserve_case_evidence(documents, guard, ("owner-process-" if process else "owner-" if owner else "scan-") + case)
-    check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
-    trace = (guard / "scan-events").read_text(encoding="ascii")
-    check(result_file.read_text(encoding="ascii").strip() == "0",
-          "real common sink assertions " + status + "; named fixture trace: " + trace)
-    expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure", "background", "disconnect", "success"))
-    check(trace.count("EVENT=PAIRING_READY\n") == expected_ready, "dual readiness once " + trace)
-    expected_clear = 2 if owner and case == "success" else 1
-    check(trace.count("EVENT=CLEAR_PAIRING\n") == expected_clear, "clear for accepted/terminal transition " + trace)
-    check(trace.count("EVENT=CLOSE_CONTROL_TRANSPORT\n") == 1, "close exactly once " + trace)
-    check(trace.count("CALLBACK=CLEANED\n") == 1, "cleaned exactly once " + trace)
-    check("COUNTS=" + str(expected_ready) + "," + str(expected_clear) + ",1,1" in trace, "late and old callbacks inert")
-    expected_cleanup = int(case in ("ready_stop", "ready_timeout", "rfcomm_failure", "sdp_failure", "background", "disconnect", "success"))
-    completion = "COMPLETION=1," + str(expected_cleanup) + (",0\n" if owner and case == "success" else ",1\n")
-    check(trace.count(completion) == 1, "typed worker return and independent cleanup certainty " + trace)
-    check(trace.index("CALLBACK=CLEANED\n") < trace.index(completion),
-          "CLEANED precedes typed return and is not cleanup success")
-    check("hicar://" not in status + trace, "QR never enters diagnostic output")
-    if owner:
-        check("OWNER_ASSERT_FAIL=" not in trace, "all named owner assertions passed " + trace)
-        check(trace.count("OWNER_CORE_CLEAR\n") == 1, "owner revoked once " + trace)
-        check(trace.index("OWNER_CORE_CLEAR\n") < trace.index("EVENT=CLEAR_PAIRING\n") <
-              trace.index("EVENT=CLOSE_CONTROL_TRANSPORT\n"),
-              "owner revoke precedes common terminal events and native teardown " + trace)
-        expected_boundary = ('real-owner-native-common-private-channel-guard-process;injected-OS-admission-and-inert-Trial'
-                             if process else 'synthetic-OS-and-lease-real-owner-native-common')
-        check('OWNER_BOUNDARIES=' + expected_boundary in trace,
-              "explicit synthetic effect boundary, real integrated code")
-        check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,
-              "same common PIN one-shot handoff; not authentication success")
-        if case == "success":
-            check("FE36_AUTH_OBJC_SOCKET_CASES_OK=4" in status,
-                  "actual owner handoff feeds exported Native auth, four real-crypto socket cases")
-    if process:
-        # Simulator executable has returned; closing host relay transfers no
-        # restore authority. Guard observes its actual host-broker parent exit.
-        broker.close()
-        listener.close()
-        _process.wait_recovery(broker.directory)
-        process_events = (broker.directory / 'events').read_text(encoding='ascii')
-        check(process_events.count('ARM_IMMUTABLE') == 1, 'process guard immutable arm once')
-        check(process_events.count('INERT_TAKEOVER') == 1, 'process guard READY before work')
-        check(process_events.count('INERT_RESTORE_ONCE') == 1, 'independent inert recovery once')
-        if case == 'cleanup_failure':
-            check('RETURN_UNCERTAIN' in process_events and 'PARENT_EXIT_OBSERVED' in process_events,
-                  'cleanup uncertainty cannot restore concurrently with live broker owner')
-        else:
-            check('RETURN_CLEAN_EXITED' in process_events, 'typed completion precedes guard restore')
-    check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
-          "scan never owns power heartbeat")
-    shutil.rmtree(guard)
-    print(("SCAN_OWNER_NATIVE_COMMON_CASE_OK=" if owner else "SCAN_NATIVE_SOCKET_CASE_OK=") + case)
+    label = ("owner-process-" if process else "owner-" if owner else "scan-") + case
+    thread = None
+    try:
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        launch = subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id,
+            "tcp:" + str(server.getsockname()[1]), "Documents/" + guard.name,
+            ("owner_" if owner else "") + ("process_" if process else "") + case],
+            capture_output=True, text=True, timeout=30)
+        destination = ROOT / "artifacts/scan-owner/simulator-cases" / label
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / 'launch-status.txt').write_text(
+            'returncode=' + str(launch.returncode) + '\nstdout=' + launch.stdout +
+            '\nstderr=' + launch.stderr, encoding='utf-8')
+        check(launch.returncode == 0, "scan fixture launched")
+        for _ in range(60):
+            if result_file.exists():
+                break
+            time.sleep(.25)
+        preserve_case_evidence(documents, guard, label)
+        check(result_file.exists(), "scan fixture bounded completion; evidence=" + label)
+        thread.join(8)
+        server.close()
+        status = (documents / "fe35-cli-status.log").read_text(encoding="ascii", errors="replace")
+        preserve_case_evidence(documents, guard, ("owner-process-" if process else "owner-" if owner else "scan-") + case)
+        check(not thread.is_alive() and not errors, "scan socket assertions " + repr(errors) + status)
+        trace = (guard / "scan-events").read_text(encoding="ascii")
+        check(result_file.read_text(encoding="ascii").strip() == "0",
+              "real common sink assertions " + status + "; named fixture trace: " + trace)
+        expected_ready = int(case in ("ready_stop", "ready_timeout", "cleanup_failure", "background", "disconnect", "success"))
+        check(trace.count("EVENT=PAIRING_READY\n") == expected_ready, "dual readiness once " + trace)
+        expected_clear = 2 if owner and case == "success" else 1
+        check(trace.count("EVENT=CLEAR_PAIRING\n") == expected_clear, "clear for accepted/terminal transition " + trace)
+        check(trace.count("EVENT=CLOSE_CONTROL_TRANSPORT\n") == 1, "close exactly once " + trace)
+        check(trace.count("CALLBACK=CLEANED\n") == 1, "cleaned exactly once " + trace)
+        check("COUNTS=" + str(expected_ready) + "," + str(expected_clear) + ",1,1" in trace, "late and old callbacks inert")
+        expected_cleanup = int(case in ("ready_stop", "ready_timeout", "rfcomm_failure", "sdp_failure", "background", "disconnect", "success"))
+        completion = "COMPLETION=1," + str(expected_cleanup) + (",0\n" if owner and case == "success" else ",1\n")
+        check(trace.count(completion) == 1, "typed worker return and independent cleanup certainty " + trace)
+        check(trace.index("CALLBACK=CLEANED\n") < trace.index(completion),
+              "CLEANED precedes typed return and is not cleanup success")
+        check("hicar://" not in status + trace, "QR never enters diagnostic output")
+        if owner:
+            check("OWNER_ASSERT_FAIL=" not in trace, "all named owner assertions passed " + trace)
+            check(trace.count("OWNER_CORE_CLEAR\n") == 1, "owner revoked once " + trace)
+            check(trace.index("OWNER_CORE_CLEAR\n") < trace.index("EVENT=CLEAR_PAIRING\n") <
+                  trace.index("EVENT=CLOSE_CONTROL_TRANSPORT\n"),
+                  "owner revoke precedes common terminal events and native teardown " + trace)
+            expected_boundary = ('real-owner-native-common-private-channel-guard-process;injected-OS-admission-and-inert-Trial'
+                                 if process else 'synthetic-OS-and-lease-real-owner-native-common')
+            check('OWNER_BOUNDARIES=' + expected_boundary in trace,
+                  "explicit synthetic effect boundary, real integrated code")
+            check("OWNER_HANDOFF_SAME_PIN=" + str(int(case == "success")) in trace,
+                  "same common PIN one-shot handoff; not authentication success")
+            if case == "success":
+                check("FE36_AUTH_OBJC_SOCKET_CASES_OK=4" in status,
+                      "actual owner handoff feeds exported Native auth, four real-crypto socket cases")
+        if process:
+            # Simulator executable has returned; closing host relay transfers no
+            # restore authority. Guard observes its actual host-broker parent exit.
+            broker.close()
+            listener.close()
+            _process.wait_recovery(broker.directory)
+            process_events = (broker.directory / 'events').read_text(encoding='ascii')
+            check(process_events.count('ARM_IMMUTABLE') == 1, 'process guard immutable arm once')
+            check(process_events.count('INERT_TAKEOVER') == 1, 'process guard READY before work')
+            check(process_events.count('INERT_RESTORE_ONCE') == 1, 'independent inert recovery once')
+            if case == 'cleanup_failure':
+                check('RETURN_UNCERTAIN' in process_events and 'PARENT_EXIT_OBSERVED' in process_events,
+                      'cleanup uncertainty cannot restore concurrently with live broker owner')
+            else:
+                check('RETURN_CLEAN_EXITED' in process_events, 'typed completion precedes guard restore')
+        check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
+              "scan never owns power heartbeat")
+        shutil.rmtree(guard)
+        print(("SCAN_OWNER_NATIVE_COMMON_CASE_OK=" if owner else "SCAN_NATIVE_SOCKET_CASE_OK=") + case)
+    finally:
+        # Never let an early assertion discard the only Simulator trace. Broker
+        # exit is cleanup evidence, not proof of owner/guard recovery success.
+        preserve_case_evidence(documents, guard, label)
+        server.close()
+        destination = ROOT / "artifacts/scan-owner/simulator-cases" / label
+        (destination / 'peer-status.txt').write_text(
+            'thread_alive=' + str(thread.is_alive() if thread else None) + '\nerrors=' + repr(errors),
+            encoding='utf-8')
+        if process and not broker.log.closed:
+            try:
+                broker.close()
+            except Exception as exc:
+                destination = ROOT / "artifacts/scan-owner/simulator-cases" / label
+                (destination / 'broker-cleanup-error.txt').write_text(repr(exc), encoding='utf-8')
+        if process:
+            (destination / 'broker-exit.txt').write_text(
+                'returncode=' + str(broker.process.poll()), encoding='ascii')
+        preserve_case_evidence(documents, guard, label)
 
 
 def main():

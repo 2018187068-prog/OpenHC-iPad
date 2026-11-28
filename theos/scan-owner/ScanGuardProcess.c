@@ -109,7 +109,15 @@ static int run_guard(bool missingReady,int finalization) {
             delegate(dir,&delegated); state.delegated=true;
             close(channel); connected=false; continue;
         }
-        bool accepted=ohc_lease_step(&state,&frame,ohc_lease_now());
+        int64_t checkedAt=ohc_lease_now();
+        char diagnostic[320];
+        int diagnosticSize=snprintf(diagnostic,sizeof(diagnostic),
+            "GUARD_REQUEST op=%u generation=%llu sequence=%llu now=%lld deadline=%lld armed=%d delegated=%d overdue=%d\n",
+            (unsigned)frame.op,(unsigned long long)frame.generation,(unsigned long long)frame.sequence,
+            (long long)checkedAt,(long long)frame.deadline,state.armed,state.delegated,ohc_lease_overdue(&state,checkedAt));
+        if(diagnosticSize>0&&(size_t)diagnosticSize<sizeof(diagnostic)) { (void)note(dir,"events",diagnostic,O_APPEND); }
+        bool accepted=ohc_lease_step(&state,&frame,checkedAt);
+        (void)note(dir,"events",accepted?"GUARD_PROTOCOL_ACCEPTED\n":"GUARD_PROTOCOL_REJECTED\n",O_APPEND);
         if(accepted&&frame.op==OHC_L_ARM) {
             (void)note(dir,"events","ARM_IMMUTABLE\n",O_APPEND);
             if(missingReady) { continue; }
@@ -123,7 +131,9 @@ static int run_guard(bool missingReady,int finalization) {
         if(accepted&&frame.op==OHC_L_RESTORE) { accepted=recover(dir,&state,finalization); }
         if(!accepted||frame.op==OHC_L_DELEGATE) { delegate(dir,&delegated); state.delegated=true; }
         frame.op=accepted?OHC_L_OK:OHC_L_DENIED; frame.flags=0; frame.status=0;
-        if(!ohc_lease_write(channel,&frame,1000)) {
+        bool replied=ohc_lease_write(channel,&frame,1000);
+        (void)note(dir,"events",replied?"GUARD_ACK_WRITTEN\n":"GUARD_ACK_WRITE_FAILED\n",O_APPEND);
+        if(!replied) {
             delegate(dir,&delegated); state.delegated=true; close(channel); connected=false;
         }
         if(state.restored) { close(lock); return 0; }

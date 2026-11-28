@@ -195,6 +195,9 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
     if(waitResult){
         /* Process exits; do not free borrowed callback state underneath worker. */
+        fprintf(trace,"OWNER_ASSERT_FAIL=bounded_completion_process_exit status=95\n");
+        fflush(trace);
+        fprintf(stderr,"OWNER_FIXTURE_EXIT=95 scenario=%s\n",scenario); fflush(stderr);
         _exit(95);
     }
     /* Barrier: final callback still owns fixture storage; get test count via the

@@ -81,6 +81,7 @@ static int relay_input(const char *mode) {
 }
 static void pause_ms(int ms) { (void)poll(NULL,0,ms); }
 static pid_t spawn_guard(const char *exe,int dir,int *client,const char *which) {
+    fprintf(stderr,"GUARD_SPAWN_BEGIN now=%lld\n",(long long)ohc_lease_now());
     int pair[2]; CHECK(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));
     int leakage[2]; CHECK(!pipe(leakage));
     int childSocket=fcntl(pair[1],F_DUPFD_CLOEXEC,10);
@@ -107,6 +108,7 @@ static pid_t spawn_guard(const char *exe,int dir,int *client,const char *which) 
     CHECK(poll(&evidence,1,3000)>0);
     char byte; CHECK(read(leakage[0],&byte,1)==0); close(leakage[0]);
     puts("INHERITED_FD_ALLOWLIST_EOF"); fflush(stdout);
+    fprintf(stderr,"GUARD_EXEC_ALLOWLIST_EOF now=%lld\n",(long long)ohc_lease_now());
     *client=pair[0]; return pid;
 }
 typedef struct {
@@ -232,12 +234,19 @@ int main(int argc,char **argv) {
     relay_descriptor(channel);
     for(;;) {
         struct pollfd p={input,POLLIN,0};
-        if(poll(&p,1,15000)!=1) { break; }
+        errno=0; int polled=poll(&p,1,15000);
+        if(polled!=1) { fprintf(stderr,"RELAY_END stage=input-poll result=%d errno=%d now=%lld\n",polled,errno,(long long)ohc_lease_now()); break; }
         ohc_lease_frame frame;
-        if(!ohc_lease_read(input,&frame,1000)) { break; }
-        if(!ohc_lease_write(channel,&frame,1000)||!ohc_lease_read(channel,&frame,1500)||
-           !ohc_lease_write(input,&frame,1000)) { break; }
-        if(frame.op!=OHC_L_OK) { break; }
+        errno=0;
+        if(!ohc_lease_read(input,&frame,1000)) { fprintf(stderr,"RELAY_END stage=input-read errno=%d now=%lld\n",errno,(long long)ohc_lease_now()); break; }
+        fprintf(stderr,"RELAY_REQUEST op=%u sequence=%llu generation=%llu now=%lld deadline=%lld\n",(unsigned)frame.op,
+            (unsigned long long)frame.sequence,(unsigned long long)frame.generation,(long long)ohc_lease_now(),(long long)frame.deadline);
+        const char *stage="guard-write"; errno=0;
+        bool ok=ohc_lease_write(channel,&frame,1000);
+        if(ok) { stage="guard-read"; errno=0; ok=ohc_lease_read(channel,&frame,1500); }
+        if(ok) { stage="client-write"; errno=0; ok=ohc_lease_write(input,&frame,1000); }
+        fprintf(stderr,"RELAY_REPLY stage=%s ok=%d errno=%d op=%u now=%lld\n",stage,ok,errno,(unsigned)frame.op,(long long)ohc_lease_now());
+        if(!ok||frame.op!=OHC_L_OK) { break; }
     }
     close(input); close(channel);
     /* Parent exits: guard independently observes the kernel relationship change

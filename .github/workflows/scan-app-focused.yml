@@ -40,7 +40,7 @@ jobs:
           failed=0
           suites='btstack-probe btstack-transport-socket session-owner-probe scan-qr-cpu scan-demo-archive'
           if [[ "$VALIDATION_SCOPE" == owner ]]; then
-            suites="$suites scan-owner scan-owner-crypto scan-owner-process"
+            suites="$suites scan-owner scan-owner-crypto scan-owner-process simulator-failure-evidence"
           else
             suites="$suites prepare-scan-app-reuse"
           fi

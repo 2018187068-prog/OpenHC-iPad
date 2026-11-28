@@ -33,6 +33,7 @@ for name in (
     'scripts/test-scan-owner-process.py', 'scripts/scan-owner-process-tests.c',
     'scripts/scan-owner-process-fixture.c', 'scripts/check-scan-owner-package.py',
     'scripts/test-scan-owner-crypto.py', 'scripts/scan-owner-sim-fixture.m',
+    'scripts/test-simulator-failure-evidence.py',
     'scripts/fe35-cli-smoke-runner.m', 'scripts/scan-transport-sim-fixture.m',
     'scripts/hicar-auth-sim-fixture.m',
     'scripts/fe36-cid-sim-fixture.m', 'scripts/test-fe36-cid-simulator.py',

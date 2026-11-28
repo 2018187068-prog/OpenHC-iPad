@@ -39,7 +39,7 @@ def decode(data):
 
 h = SimpleNamespace(ea=wire.ea, encrypted_frame=frame, decode_frame=decode,
                     read_packet=wire.read_packet, send_packet=wire.send_packet,
-                    send_event=wire.send_event, check=check)
+                    send_event=wire.send_event, crc16_arc=wire.crc16_arc, check=check)
 def tlv(tag, value=b""):
     return wire.ea(tag) + wire.ea(len(value)) + value
 
@@ -108,6 +108,11 @@ for case in cid.WIFI_CASES:
                         check(address=="127.0.0.1","real injected loopback proxy source")
             thread.join(4)
             check(not thread.is_alive() and not errors,"bounded driver completes "+case)
+            if case == "wifi_success":
+                check(any(p.startswith("wifi-response-packet-kind-actual-7-expected-7") for p in phases),
+                      "response evidence records actual/expected packet type")
+                check(any(p.startswith("wifi-response-decoded-outer-4-expected-4-encrypted-1-expected-1")
+                          for p in phases), "response evidence records actual/expected Nearby framing")
             if case in ("wifi_stop","wifi_unsupported"):
                 check((guard/"stop").read_text()=="STOP\n","explicit cancellation injection")
             if case=="wifi_pending":

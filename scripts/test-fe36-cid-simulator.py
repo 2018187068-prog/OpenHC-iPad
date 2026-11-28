@@ -22,6 +22,76 @@ WIFI_CASES = ('wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_stop', 'wi
               'wifi_cleanup_failure')
 
 
+def safe_label(value):
+    labels = {
+        'FE35 retained for authenticated WiFi negotiation': 'transport-shape',
+        'actual encrypted Nearby WiFi frame': 'nearby-envelope',
+        'Nearby frame header': 'nearby-header',
+        'Nearby frame CRC': 'nearby-crc',
+        'EA unterminated': 'nearby-ea',
+        'Nearby seed TLV': 'nearby-seed-tlv',
+        'Nearby frame exact length': 'nearby-exact-length',
+        'pinned WiFi data-channel acceptance role and frequency': 'wifi-accept-payload',
+        'unsupported channel NO_CHANNEL': 'wifi-unsupported-payload',
+        'duplicate request repeats original frequency': 'wifi-duplicate-accept',
+        'network and listener ready before peer MAC request': 'wifi-listener-request',
+        'reference connection info uses actual listening TCP port': 'wifi-connection-info',
+        'all auth SEND bytes use owned CID and negotiated MTU': 'auth-send-shape',
+        'bounded auth JSON reply': 'auth-reply-bound',
+    }
+    return labels.get(value, 'unclassified')
+
+
+def safe_exception_name(error):
+    known = {'AssertionError', 'EOFError', 'TimeoutError', 'error', 'IndexError',
+             'ValueError', 'UnicodeError', 'struct.error'}
+    name = type(error).__name__
+    return name if name in known else 'other'
+
+
+def inspect_nearby_frame(frame, crc16):
+    """Return framing metadata only; never retain or render frame contents."""
+    result = {'frame_bytes': len(frame), 'header': False, 'crc': 'unavailable',
+              'outer': 'unavailable', 'encrypted': 'unavailable', 'length': 'unavailable'}
+    if not frame or frame[0] != 0x7f:
+        result['header'] = 'not-nearby'
+        return result
+    result['header'] = True
+    if len(frame) >= 3:
+        expected_crc = struct.unpack('<H', frame[-2:])[0]
+        result['crc'] = expected_crc == crc16(frame[:-2])
+    def ea(at):
+        value = 0
+        for i in range(4):
+            pos = at + i
+            if pos >= len(frame):
+                return None
+            byte = frame[pos]
+            value |= (byte & 0x7f) << (7 * i)
+            if byte & 0x80:
+                return value, pos + 1
+        return None
+    outer = ea(1)
+    if outer is None:
+        return result
+    result['outer'] = outer[0]
+    flag = ea(outer[1])
+    if flag is None:
+        return result
+    result['encrypted'] = bool(flag[0] & 1)
+    flag_length = ea(flag[1])
+    if flag_length is None:
+        return result
+    payload_length_at = flag_length[1] + flag_length[0]
+    payload_length = ea(payload_length_at)
+    if payload_length is None:
+        return result
+    payload_start = payload_length[1]
+    result['payload_bytes'] = max(0, len(frame) - payload_start - 2)
+    result['length'] = payload_start + payload_length[0] + 2 == len(frame)
+    return result
+
+
 def wifi_negotiate(conn, h, guard, case, phase):
     """Actual Nearby wire packets; injected loopback network, no WiFi hardware effects."""
     cid = 0x2345
@@ -34,11 +104,45 @@ def wifi_negotiate(conn, h, guard, case, phase):
         for at in range(0, len(frame), 17):
             h.send_packet(conn, 7, cid, frame[at:at + 17])
 
+    def check(condition, label):
+        try:
+            h.check(condition, label)
+        except AssertionError:
+            phase('wifi-assertion-' + safe_label(label))
+            raise
+
     def receive(outer):
-        kind, channel, body = h.read_packet(conn)
-        h.check((kind, channel) == (7, cid), 'FE35 retained for authenticated WiFi negotiation')
-        got, encrypted, payload = h.decode_frame(body)
-        h.check((got, encrypted) == (outer, 1), 'actual encrypted Nearby WiFi frame')
+        phase('wifi-response-read-start')
+        try:
+            kind, channel, body = h.read_packet(conn)
+        except Exception as error:
+            phase('wifi-response-read-error-' + safe_exception_name(error))
+            raise
+        shape = ('kind-actual-' + str(kind) + '-expected-7-channel-actual-' + str(channel) +
+                 '-expected-' + str(cid) + '-size-' + str(len(body)))
+        if kind == 1 and len(body) >= 3:
+            opcode, length = struct.unpack('<HB', body[:3])
+            shape += '-opcode-' + hex(opcode) + '-parameters-' + str(length)
+        elif kind == 4 and len(body) >= 2:
+            shape += '-event-' + hex(body[0]) + '-parameters-' + str(body[1])
+        phase('wifi-response-packet-' + shape)
+        check((kind, channel) == (7, cid), 'FE35 retained for authenticated WiFi negotiation')
+        metadata = inspect_nearby_frame(body, h.crc16_arc)
+        metadata['outer_expected'] = outer
+        metadata['encrypted_expected'] = True
+        phase('wifi-response-frame-' + '-'.join(
+            key + '-' + str(value).lower().replace(' ', '_') for key, value in metadata.items()))
+        try:
+            got, encrypted, payload = h.decode_frame(body)
+        except AssertionError as error:
+            phase('wifi-response-decoder-assertion-' + safe_label(str(error)))
+            raise
+        except Exception as error:
+            phase('wifi-response-decoder-error-' + safe_exception_name(error))
+            raise
+        phase('wifi-response-decoded-outer-' + str(got) + '-expected-' + str(outer) +
+              '-encrypted-' + str(encrypted) + '-expected-1-payload-bytes-' + str(len(payload)))
+        check((got, encrypted) == (outer, 1), 'actual encrypted Nearby WiFi frame')
         return payload
 
     phase('wifi-resource-request')
@@ -63,17 +167,17 @@ def wifi_negotiate(conn, h, guard, case, phase):
         (guard / 'network-ready').write_text('SYNTHETIC_READY\n', encoding='ascii')
     reply = receive(4)
     if case == 'wifi_unsupported':
-        h.check(reply == tlv(2, h.ea(8) + h.ea(255)), 'unsupported channel NO_CHANNEL')
+        check(reply == tlv(2, h.ea(8) + h.ea(255)), 'unsupported channel NO_CHANNEL')
         (guard / 'stop').write_text('STOP\n', encoding='ascii')
         return
     expected = tlv(2, h.ea(3) + h.ea(1) + tlv(3, b'\x01' + h.ea(2437)))
-    h.check(reply == expected, 'pinned WiFi data-channel acceptance role and frequency')
+    check(reply == expected, 'pinned WiFi data-channel acceptance role and frequency')
     if case == 'wifi_duplicate':
         send(4, request)
-        h.check(receive(4) == expected, 'duplicate request repeats original frequency')
+        check(receive(4) == expected, 'duplicate request repeats original frequency')
     result = tlv(7, h.ea(3) + h.ea(1))
     send(4, result)
-    h.check(receive(33) == tlv(1), 'network and listener ready before peer MAC request')
+    check(receive(33) == tlv(1), 'network and listener ready before peer MAC request')
     if case == 'wifi_duplicate':
         send(4, result)  # must not create another listener/MAC request
     send(33, tlv(2, b'02:12:34:56:78:9a'))
@@ -81,7 +185,7 @@ def wifi_negotiate(conn, h, guard, case, phase):
     port = int((guard / 'tcp-port').read_text())
     expected_info = ('127.0.0.2##SYNTHETIC\n02:11:22:33:44:55\nsynthetic-pass\n2437'
                      '##version:3##' + str(port) + '##hicarApIp:127.0.0.1').encode()
-    h.check(connection == tlv(3, expected_info), 'reference connection info uses actual listening TCP port')
+    check(connection == tlv(3, expected_info), 'reference connection info uses actual listening TCP port')
     phase('wifi-info-sent-control-still-owned')
     if case == 'wifi_duplicate':
         send(33, tlv(2, b'02:12:34:56:78:9a'))  # no second connection-info send
@@ -100,7 +204,7 @@ def wifi_negotiate(conn, h, guard, case, phase):
         tcp.bind(('127.0.0.1', 0))
         tcp.connect(('127.0.0.1', port))
         phase('wifi-actual-tcp-connect')
-        h.check(tcp.recv(1) == b'', 'owned TCP boundary is closed at bounded slice completion')
+        check(tcp.recv(1) == b'', 'owned TCP boundary is closed at bounded slice completion')
 
 
 def consume_negative_auth_close(kind, channel, body, auth_cid):
@@ -359,8 +463,9 @@ def run_case(args, h, case):
                 conn.settimeout(6)
                 h.drive_peer(conn, 'success', lambda s: step.__setitem__(0, s), auth_flow=flow)
         except Exception as error:
-            errors.append((step[0], type(error).__name__))
-            phase('exception-' + type(error).__name__)
+            label = safe_label(str(error)) if isinstance(error, AssertionError) else 'none'
+            errors.append((step[0], safe_exception_name(error), label))
+            phase('exception-' + safe_exception_name(error) + '-assertion-' + label)
         finally:
             phase('daemon-finished')
 

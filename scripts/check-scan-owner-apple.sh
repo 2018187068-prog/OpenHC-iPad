@@ -23,7 +23,7 @@ for directory in ('theos/scan-ui',):
 for name in (
     'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'bridge/build.gradle.kts',
     '.github/workflows/scan-app-focused.yml',
-    'theos/btstack-probe.c', 'theos/fe35-control-bridge.h', 'theos/fe35-control-bridge.m',
+    'theos/btstack-probe.c', 'theos/Fe35CleanupCertainty.h', 'theos/fe35-control-bridge.h', 'theos/fe35-control-bridge.m',
     'theos/Fe35BridgeBounds.h',
     'theos/main.m', 'theos/fe35-bridge-smoke.m',
     'theos/session-owner-probe.c', 'theos/scan-supervisor/ScanHelperClient.h',
@@ -40,6 +40,8 @@ for name in (
     'scripts/test-fe36-wifi-diagnostics.py',
     'scripts/test-fe36-cancellation-order.py',
     'scripts/test-fe36-case-matrix.py',
+    'scripts/test-fe35-cleanup-certainty.py', 'scripts/fe35-cleanup-certainty-test.c',
+    'docs/FE35-CLEANUP-CERTAINTY-DIAGNOSTIC.md',
     'docs/FE36-CONSOLIDATED-DIAGNOSTIC-MATRIX.md',
     'scripts/test-fe36-negative-terminal.py',
     'theos/Fe36AuthTransport.h',
@@ -75,6 +77,7 @@ python3 scripts/test-fe36-negative-terminal.py 2>&1 | tee artifacts/logs/owner-f
 python3 scripts/test-fe36-wifi-diagnostics.py 2>&1 | tee artifacts/logs/owner-fe36-wifi-diagnostics.log
 python3 scripts/test-fe36-cancellation-order.py 2>&1 | tee artifacts/logs/owner-fe36-cancellation-order.log
 python3 scripts/test-fe36-case-matrix.py 2>&1 | tee artifacts/logs/owner-fe36-case-matrix.log
+python3 scripts/test-fe35-cleanup-certainty.py 2>&1 | tee artifacts/logs/owner-fe35-cleanup-certainty.log
 python3 scripts/test-nearby-wifi-harness.py 2>&1 | tee artifacts/logs/owner-nearby-wifi-harness.log
 python3 scripts/test-nearby-wifi-listener.py 2>&1 | tee artifacts/logs/owner-nearby-wifi-listener.log
 clang -std=c11 -Wall -Wextra -Werror scripts/nearby-wifi-listener-test.c -o "$RUNNER_TEMP/nearby-wifi-listener-test"

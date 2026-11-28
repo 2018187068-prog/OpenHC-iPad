@@ -38,7 +38,7 @@ jobs:
           mkdir -p focused-results
           printf 'source_commit=%s\nrun_id=%s\nscope=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$VALIDATION_SCOPE" > focused-results/BUILD.txt
           failed=0
-          suites='btstack-probe btstack-transport-socket session-owner-probe scan-qr-cpu scan-demo-archive'
+          suites='btstack-probe btstack-transport-socket session-owner-probe fe35-cleanup-certainty scan-qr-cpu scan-demo-archive'
           if [[ "$VALIDATION_SCOPE" == owner ]]; then
             suites="$suites scan-owner scan-owner-crypto scan-owner-process simulator-failure-evidence"
           else

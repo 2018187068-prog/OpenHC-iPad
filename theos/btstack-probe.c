@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "fe35-control-bridge.h"
+#include "Fe35CleanupCertainty.h"
 
 static int query(int fd, uint8_t ocf, uint8_t expected, uint8_t *reply, unsigned size);
 static int connect_daemon(const char *path);
@@ -597,20 +598,29 @@ static int open_auth_listener(int fd, const uint8_t uuid[16], uint8_t *channel_o
     return *handle_out >= 0x10000 ? 0 : -1;
 }
 
-static int close_auth_listener(int fd, uint8_t channel, uint32_t handle) {
+static int close_auth_listener(int fd, uint8_t channel, uint32_t handle, int *failure_stage) {
     int64_t deadline = now_ms() + 4000;
     if (handle) {
         uint8_t params[] = {(uint8_t)handle, (uint8_t)(handle >> 8),
                             (uint8_t)(handle >> 16), (uint8_t)(handle >> 24)};
-        if (command(fd, 0x31, params, sizeof(params), deadline)) return -1;
+        if (command(fd, 0x31, params, sizeof(params), deadline)) {
+            if (failure_stage && !*failure_stage) *failure_stage = 1;
+            return -1;
+        }
     }
     if (channel) {
         uint8_t params[] = {channel, 0};
-        if (command(fd, 0x43, params, sizeof(params), deadline)) return -1;
+        if (command(fd, 0x43, params, sizeof(params), deadline)) {
+            if (failure_stage && !*failure_stage) *failure_stage = 2;
+            return -1;
+        }
     }
     if (channel || handle) {
         uint8_t barrier[3];
-        if (query(fd, 1, 0x60, barrier, sizeof(barrier))) return -1;
+        if (query(fd, 1, 0x60, barrier, sizeof(barrier))) {
+            if (failure_stage && !*failure_stage) *failure_stage = 3;
+            return -1;
+        }
     }
     return 0;
 }
@@ -649,7 +659,7 @@ static int dispatch_bridge_batch(int fd, uint16_t cid, uint16_t mtu, fe35_bridge
                 }
             }
         } else if (strcmp(event.kind, "CLOSE_AUTH_LISTENER") == 0) {
-            if (close_auth_listener(fd, *auth_channel, *auth_handle)) result = -1;
+            if (close_auth_listener(fd, *auth_channel, *auth_handle, NULL)) result = -1;
             else { *auth_channel = 0; *auth_handle = 0; memset(auth_uuid, 0, 16); }
         } else if (strncmp(event.kind, "ERROR", 5) == 0 ||
                    strcmp(event.kind, "CONTROL_ABORTED") == 0 ||
@@ -1113,7 +1123,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         if(receive_transport_packet(fd,auth_cid,&packet_type,&packet_channel,body,&size,now_ms()+4000,run_dir) ||
             packet_type!=4 || body[0]!=0x81 || le16(body+2)!=auth_cid) {result=1;cleanup_uncertain=1;goto done;}
         auth_disconnected=1;
-        if(close_auth_listener(fd,auth_channel,auth_handle)) {result=1;cleanup_uncertain=1;goto done;}
+        if(close_auth_listener(fd,auth_channel,auth_handle,NULL)) {result=1;cleanup_uncertain=1;goto done;}
         auth_channel=0;auth_handle=0;
         /* This is private one-shot transfer into the continuing owner, not final success. */
         if(scan_poll() || auth->commit(auth->context,1,now_ms()) || scan_poll()) {result=1;goto done;}
@@ -1124,6 +1134,7 @@ done:;
     /* Immutable pre-cleanup observation. Final failure/cleanup certainty below
      * remains independent. No packet-loop IO or protocol/timing changes. */
     const char *const primary_failure_stage = result ? inbound_primary_stage(stage) : "NONE";
+    int final_cleanup_ok = 0, final_close_ok = 0, cleanup_failure_stage = 0;
     if(tcp>=0 && close(tcp)) {result=1;cleanup_uncertain=1;stage="WIFI_TCP_CLOSE_UNCONFIRMED";}
     if(wifi && !wifi->cancel(wifi->context)) {result=1;cleanup_uncertain=1;stage="WIFI_NETWORK_CLEANUP_UNCONFIRMED";}
     /* Revoke pairing before touching resources. The common model emits CLOSE
@@ -1139,7 +1150,7 @@ done:;
          * closing it, but never manufacture cleanup certainty from socket EOF. */
         if(auth_cid && !auth_disconnected) {
             uint8_t params[]={(uint8_t)auth_cid,(uint8_t)(auth_cid>>8),0};
-            if(command(fd,0x41,params,sizeof(params),deadline)) cleanup_ok=0;
+            if(command(fd,0x41,params,sizeof(params),deadline)) { cleanup_ok=0; cleanup_failure_stage=4; }
             else {
                 int confirmed=0; int64_t close_deadline=now_ms()+5000;
 #ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
@@ -1150,19 +1161,24 @@ done:;
                     if(packet_type==4 && body[0]==0x81 && le16(body+2)==auth_cid) {confirmed=1;break;}
                     /* Do not swallow a remote control close/extra data and
                      * then promote a candidate. Unknown events fail closed. */
-                    cleanup_ok=0;
+                    cleanup_ok=0; if (!cleanup_failure_stage) cleanup_failure_stage=5;
                 }
-                if(!confirmed) cleanup_ok=0; else auth_disconnected=1;
+                if(!confirmed) { cleanup_ok=0; if (!cleanup_failure_stage) cleanup_failure_stage=5; }
+                else auth_disconnected=1;
             }
         }
         if (auth_channel || auth_handle) {
-            if (close_auth_listener(fd, auth_channel, auth_handle)) cleanup_ok = 0;
+            int listener_failure_stage = 0;
+            if (close_auth_listener(fd, auth_channel, auth_handle, &listener_failure_stage)) {
+                cleanup_ok = 0;
+                if (!cleanup_failure_stage) cleanup_failure_stage = listener_failure_stage;
+            }
             auth_channel = 0;
             auth_handle = 0;
         }
         if (opened && cid && !tcp_control_settled) {
             uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
-            if (command(fd, 0x41, params, sizeof(params), deadline)) cleanup_ok = 0;
+            if (command(fd, 0x41, params, sizeof(params), deadline)) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=6; }
             else {
                 int64_t close_deadline = now_ms() + 5000;
 #ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
@@ -1179,32 +1195,35 @@ done:;
                     /* A verified candidate is still revocable throughout
                      * cleanup. Do not discard unexpected data/events here
                      * and subsequently promote it on a later close ACK. */
-                    if (auth) cleanup_ok = 0;
+                    if (auth) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=7; }
                 }
-                if (!confirmed) cleanup_ok = 0;
+                if (!confirmed) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=7; }
                 else disconnected = 1;
             }
         }
         if (handle) {
             uint8_t params[] = {(uint8_t)handle, (uint8_t)(handle >> 8),
                                 (uint8_t)(handle >> 16), (uint8_t)(handle >> 24)};
-            if (command(fd, 0x31, params, sizeof(params), deadline)) cleanup_ok = 0;
+            if (command(fd, 0x31, params, sizeof(params), deadline)) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=8; }
         }
         if (owned_channel) {
             uint8_t params[] = {owned_channel, 0};
-            if (command(fd, 0x43, params, sizeof(params), deadline)) cleanup_ok = 0;
+            if (command(fd, 0x43, params, sizeof(params), deadline)) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=9; }
         }
         if (handle || owned_channel) {
             uint8_t barrier[3];
-            if (query(fd, 1, 0x60, barrier, sizeof(barrier))) cleanup_ok = 0;
+            if (query(fd, 1, 0x60, barrier, sizeof(barrier))) { cleanup_ok = 0; if (!cleanup_failure_stage) cleanup_failure_stage=10; }
         }
         if (!cleanup_ok) { result = 1; stage = "CLEANUP_UNCONFIRMED"; }
         /* Socket teardown alone does not confirm an unacknowledged registration
          * or pending CID. Preserve protocol status; report certainty separately. */
         int close_ok = close(fd) == 0;
-        bool confirmed=cleanup_ok && close_ok && !registration_pending &&
-                !cleanup_uncertain && (!cid || opened || disconnected) &&
-                (!auth_cid || auth_disconnected);
+        if (!close_ok && !cleanup_failure_stage) cleanup_failure_stage = 11;
+        final_cleanup_ok = cleanup_ok;
+        final_close_ok = close_ok;
+        bool confirmed=openhc_fe35_cleanup_confirmed(cleanup_ok,close_ok,
+                registration_pending,cleanup_uncertain,cid!=0,opened,disconnected,
+                auth_cid!=0,auth_disconnected);
         if (cleanup_confirmed) *cleanup_confirmed = confirmed;
         if(auth && !result && (!confirmed || scan_poll() || (!wifi && auth->commit(auth->context,1,now_ms())))) {
             result=1; stage=wifi?"WIFI_COMPLETION_REVOKED":"AUTH_COMMIT_REVOKED";
@@ -1217,6 +1236,9 @@ done:;
     current_scan=NULL; auth_strict_exchange=0;
     memset(peer,0,sizeof(peer));
     printf("BTSTACK_FE35_INBOUND_PRIMARY_STAGE=%s\n", primary_failure_stage);
+    printf("BTSTACK_FE35_INBOUND_CLEANUP_FACTS=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+        final_cleanup_ok,final_close_ok,registration_pending,cleanup_uncertain,
+        cid!=0,opened,disconnected,auth_cid!=0,auth_disconnected,cleanup_failure_stage);
     if (result) printf("BTSTACK_FE35_INBOUND_FAILED=%s\n", stage);
     else {
         puts("BTSTACK_FE35_BRIDGE_SESSION_OK");

@@ -41,9 +41,9 @@ class MatrixTests(unittest.TestCase):
             visited.append(case);return True
         data,output=self.matrix(run,False)
         self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES+cid.LIVE_CASES))
-        self.assertEqual(len(data),39)
+        self.assertEqual(len(data),43)
         self.assertTrue(all(e['outcome']=='passed' for e in data))
-        self.assertIn('FE36_CID_TRANSPORT_AUTH_CASES_OK=21',output)
+        self.assertIn('FE36_CID_TRANSPORT_AUTH_CASES_OK=25',output)
         self.assertIn('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=10',output)
         self.assertIn('FE36_LIVE_TCP_CONTROL_CASES_OK=8',output)
 

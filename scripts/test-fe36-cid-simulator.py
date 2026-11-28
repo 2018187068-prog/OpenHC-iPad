@@ -19,7 +19,9 @@ import sys
 CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_peer',
          'wrong_cid', 'control_cid_reuse', 'extra_connection', 'malformed_open',
          'wrong_data_cid', 'reopened_cid', 'wrong_listener',
-         'control_close', 'auth_disconnect', 'stop', 'background', 'deadline', 'send_failure', 'cleanup_failure', 'pending_stop',
+         'control_close', 'auth_disconnect', 'auth_cid_close_failure',
+         'auth_listener_barrier_failure', 'control_cid_close_failure',
+         'final_cleanup_barrier_failure', 'stop', 'background', 'deadline', 'send_failure', 'cleanup_failure', 'pending_stop',
          'late_cleanup_data')
 WIFI_CASES = ('wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_stop', 'wifi_expiry',
               'wifi_malformed', 'wifi_unsupported', 'wifi_tcp_failure', 'wifi_disconnect',
@@ -78,6 +80,13 @@ def safe_label(value):
         'bounded synthetic phone request': 'phone-request-bound',
         'positive pairing cannot terminate before reply': 'auth-positive-premature-terminal',
         'all named CID assertions passed': 'fixture-named-assertions',
+        'auth disconnect native status retained': 'auth-cleanup-status',
+        'one final native cleanup predicate': 'auth-cleanup-predicate-count',
+        'native cleanup evidence matches injected case': 'auth-cleanup-evidence-match',
+        'one typed auth disconnect completion': 'auth-completion-count',
+        'auth disconnect remains a protocol failure': 'auth-protocol-failure',
+        'typed cleanup matches independent native predicate': 'auth-cleanup-predicate-match',
+        'guard delegation follows native cleanup certainty': 'auth-cleanup-delegation',
         'only bounded-auth or owned TCP boundary consumes key': 'key-delivery-count',
         'lease remains sole heartbeat owner': 'lease-heartbeat-owner',
         'auth envelope object required': 'auth-envelope-object',
@@ -509,10 +518,17 @@ def _run_case(args, h, case, isolation):
         phase('cleanup-command-' + hex(ocf))
         require_cleanup_command(packet(conn), ocf, params, h.check, phase)
 
+    def reset_cleanup_peer(conn):
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        conn.close()
+
     def cleanup(conn, owned_auth=True, remote_auth_closed=False, auth_services=True):
         step[0] = 'typed_cleanup'
         if owned_auth and not remote_auth_closed:
             command(conn, 0x41, struct.pack('<HB', auth_cid, 0))
+            if case == 'auth_cid_close_failure':
+                reset_cleanup_peer(conn)
+                return
             if case == 'pending_stop':
                 (guard / 'stop').write_text('STOP\n', encoding='ascii')
                 h.check(conn.recv(1) == b'', 'pending verified candidate revoked before unacknowledged close')
@@ -522,9 +538,15 @@ def _run_case(args, h, case, isolation):
             command(conn, 0x31, struct.pack('<I', 0x10002))
             command(conn, 0x43, bytes([17, 0]))
             command(conn, 1, b'')
+            if case == 'auth_listener_barrier_failure':
+                reset_cleanup_peer(conn)
+                return
             h.send_event(conn, 0x60, bytes([2]))
         if case != 'wifi_live_remote_close':
             command(conn, 0x41, struct.pack('<HB', control_cid, 0))
+            if case == 'control_cid_close_failure':
+                reset_cleanup_peer(conn)
+                return
         if case == 'late_cleanup_data':
             # A real crypto candidate exists; this unexpected FE35 payload
             # before the close ACK must revoke it, never be silently skipped.
@@ -534,6 +556,9 @@ def _run_case(args, h, case, isolation):
         command(conn, 0x31, struct.pack('<I', 0x10001))
         command(conn, 0x43, bytes([16, 0]))
         command(conn, 1, b'')
+        if case == 'final_cleanup_barrier_failure':
+            reset_cleanup_peer(conn)
+            return
         if case == 'cleanup_failure':
             conn.shutdown(socket.SHUT_RDWR)
         else:
@@ -575,9 +600,14 @@ def _run_case(args, h, case, isolation):
             h.send_event(conn, 0x81, struct.pack('<H', control_cid))
             cleanup(conn)
             return
-        if case == 'auth_disconnect':
+        if case in ('auth_disconnect', 'auth_listener_barrier_failure',
+                    'control_cid_close_failure', 'final_cleanup_barrier_failure'):
             h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
             cleanup(conn, remote_auth_closed=True)
+            return
+        if case == 'auth_cid_close_failure':
+            h.send_packet(conn, 7, auth_cid, bytes(38))
+            cleanup(conn)
             return
         if case in ('stop', 'background', 'deadline'):
             phase('cancellation-request-' + case if case != 'deadline' else
@@ -758,6 +788,28 @@ def _run_case(args, h, case, isolation):
     h.check(result.exists() and result.read_text().strip() == '0', 'CID production-code assertions ' + case)
     trace = (guard / 'scan-events').read_text()
     h.check('CID_ASSERT_FAIL=' not in trace, 'all named CID assertions passed')
+    expected_cleanup_facts = {
+        'auth_disconnect': (1, 1, 0, 0, 1, 1, 1, 1, 1, 0),
+        'auth_cid_close_failure': (0, 1, 0, 0, 1, 1, 0, 1, 0, 5),
+        'auth_listener_barrier_failure': (0, 1, 0, 0, 1, 1, 0, 1, 1, 3),
+        'control_cid_close_failure': (0, 1, 0, 0, 1, 1, 0, 1, 1, 7),
+        'final_cleanup_barrier_failure': (0, 1, 0, 0, 1, 1, 1, 1, 1, 10),
+    }
+    if case in expected_cleanup_facts:
+        status = guard.parent / 'fe35-cli-status.log'
+        h.check(status.is_file(), 'auth disconnect native status retained')
+        facts = re.findall(r'^BTSTACK_FE35_INBOUND_CLEANUP_FACTS=(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)$',
+                           status.read_text(errors='replace'), re.MULTILINE)
+        h.check(len(facts) == 1, 'one final native cleanup predicate')
+        h.check(tuple(map(int, facts[0])) == expected_cleanup_facts[case],
+                'native cleanup evidence matches injected case')
+        completion = re.findall(r'^CID_COMPLETION=(\d+),(\d+),(\d+),(\d+)$', trace, re.MULTILINE)
+        h.check(len(completion) == 1, 'one typed auth disconnect completion')
+        returned, confirmed, status_code, delegated = map(int, completion[0])
+        h.check(returned == 1 and status_code == 1, 'auth disconnect remains a protocol failure')
+        expected_cleanup = expected_cleanup_facts[case][0] == 1
+        h.check(bool(confirmed) == expected_cleanup, 'typed cleanup matches independent native predicate')
+        h.check(bool(delegated) == (not expected_cleanup), 'guard delegation follows native cleanup certainty')
     boundary = case in ('success', 'wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_cleanup_failure')
     h.check(trace.count('TRUSTED_KEY_CALLBACK') == int(boundary), 'only bounded-auth or owned TCP boundary consumes key')
     h.check((guard / 'heartbeat').read_text() == 'POWER_DRIVER_OWNS_THIS\n', 'lease remains sole heartbeat owner')

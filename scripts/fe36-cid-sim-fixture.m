@@ -182,16 +182,18 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     runtime.finished=^(fe35_scan_completion c,BOOL delegated) {
         BOOL success=[name isEqualToString:@"success"] ||
             [@[@"wifi_success",@"wifi_pending",@"wifi_duplicate",@"wifi_live_disconnect",@"wifi_live_remote_close"] containsObject:name];
-        /* An auth-CID disconnect aborts the exchange; it is not proof that the
-         * independent cleanup transaction completed. Require guard delegation. */
-        BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"late_cleanup_data",@"auth_disconnect",@"wrong_peer",
+        /* The known auth-CID close fails the protocol exchange; cleanup certainty
+         * comes from the transport's separate final resource predicate. */
+        BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"late_cleanup_data",
+            @"auth_cid_close_failure",@"auth_listener_barrier_failure",
+            @"control_cid_close_failure",@"final_cleanup_barrier_failure",@"wrong_peer",
             @"wrong_cid",@"control_cid_reuse",@"extra_connection",@"wrong_listener",@"wrong_data_cid",@"reopened_cid",
             @"wifi_cleanup_failure"] containsObject:name];
         CID_CHECK(c.returned && c.status==(success?0:1),"typed_protocol_completion");
         CID_CHECK(c.cleanup_confirmed==!uncertain,"independent_cleanup_certainty");
         CID_CHECK(delegated==uncertain,"uncertainty_delegates");
         CID_CHECK(handed==1 && cleared>=1,"one_handoff_pairing_revoked");
-        fprintf(trace,"CID_COMPLETION=%d,%d,%d\n",c.returned,c.cleanup_confirmed,c.status);fflush(trace);
+        fprintf(trace,"CID_COMPLETION=%d,%d,%d,%d\n",c.returned,c.cleanup_confirmed,c.status,delegated);fflush(trace);
         completed=YES;dispatch_semaphore_signal(done);
     };
     int fds[2];if(socketpair(AF_UNIX,SOCK_STREAM,0,fds)) {fclose(trace);return 91;}

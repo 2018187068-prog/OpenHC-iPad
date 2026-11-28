@@ -58,6 +58,75 @@ def check(condition, label):
         raise AssertionError(label)
 
 
+def validate_owner_guard_trace(status, trace, cleanup, process=False):
+    """Test-only owner evidence; fixed labels, no payload/secret diagnostics.
+
+    Independently check the native fixture's decision against existing ordered
+    owner observations. A completed cleanup cannot undo an expired owner phase.
+    """
+    phases, expiries = {}, []
+    last, lease = -1, None
+    lines = status.splitlines()
+    check(len(lines) <= 4096, "owner_guard_evidence_bound")
+    for order, line in enumerate(lines):
+        if line.startswith("OWNER_PHASE "):
+            match = re.fullmatch(r'OWNER_PHASE effect=([0-9]+) state=([0-9]+) generation=([0-9]+) now=([0-9]+) deadline=([0-9]+) phase_deadline=([0-9]+) worker_started=([01])', line)
+            check(match is not None, "owner_guard_phase_shape")
+            effect, state, generation, now, deadline, phase, worker = map(int, match.groups())
+            check(effect <= 9 and state <= 6 and generation == 1, "owner_guard_generation_state")
+            check(now >= last and deadline > 0 and lease in (None, deadline), "owner_guard_clock_lease")
+            lease, last = deadline, now
+            phases.setdefault(effect, []).append(dict(order=order, state=state, now=now,
+                                                     phase=phase, worker=worker))
+        elif line.startswith("OWNER_EXPIRY "):
+            match = re.fullmatch(r'OWNER_EXPIRY cause=phase state=4 now=([0-9]+) phase_deadline=([0-9]+)', line)
+            check(match is not None, "owner_guard_expiry_shape")
+            now, phase = map(int, match.groups())
+            check(now >= last and now >= phase > 0, "owner_guard_expiry_clock")
+            expiries.append(dict(order=order, now=now, phase=phase))
+            last = now
+    # A private-process guard may recover only after the host broker closes;
+    # run_scan_case verifies its actual recovery separately after this check.
+    required = (0, 1, 2, 3, 4, 6)
+    check(all(len(phases.get(e, [])) == 1 for e in required), "owner_guard_effects_once")
+    check(len(phases.get(9, [])) in ((0, 1) if process else (1,)), "owner_guard_release_count")
+    p = {e: values[0] for e, values in phases.items()}
+    check(all(p[a]['order'] < p[b]['order'] for a, b in zip(required, required[1:])),
+          "owner_guard_effect_order")
+    check(all(p[e]['state'] == state for e, state in ((0, 1), (1, 2), (2, 3), (3, 3), (4, 3), (6, 4))) and
+          (9 not in p or p[9]['state'] == 0),
+          "owner_guard_effect_states")
+    check(all(p[e]['worker'] == int(e not in (0, 1)) for e in required), "owner_guard_worker_lifetime")
+    check(len(phases.get(5, [])) >= 1, "owner_guard_heartbeat_started")
+    restores, delegates = len(phases.get(7, [])), len(phases.get(8, []))
+    check((restores, delegates) in ((1, 0), (0, 1)), "owner_guard_exclusive_decision")
+    decision = 8 if delegates else 7
+    check(p[6]['order'] < p[decision]['order'] and
+          (9 not in p or p[decision]['order'] < p[9]['order']) and
+          p[decision]['state'] == (6 if delegates else 5), "owner_guard_decision_order")
+    stop_deadline = p[6]['phase']
+    check(1000 <= stop_deadline < lease and stop_deadline - 1000 <= p[4]['now'],
+          "owner_guard_fixed_stop_deadline")
+    if cleanup and delegates:
+        check(len(expiries) == 1, "owner_guard_delegation_requires_expiry")
+        expiry = expiries[0]
+        check(p[4]['order'] < expiry['order'] < p[6]['order'] and
+              expiry['phase'] == stop_deadline == p[8]['phase'] and
+              p[8]['now'] >= expiry['now'], "owner_guard_expiry_before_delegation")
+        expected = 2
+    elif cleanup:
+        completed = p[7]['phase'] - 3000
+        check(not expiries and stop_deadline - 1000 <= completed < stop_deadline and
+              p[7]['now'] >= completed, "owner_guard_restore_before_deadline")
+        expected = 1
+    else:
+        check(delegates == 1, "owner_guard_uncertain_cleanup_delegates")
+        expected = 3
+    markers = re.findall(r'^OWNER_GUARD_DECISION=([0-9]+)$', trace, re.MULTILINE)
+    check(markers == [str(expected)], "owner_guard_native_trace_agreement")
+    return expected
+
+
 def safe_launch_metadata(stdout, stderr, bundle_id):
     """Persist shape/known labels only, never arbitrary subprocess output."""
     def text(value):
@@ -652,6 +721,7 @@ def run_scan_case(args, case, owner=False, process=False):
         check("hicar://" not in status + trace, "QR never enters diagnostic output")
         if owner:
             check("OWNER_ASSERT_FAIL=" not in trace, "all named owner assertions passed " + trace)
+            validate_owner_guard_trace(status, trace, expected_cleanup, process=process)
             check(trace.count("OWNER_CORE_CLEAR\n") == 1, "owner revoked once " + trace)
             check(trace.index("OWNER_CORE_CLEAR\n") < trace.index("EVENT=CLEAR_PAIRING\n") <
                   trace.index("EVENT=CLOSE_CONTROL_TRANSPORT\n"),

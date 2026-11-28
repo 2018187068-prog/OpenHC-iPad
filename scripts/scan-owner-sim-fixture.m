@@ -24,6 +24,72 @@ int openhc_fe36_auth_fixture(OHCBScanReceiverEvent *handoff);
     } \
 } while (0)
 
+/* OWNER_GUARD_EVIDENCE_BEGIN: pure C, exercised by test-scan-owner.py.
+ * Read only at typed completion, never in the native packet loop. The existing
+ * test-only owner log is an observation, not recovery authority. Fail closed
+ * on missing/truncated/contradictory evidence; never print its contents here. */
+static int fixture_guard_decision(const char *path, bool cleanup, bool delegated) {
+    FILE *file=fopen(path,"r");
+    if(!file) return 0;
+    struct { int count, state, order; long long now, phase; } effects[10]={0};
+    char line[512]; int lines=0, sequence=0, expiry=0, expiryOrder=0, valid=1;
+    long long last=-1, lease=-1, expiryNow=-1, expiryDeadline=-1;
+    while(fgets(line,sizeof(line),file)) {
+        if(++lines>4096 || !strchr(line,'\n')) { valid=0; break; }
+        if(!strncmp(line,"OWNER_PHASE ",12)) {
+            int e,s,w,n=0; unsigned long long g; long long now,d,p;
+            if(sscanf(line,"OWNER_PHASE effect=%d state=%d generation=%llu now=%lld deadline=%lld phase_deadline=%lld worker_started=%d%n",
+                &e,&s,&g,&now,&d,&p,&w,&n)!=7 || strcmp(line+n,"\n") ||
+                e<0 || e>9 || s<0 || s>6 || g!=1 || now<last || now<0 ||
+                d<=0 || p<0 || (w!=0 && w!=1) || (lease!=-1 && lease!=d)) { valid=0; break; }
+            lease=d; last=now; ++sequence;
+            effects[e].count++; effects[e].state=s; effects[e].order=sequence;
+            effects[e].now=now; effects[e].phase=p;
+        } else if(!strncmp(line,"OWNER_EXPIRY ",13)) {
+            int s,n=0; long long now,p;
+            if(sscanf(line,"OWNER_EXPIRY cause=phase state=%d now=%lld phase_deadline=%lld%n",
+                &s,&now,&p,&n)!=3 || strcmp(line+n,"\n") || s!=OHC_STOPPING ||
+                now<last || now<p || p<=0 || ++expiry!=1) { valid=0; break; }
+            last=now; expiryNow=now; expiryDeadline=p; expiryOrder=++sequence;
+        }
+    }
+    if(ferror(file)) valid=0;
+    fclose(file);
+    const int once[]={OHC_ARM_GUARD,OHC_TAKEOVER,OHC_RUN_WORKER,OHC_CLEAR,OHC_CANCEL_WORKER,OHC_STOP_HEARTBEAT};
+    for(unsigned i=0;i<sizeof(once)/sizeof(*once);i++) {
+        int e=once[i]; if(effects[e].count!=1) valid=0;
+        if(i && effects[once[i-1]].order>=effects[e].order) valid=0;
+    }
+    const int states[]={OHC_ARMING,OHC_TAKING,OHC_RUNNING,OHC_RUNNING,OHC_RUNNING,OHC_STOPPING};
+    for(unsigned i=0;i<sizeof(once)/sizeof(*once);i++)
+        if(effects[once[i]].state!=states[i]) valid=0;
+    if(!valid || effects[OHC_HEARTBEAT].count<1 || effects[OHC_RELEASED].count>1 ||
+        effects[OHC_STOP_HEARTBEAT].state!=OHC_STOPPING) return 0;
+    long long stopDeadline=effects[OHC_STOP_HEARTBEAT].phase;
+    /* CANCEL's log samples the clock inside the effect; stop() assigns its
+     * deadline from the earlier tick, so equality to sampled-now+1000 is wrong. */
+    if(stopDeadline<1000 || stopDeadline-1000>effects[OHC_CANCEL_WORKER].now ||
+        stopDeadline>=lease) return 0;
+    int decision=delegated?OHC_DELEGATE_GUARD:OHC_REQUEST_RESTORE;
+    if(effects[decision].count!=1 || effects[delegated?OHC_REQUEST_RESTORE:OHC_DELEGATE_GUARD].count ||
+        effects[decision].order<=effects[OHC_STOP_HEARTBEAT].order ||
+        effects[decision].state!=(delegated?OHC_DELEGATED:OHC_RESTORING) ||
+        (effects[OHC_RELEASED].count && effects[OHC_RELEASED].order<=effects[decision].order)) return 0;
+    if(!cleanup) return delegated?3:0;
+    if(delegated) {
+        if(expiry!=1 || expiryDeadline!=stopDeadline || expiryOrder<=effects[OHC_CANCEL_WORKER].order ||
+            expiryOrder>=effects[OHC_STOP_HEARTBEAT].order ||
+            effects[decision].phase!=stopDeadline || effects[decision].now<expiryNow) return 0;
+        return 2; /* confirmed cleanup after observed STOPPING expiry */
+    }
+    /* RESTORING records the exact completion tick as its fixed deadline-3000.
+     * The log's separately sampled wall time may cross STOPPING's deadline. */
+    long long completed=effects[decision].phase-3000;
+    return !expiry && completed>=stopDeadline-1000 && completed<stopDeadline &&
+        effects[decision].now>=completed ? 1:0;
+}
+/* OWNER_GUARD_EVIDENCE_END */
+
 @interface OHCFixtureLease : NSObject <OHCScanLeaseAdapter>
 @property(nonatomic, copy) NSString *privateRunDirectory;
 @property(nonatomic) int armed, taken, beats, stopped, restores, delegated;
@@ -163,11 +229,18 @@ int openhc_scan_owner_fixture(const char *run_dir, const char *scenario) {
         OWNER_CHECK(closeCount==1,"common_close_once");
         OWNER_CHECK(cleaned==1,"cleaned_once");
         OWNER_CHECK(coreClear==1,"owner_core_clear_once");
-        OWNER_CHECK(delegated!=expectedCleanup,"cleanup_controls_guard_decision");
+        fflush(stderr);
+        NSString *statusPath=[[directory stringByDeletingLastPathComponent]
+            stringByAppendingPathComponent:@"fe35-cli-status.log"];
+        int guardDecision=fixture_guard_decision(statusPath.fileSystemRepresentation,expectedCleanup,delegated);
+        fprintf(trace,"OWNER_GUARD_DECISION=%d\n",guardDecision);
+        OWNER_CHECK(guardDecision!=0,"cleanup_controls_guard_decision");
         if(!processLease) {
             OWNER_CHECK(synthetic.armed==1,"guard_armed_once");
             OWNER_CHECK(synthetic.taken==1,"lease_taken_once");
             OWNER_CHECK(synthetic.stopped==1,"sole_heartbeat_stopped_once");
+            OWNER_CHECK(synthetic.restores==!delegated,"guard_restore_exactly_once_or_none");
+            OWNER_CHECK(synthetic.delegated==delegated,"guard_delegate_exactly_once_or_none");
         }
         OWNER_CHECK(handoff==[caseName isEqualToString:@"success"],"handoff_one_shot");
         /* Independent fake recovery observation, explicitly not native CLEANED. */

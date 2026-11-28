@@ -198,6 +198,65 @@ int main(void) {
         CHECK(l.used==stopped && o.deadline==lease_deadline);
     }
     printf("SCAN_OWNER_COMMON_TERMINAL_CHECKS=%d\n",checks-terminal_checks);
+    const int deadline_checks=checks;
+    /* Actual owner core, injected monotonic clock: completion itself ticks
+     * first, including exactly at the immutable STOPPING boundary. */
+    for(int offset=-1;offset<=1;offset++) for(int tick_first=0;tick_first<2;tick_first++) {
+        running(&o,&c,&l,&p);
+        const uint64_t g=o.generation;
+        const int64_t lease=o.deadline;
+        ohc_owner_common_event(&o,g,"CLOSE_CONTROL_TRANSPORT",200);
+        CHECK(o.state==OHC_STOPPING && o.phase_deadline==1200);
+        CHECK(o.revoked && o.cancelled && !o.worker_returned && !o.execution_exited);
+        const int64_t phase=o.phase_deadline, completion=phase+offset;
+        ohc_owner_common_event(&o,g,"CLOSE_CONTROL_TRANSPORT",201);
+        CHECK(o.phase_deadline==phase && o.deadline==lease);
+        const int used=l.used;
+        ohc_owner_completed(&o,g-1,(fe35_scan_completion){true,true,1},true,completion);
+        ohc_owner_recovered(&o,g-1,true); ohc_owner_execution_exited(&o,g-1,true);
+        CHECK(l.used==used && !o.worker_returned && !o.recovery_verified);
+        if(tick_first) {
+            ohc_owner_tick(&o,completion);
+            CHECK(!o.worker_returned && !l.n[OHC_RELEASED]);
+            CHECK(l.n[OHC_DELEGATE_GUARD]==(offset>=0));
+        }
+        ohc_owner_completed(&o,g,(fe35_scan_completion){true,true,1},true,completion);
+        CHECK(o.worker_returned && o.execution_exited && o.deadline==lease);
+        CHECK(l.n[OHC_CLEAR]==1 && l.n[OHC_CANCEL_WORKER]==1 && l.n[OHC_STOP_HEARTBEAT]==1);
+        CHECK(l.n[OHC_REQUEST_RESTORE]==(offset<0));
+        CHECK(l.n[OHC_DELEGATE_GUARD]==(offset>=0));
+        CHECK(o.state==(offset<0?OHC_RESTORING:OHC_DELEGATED));
+        CHECK(o.phase_deadline==(offset<0?completion+3000:phase));
+        CHECK(!l.n[OHC_RELEASED]);
+        ohc_owner_completed(&o,g,(fe35_scan_completion){true,true,0},true,completion+1);
+        CHECK(l.n[OHC_REQUEST_RESTORE]==(offset<0) && l.n[OHC_DELEGATE_GUARD]==(offset>=0));
+        CHECK(!l.n[OHC_RELEASED]);
+        ohc_owner_recovered(&o,g,true);
+        CHECK(o.state==OHC_IDLE && l.n[OHC_RELEASED]==1);
+        ohc_owner_recovered(&o,g,true); ohc_owner_tick(&o,completion+2);
+        CHECK(l.n[OHC_RELEASED]==1 && o.deadline==lease);
+    }
+    /* Delegation does not grant release: recovery and worker return/exit are
+     * independent, in either order; stale and duplicate callbacks are inert. */
+    for(int recovered_first=0;recovered_first<2;recovered_first++) {
+        running(&o,&c,&l,&p); const uint64_t g=o.generation;
+        ohc_owner_common_event(&o,g,"CLOSE_CONTROL_TRANSPORT",200);
+        ohc_owner_tick(&o,1200); ohc_owner_tick(&o,1201);
+        CHECK(l.n[OHC_DELEGATE_GUARD]==1 && !l.n[OHC_REQUEST_RESTORE]);
+        if(recovered_first) ohc_owner_recovered(&o,g,true);
+        CHECK(!l.n[OHC_RELEASED]);
+        ohc_owner_completed(&o,g,(fe35_scan_completion){true,true,1},false,1202);
+        CHECK(o.worker_returned && !o.execution_exited && o.state==OHC_DELEGATED);
+        if(!recovered_first) ohc_owner_recovered(&o,g,true);
+        CHECK(!l.n[OHC_RELEASED] && !l.n[OHC_REQUEST_RESTORE]);
+        ohc_owner_execution_exited(&o,g-1,true); CHECK(!l.n[OHC_RELEASED]);
+        ohc_owner_execution_exited(&o,g,true);
+        CHECK(l.n[OHC_RELEASED]==1 && l.n[OHC_DELEGATE_GUARD]==1);
+        ohc_owner_completed(&o,g,(fe35_scan_completion){true,true,0},true,1203);
+        ohc_owner_execution_exited(&o,g,true);
+        CHECK(l.n[OHC_RELEASED]==1 && !l.n[OHC_REQUEST_RESTORE]);
+    }
+    printf("SCAN_OWNER_STOPPING_DEADLINE_CHECKS=%d\n",checks-deadline_checks);
 #endif
     return 0;
 }

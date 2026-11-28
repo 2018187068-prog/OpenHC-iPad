@@ -18,11 +18,13 @@ xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 \
   -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-sign-compare -DOPENHC_SCAN_UI_TEST \
   -F"$(dirname "$framework")" -framework OpenHCBridge -framework UIKit \
   -framework Foundation -framework CoreImage -framework CoreGraphics -framework QuartzCore \
+  -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework AVFoundation \
   "$repo_root/theos/scan-ui/main.m" "$repo_root/theos/scan-ui/ScanDemo.m" \
   "$repo_root/theos/scan-ui/ScanQRCode.m" \
   "$test_root/ScanQRBitmap.o" "$test_root/qrcodegen.o" \
   "$repo_root/theos/scan-supervisor/ScanHelperClient.m" \
   "$repo_root/scripts/scan-ui-tests.m" \
+  "$repo_root/scripts/apple-video-sink-tests.m" "$repo_root/theos/OHCAppleVideoSink.m" \
   -o "$app/OpenHCScanDemo"
 codesign --force --sign - "$app"
 udid="$(python3 - <<'PY'
@@ -64,6 +66,7 @@ for _ in $(seq 1 30); do
 done
 cat "$test_root/stdout.log"
 cat "$test_root/stderr.log"
+grep -q '^HISIGHT_APPLE_ACTUAL_DECODE_ENQUEUE_OK=1$' "$test_root/stdout.log"
 test "$(cat "$data_dir/Documents/scan-ui-result")" = PASS
 cp "$data_dir/Documents/scan-ui-"*.png "$repo_root/artifacts/scan-ui/"
 cp "$test_root/stdout.log" "$test_root/stderr.log" "$repo_root/artifacts/scan-ui/"

@@ -6,6 +6,7 @@
 #include <string.h>
 
 static NSUInteger assertions;
+extern void OHCCheckAppleVideoSink(CALayer *parent);
 static BOOL waitingForBackground;
 @interface OHCDeferredHelperController : OHCScanDemoController
 @property(nonatomic, copy) void (^pendingHelper)(NSString *reply);
@@ -121,6 +122,7 @@ static void helperIsolationTests(void) {
 
 void OHCCheckScanUI(OHCScanDemoController *c) {
     check(NSThread.isMainThread, "UI checks on main thread");
+    OHCCheckAppleVideoSink(c.view.layer);
     c.provider.automaticReady = NO;
     absent(c);
     qrTests();

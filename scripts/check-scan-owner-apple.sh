@@ -48,6 +48,9 @@ for name in (
     'theos/NearbyWifiTransport.h', 'theos/NearbyWifiListener.h', 'theos/NearbyReceiverSockets.h',
     'scripts/nearby-receiver-sockets-test.c', 'docs/FE36-RECEIVER-SETUP-LIFECYCLE.md',
     'docs/FE36-DEVICE-MESSAGES.md',
+    'theos/OHCAppleVideoSink.h', 'theos/OHCAppleVideoSink.m', 'scripts/apple-video-sink-tests.m',
+    'theos/OHCAnnexB.h', 'scripts/hisight-annexb-tests.c',
+    'docs/HISIGHT-VIDEO-DATA-PATH.md',
     'scripts/test-nearby-wifi-harness.py', 'scripts/test-nearby-wifi-listener.py',
     'scripts/nearby-wifi-listener-test.c', 'docs/FE36-NEARBY-LISTENER-CORRECTION.md',
     'scripts/nearby-tcp-test-phone.py', 'docs/FE36-LIVE-TCP-CONTROL.md',
@@ -89,6 +92,8 @@ clang -std=c11 -Wall -Wextra -Werror scripts/nearby-tcp-pump-test.c -o "$RUNNER_
 "$RUNNER_TEMP/nearby-tcp-pump-test" 2>&1 | tee artifacts/logs/owner-nearby-production-tcp-pump.log
 clang -std=c11 -Wall -Wextra -Werror scripts/nearby-receiver-sockets-test.c -o "$RUNNER_TEMP/nearby-receiver-sockets-test"
 "$RUNNER_TEMP/nearby-receiver-sockets-test" 2>&1 | tee artifacts/logs/owner-nearby-receiver-sockets.log
+clang -std=c11 -Wall -Wextra -Werror scripts/hisight-annexb-tests.c -o "$RUNNER_TEMP/hisight-annexb-test"
+"$RUNNER_TEMP/hisight-annexb-test" 2>&1 | tee artifacts/logs/owner-hisight-annexb.log
 for suite in btstack-probe btstack-transport-socket session-owner-probe; do
   python3 "scripts/test-$suite.py" 2>&1 | tee "artifacts/logs/owner-darwin-$suite.log"
 done
@@ -107,7 +112,7 @@ for sdk in iphoneos iphonesimulator; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -std=c11 -Wall -Wextra -Werror \
       -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$source.o"
   done
-  for source in ScanOwnerRuntime.m ScanOwnerForeground.m ScanProcessLeaseAdapter.m ../fe35-control-bridge.m; do
+  for source in ScanOwnerRuntime.m ScanOwnerForeground.m ScanProcessLeaseAdapter.m ../fe35-control-bridge.m ../OHCAppleVideoSink.m; do
     xcrun --sdk "$sdk" clang -arch arm64 "$minimum" -Wall -Wextra -Werror -fobjc-arc \
       -F"$PWD/bridge/build/bin/$target/releaseFramework" \
       -c "theos/scan-owner/$source" -o "$RUNNER_TEMP/$sdk-$(basename "$source").o"

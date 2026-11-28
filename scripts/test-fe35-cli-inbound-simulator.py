@@ -3,13 +3,18 @@ import argparse
 import hashlib
 import hmac
 import importlib.util
+import errno
+import json
+import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import struct
 import subprocess
 import threading
 import time
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -51,6 +56,32 @@ def check(condition, label):
         ASSERTIONS += 1
     if not condition:
         raise AssertionError(label)
+
+
+def safe_launch_metadata(stdout, stderr, bundle_id):
+    """Persist shape/known labels only, never arbitrary subprocess output."""
+    def text(value):
+        return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
+    stdout, stderr = text(stdout), text(stderr)
+    match = re.fullmatch(re.escape(bundle_id) + r': ([1-9][0-9]*)\s*', stdout)
+    pid = int(match[1]) if match and int(match[1]) > 1 else None
+    labels = ('Failed to launch', 'Unable to boot', 'Unable to lookup',
+              'Application is already running', 'Request denied')
+    return dict(pid=pid, stdout_shape='pid' if pid else 'other' if stdout else 'empty',
+                stdout_size=len(stdout.encode('utf-8')), stderr_size=len(stderr.encode('utf-8')),
+                stderr_label=next((label for label in labels if label in stderr), 'unclassified' if stderr else 'empty'))
+
+
+def fixture_process_state(pid):
+    # A result file precedes return from main; it is not proof of process exit.
+    # Signal zero observes only. PID reuse is conservatively treated as live.
+    if pid is None or sys.platform != 'darwin':
+        return 'unproven'
+    try:
+        os.kill(pid, 0)
+    except OSError as error:
+        return 'exited' if error.errno == errno.ESRCH else 'observation-failed'
+    return 'present'
 
 
 def exact(conn, count):
@@ -289,7 +320,10 @@ def run_case(args, case):
     (guard / "deadline").write_text(str(int(time.time()) + 120) + "\n", encoding="ascii")
     (guard / "heartbeat").write_text("POWER_DRIVER_OWNS_THIS\n", encoding="ascii")
     result_file = documents / "fe35-cli-result"
+    cli_log = documents / 'fe35-cli-status.log'
+    stale = dict(result=result_file.exists(), status=cli_log.exists())
     result_file.unlink(missing_ok=True)
+    cli_log.unlink(missing_ok=True)
     errors = []
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -299,46 +333,145 @@ def run_case(args, case):
     # Allow bounded Simulator launch latency before refusing an unconnected client.
     server.settimeout(45)
 
+    sockets = [server]
+    socket_lock = threading.Lock()
+    closing = [False]
+    phases = []
+    origin = time.monotonic()
+    def phase(label):
+        phases.append(dict(phase=label, elapsed_ms=int((time.monotonic() - origin) * 1000)))
+
     def serve():
         peer_step = ["accept"]
         try:
             with server.accept()[0] as conn:
+                with socket_lock:
+                    if closing[0]:
+                        return
+                    sockets.append(conn)
                 conn.settimeout(6)
-                drive_peer(conn, case, lambda value: peer_step.__setitem__(0, value))
+                def step(value):
+                    peer_step[0] = value
+                    phase(value)
+                drive_peer(conn, case, step)
         except Exception as exc:
             errors.append((peer_step[0], repr(exc)))
+            phase('peer-failed')
+        finally:
+            phase('peer-finished')
 
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()
     guard_rel = "Documents/" + guard.name
-    launch = subprocess.run([
-        "xcrun", "simctl", "launch", args.udid, args.bundle_id,
-        endpoint, guard_rel,
-    ], capture_output=True, text=True, timeout=30)
-    check(launch.returncode == 0, "simulator CLI process launched")
-    cli_started = time.monotonic()
-    expected_status = 0 if case == "success" else 1
-    for _ in range(60):
-        if result_file.exists():
-            break
-        time.sleep(0.25)
-    check(result_file.exists(), "CLI bounded completion result")
-    actual_status = result_file.read_text(encoding="ascii").strip()
-    worker.join(8)
-    server.close()
-    check(not worker.is_alive(), "synthetic peer completed")
-    cli_log = documents / "fe35-cli-status.log"
-    cli_status = cli_log.read_text(encoding="ascii", errors="replace") if cli_log.exists() else "missing"
-    preserve_case_evidence(documents, guard, "fe35-" + case)
-    check(not errors, "synthetic peer assertions: " + repr(errors) + "; CLI status log: " + cli_status)
-    check(actual_status == str(expected_status),
-          "CLI result status expected=" + str(expected_status) + " actual=" + actual_status +
-          "; CLI status log: " + cli_status)
-    check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
-          "Trial remains heartbeat owner")
+    evidence = dict(case=case, outcome='failed', stale_files_removed=stale,
+                    launch=dict(pid=None), failure='unclassified', process_state='unproven')
+    join_deadline = None
+    def observe_process():
+        try:
+            pid = evidence['launch'].get('pid')
+            state = fixture_process_state(pid) if pid is not None else 'unproven'
+        except Exception:
+            state = 'observation-failed'
+        evidence['process_state'] = state
+        return state
+
+    def persist(name='launch-evidence.json'):
+        preserve_case_evidence(documents, guard, 'fe35-' + case)
+        destination = ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe35-' + case)
+        snapshot = dict(evidence, phases=list(phases), result_present=result_file.exists(),
+                        status_present=cli_log.exists(), thread_stopped=not worker.is_alive())
+        (destination / name).write_text(json.dumps(snapshot, sort_keys=True) + '\n', encoding='ascii')
+    try:
+        phase('launch-start')
+        try:
+            launch = subprocess.run([
+                "xcrun", "simctl", "launch", args.udid, args.bundle_id,
+                endpoint, guard_rel,
+            ], capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired as error:
+            evidence['launch'] = safe_launch_metadata(error.stdout, error.stderr, args.bundle_id)
+            evidence['failure'] = 'launch-timeout'
+            phase('launch-timeout')
+            raise
+        evidence['launch'] = dict(safe_launch_metadata(launch.stdout, launch.stderr, args.bundle_id),
+                                  returncode=launch.returncode)
+        phase('launch-returned')
+        check(launch.returncode == 0, "simulator CLI process launched")
+        check(evidence['launch']['pid'] is not None, 'exact launched PID required')
+        cli_started = time.monotonic()
+        expected_status = 0 if case == "success" else 1
+        for _ in range(60):
+            if result_file.exists():
+                break
+            time.sleep(0.25)
+        check(result_file.exists(), "CLI bounded completion result")
+        phase('result-observed')
+        actual_status = result_file.read_text(encoding="ascii").strip()
+        # Share the original eight-second join allowance with process exit;
+        # result publication happens before main returns. Never reset this
+        # monotonic bound, relaunch or terminate the app to manufacture exit.
+        join_deadline = time.monotonic() + 8
+        observe_process()
+        while evidence['process_state'] == 'present':
+            remaining = join_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(.05, remaining))
+            if time.monotonic() >= join_deadline:
+                break
+            observe_process()
+        check(evidence['process_state'] == 'exited', 'exact launched process exited')
+        phase('process-exit-observed')
+        worker.join(max(0, join_deadline - time.monotonic()))
+        check(not worker.is_alive(), "synthetic peer completed")
+        cli_status = cli_log.read_text(encoding="ascii", errors="replace") if cli_log.exists() else "missing"
+        check(not errors, "synthetic peer assertions: " + repr(errors) + "; CLI status log: " + cli_status)
+        check(actual_status == str(expected_status),
+              "CLI result status expected=" + str(expected_status) + " actual=" + actual_status +
+              "; CLI status log: " + cli_status)
+        check((guard / "heartbeat").read_text(encoding="ascii") == "POWER_DRIVER_OWNS_THIS\n",
+              "Trial remains heartbeat owner")
+        elapsed = time.monotonic() - cli_started
+        check(elapsed < 10, "bounded CLI scenario completion after launch")
+    except BaseException as error:
+        if evidence['failure'] != 'launch-timeout':
+            evidence['failure'] = 'assertion' if isinstance(error, AssertionError) else 'other'
+        raise
+    finally:
+        # Persist before teardown, even when simctl never returned a PID. No
+        # retry/terminate or next case follows any exception. Unknown app state
+        # remains unproven; socket closure is never an exit certificate.
+        try:
+            observe_process()
+            persist('launch-evidence-before-close.json')
+        finally:
+            sockets_closed = True
+            with socket_lock:
+                closing[0] = True
+                for sock in sockets:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    try:
+                        sock.close()
+                    except OSError:
+                        sockets_closed = False
+            if join_deadline is None:
+                join_deadline = time.monotonic() + 8
+            worker.join(max(0, join_deadline - time.monotonic()))
+            phase('host-sockets-closed')
+            process_exited = observe_process() == 'exited'
+            evidence['isolation'] = dict(process_exited=process_exited,
+                thread_stopped=not worker.is_alive(), sockets_closed=sockets_closed,
+                safe=process_exited and not worker.is_alive() and sockets_closed)
+            if not evidence['isolation']['safe'] and evidence['failure'] == 'unclassified':
+                evidence['failure'] = 'isolation-unproven'
+            persist()
+    check(evidence['isolation']['safe'], 'original FE35 case isolation proven')
+    evidence.update(outcome='passed', failure='none')
+    persist()  # Final certificate is durable before guard deletion or success.
     shutil.rmtree(guard)
-    elapsed = time.monotonic() - cli_started
-    check(elapsed < 10, "bounded CLI scenario completion after launch")
     print("FE35_KN_INBOUND_CASE_OK=" + case)
     print("FE35_KN_INBOUND_CASE_ASSERTIONS=" + str(ASSERTIONS - started_assertions))
 

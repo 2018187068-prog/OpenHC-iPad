@@ -7,6 +7,7 @@ import os
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -319,6 +320,9 @@ def main():
             print('BTSTACK_INBOUND_SOCKET_CASE_OK=' + case)
         print('BTSTACK_INBOUND_SOCKET_TESTS_OK=7')
         print('BTSTACK_INBOUND_WIRE_ASSERTIONS_OK=' + str(WIRE_ASSERTIONS - before_inbound_assertions))
+        # Same production C, real socket deadlines/cleanup, fixed diagnostic
+        # headers. Runs on existing host/owner routes, no new demo/workflow.
+        subprocess.run([sys.executable, str(ROOT / 'scripts/test-fe35-incoming-boundary.py')], check=True)
 
 
 if __name__ == '__main__':

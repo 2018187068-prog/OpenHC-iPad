@@ -41,6 +41,8 @@ for name in (
     'scripts/test-fe36-cancellation-order.py',
     'scripts/test-fe36-case-matrix.py',
     'scripts/test-fe35-cleanup-certainty.py', 'scripts/fe35-cleanup-certainty-test.c',
+    'scripts/test-fe35-incoming-boundary.py', 'scripts/fe35-incoming-boundary-test.c',
+    'scripts/fe35-windows-socket-test.h', 'docs/FE35-INCOMING-BOUNDARY-DIAGNOSTIC.md',
     'docs/FE35-CLEANUP-CERTAINTY-DIAGNOSTIC.md',
     'docs/FE36-CONSOLIDATED-DIAGNOSTIC-MATRIX.md',
     'scripts/test-fe36-negative-terminal.py',

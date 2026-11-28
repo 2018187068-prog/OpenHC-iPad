@@ -314,7 +314,64 @@ def expect_cleanup(conn, expected_auth_channel=None, expected_auth_handle=None, 
     send_event(conn, 0x60, bytes([2]))
 
 
-def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None, observe_early=None):
+class IncomingBoundary:
+    """Bounded in-memory diagnostics for owner-success only; one final write.
+
+    Timestamps are monotonic ns in the peer process. Native ms values have their
+    own clock domain: never subtract clocks across processes/platform APIs.
+    """
+    STAGES = ('initial_state', 'register_control_channel', 'register_fe35_sdp',
+              'control_sdp_ack_before', 'control_sdp_ack_after',
+              'incoming_and_open', 'incoming_send_before', 'incoming_send_after',
+              'bridge_start', 'fragmented_phone_first_and_encrypted_request',
+              'encrypted_handshake_response', 'register_auth_listener_channel',
+              'register_auth_sdp', 'auth_listener_ready',
+              'encrypted_command4_response', 'disconnect_and_cleanup')
+    BRANCHES = ('initial-state', 'control-listener', 'control-sdp',
+                'incoming-accept', 'bridge-start')
+
+    def __init__(self):
+        self.started_ns = time.monotonic_ns()
+        self.events = []
+        self.truncated = False
+        self.lock = threading.Lock()
+
+    def _append(self, event):
+        with self.lock:
+            if len(self.events) < 32:
+                self.events.append(dict(at_ns=time.monotonic_ns(), **event))
+            else:
+                self.truncated = True
+
+    def stage(self, label):
+        if label not in self.STAGES:
+            raise ValueError('incoming_boundary_unknown_stage')
+        self._append(dict(stage=label))
+
+    def typed(self, branch, kind, channel, size, opcode, length):
+        if branch not in self.BRANCHES:
+            raise ValueError('incoming_boundary_unknown_branch')
+        self._append(dict(stage=branch, kind=int(kind), channel=int(channel), size=int(size),
+                          opcode=-1 if opcode is None else int(opcode),
+                          length=-1 if length is None else int(length)))
+
+    def finish(self, status, thread_stopped):
+        # Fixed numeric grammar only; do not copy arbitrary native/peer text.
+        native = re.findall(r'^BTSTACK_FE35_INCOMING_BOUNDARY=(-?[0-9]+(?:,-?[0-9]+){7})$',
+                            status, re.MULTILINE)
+        cleanup = re.findall(r'^BTSTACK_FE35_INBOUND_CLEANUP_FACTS=([01](?:,[01]){8},[0-9]+)$',
+                             status, re.MULTILINE)
+        with self.lock:
+            return dict(version=1, started_ns=self.started_ns, finished_ns=time.monotonic_ns(),
+                        events=list(self.events), truncated=self.truncated,
+                        peer_thread_stopped=bool(thread_stopped), native_records=len(native),
+                        native_ms=list(map(int, native[0].split(','))) if len(native) == 1 else [],
+                        cleanup_records=len(cleanup),
+                        cleanup_facts=list(map(int, cleanup[0].split(','))) if len(cleanup) == 1 else [])
+
+
+def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None, observe_early=None,
+               observe_boundary=None):
     def early(branch):
         if observe_early is None:
             return None
@@ -332,7 +389,11 @@ def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None, observ
     check((kind, channel, sdp[:3]) == (1, 0, bytes([0x30, 0xf4, len(sdp) - 3])), "control SDP command")
     check(b"\x19\xfe\x35" in sdp[3:], "FE35 service registration")
     assert_service_record(sdp[3:], b"\x19\xfe\x35", 16)
+    if observe_boundary:
+        observe_boundary('control_sdp_ack_before')
     send_event(conn, 0x90, bytes([0]) + struct.pack("<I", 0x10001))
+    if observe_boundary:
+        observe_boundary('control_sdp_ack_after')
 
     if case == "incoming_timeout":
         expect_cleanup(conn, include_disconnect=False)
@@ -340,7 +401,11 @@ def drive_peer(conn, case, set_step, auth_flow=None, observe_packet=None, observ
 
     cid = 0x2345
     set_step("incoming_and_open")
+    if observe_boundary:
+        observe_boundary('incoming_send_before')
     send_event(conn, 0x82, bytes.fromhex("a1a2a3a4a5a6") + bytes([16]) + struct.pack("<H", cid))
+    if observe_boundary:
+        observe_boundary('incoming_send_after')
     read_command(conn, 0x44, struct.pack("<H", cid), early('incoming-accept'))
     send_event(conn, 0x80, bytes([0]) + bytes.fromhex("a1a2a3a4a5a6" if auth_flow else "010203040506") +
                struct.pack("<H", 0x5678) + bytes([16]) + struct.pack("<HHB", cid, 512, 1))
@@ -577,6 +642,10 @@ def run_scan_case(args, case, owner=False, process=False):
     result_file = documents / "fe35-cli-result"
     result_file.unlink(missing_ok=True)
     errors = []
+    boundary = IncomingBoundary() if owner and case == 'success' and not process else None
+    if boundary is not None:
+        # A failed launch must not attribute the previous case's native record.
+        (documents / 'fe35-cli-status.log').unlink(missing_ok=True)
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
     server.listen(1)
@@ -627,7 +696,9 @@ def run_scan_case(args, case, owner=False, process=False):
                     check('INERT_TAKEOVER' in process_events,
                           'independent guard READY/takeover acknowledged before native transport opened')
                 if owner and case == "success":
-                    drive_peer(conn, "success", lambda _: None)
+                    drive_peer(conn, "success", boundary.stage if boundary else lambda _: None,
+                               observe_early=boundary.typed if boundary else None,
+                               observe_boundary=boundary.stage if boundary else None)
                     return
                 read_command(conn, 1, b"")
                 send_event(conn, 0x60, bytes([2]))
@@ -760,6 +831,13 @@ def run_scan_case(args, case, owner=False, process=False):
         preserve_case_evidence(documents, guard, label)
         server.close()
         destination = ROOT / "artifacts/scan-owner/simulator-cases" / label
+        destination.mkdir(parents=True, exist_ok=True)
+        if boundary is not None:
+            log = documents / 'fe35-cli-status.log'
+            status = log.read_text(encoding='ascii', errors='replace') if log.exists() else ''
+            (destination / 'incoming-boundary.json').write_text(
+                json.dumps(boundary.finish(status, thread is not None and not thread.is_alive()),
+                           sort_keys=True) + '\n', encoding='ascii')
         (destination / 'peer-status.txt').write_text(
             'thread_alive=' + str(thread.is_alive() if thread else None) + '\nerrors=' + repr(errors),
             encoding='utf-8')

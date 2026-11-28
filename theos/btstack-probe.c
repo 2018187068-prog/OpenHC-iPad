@@ -10,18 +10,26 @@
 #endif
 #include <errno.h>
 #include <fcntl.h>
+#ifndef OPENHC_WINDOWS_SOCKET_TEST
 #include <poll.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef OPENHC_WINDOWS_SOCKET_TEST
+/* Test-only OS adapter; the protocol/timeout/cleanup implementation below is
+ * shared unchanged. Never enabled by device or Simulator production builds. */
+#include "../scripts/fe35-windows-socket-test.h"
+#else
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#endif
 #include "fe35-control-bridge.h"
 #include "Fe35CleanupCertainty.h"
 
@@ -47,6 +55,9 @@ static int protect_socket_sigpipe(int fd) {
 #if defined(__APPLE__)
     int one = 1;
     return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#elif defined(OPENHC_WINDOWS_SOCKET_TEST)
+    (void)fd;
+    return 0; /* Winsock has no POSIX SIGPIPE; not Darwin protection evidence. */
 #elif defined(__linux__)
     (void)fd;
     return 0; /* Both send paths below use MSG_NOSIGNAL. */
@@ -959,6 +970,13 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     int tcp_control_settled=0;
     int listener_ready = 0, session_started = 0;
     int registration_pending = 0, cleanup_uncertain = 0;
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+    /* One completion record only, never packet-loop output or peer payload.
+     * Each process owns its monotonic clock; compare durations on each side. */
+    int64_t incoming_start = -1, incoming_deadline = -1, incoming_end = -1;
+    int incoming_received = -3, incoming_confirmed = -1;
+    int64_t cleanup_start = -1, cleanup_end = -1;
+#endif
     if (cleanup_confirmed) *cleanup_confirmed = false;
     unsigned status = 0;
     const char *stage = "GUARD";
@@ -1012,10 +1030,18 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
 #ifdef OPENHC_TRANSPORT_TEST_TIMEOUTS
         deadline = now_ms() + 150;
 #endif
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+        incoming_start = now_ms();
+        incoming_deadline = deadline;
+#endif
         int found = 0;
         for (unsigned n = 0; n < 64; ++n) {
             int received = receive_transport_packet(fd, 0, &packet_type, &packet_channel,
                                                     body, &size, deadline, run_dir);
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+            incoming_end = now_ms();
+            incoming_received = received;
+#endif
             if (received) { if (received == -2) stage = "INCOMING_EVENT_REJECTED"; goto done; }
             if (packet_type != 4 || body[0] != 0x82) continue;
             if (size != 11 || body[8] != owned_channel) { stage = "INCOMING_EVENT_SHAPE"; goto done; }
@@ -1150,6 +1176,9 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         if(wifi_stream(fd,run_dir,bridge,wifi,cid,control_mtu,&tcp,&disconnected,&tcp_control_settled,&cleanup_uncertain)) result=1;
     }
 done:;
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+    cleanup_start = now_ms();
+#endif
     /* Immutable pre-cleanup observation. Final failure/cleanup certainty below
      * remains independent. No packet-loop IO or protocol/timing changes. */
     const char *const primary_failure_stage = result ? inbound_primary_stage(stage) : "NONE";
@@ -1243,6 +1272,9 @@ done:;
         bool confirmed=openhc_fe35_cleanup_confirmed(cleanup_ok,close_ok,
                 registration_pending,cleanup_uncertain,cid!=0,opened,disconnected,
                 auth_cid!=0,auth_disconnected);
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+        incoming_confirmed = confirmed;
+#endif
         if (cleanup_confirmed) *cleanup_confirmed = confirmed;
         if(auth && !result && (!confirmed || scan_poll() || (!wifi && auth->commit(auth->context,1,now_ms())))) {
             result=1; stage=wifi?"WIFI_COMPLETION_REVOKED":"AUTH_COMMIT_REVOKED";
@@ -1253,6 +1285,15 @@ done:;
         if(scan && current_scan) (void)scan->notify(scan->context,scan->generation,result?"FAILED":"STOP",0,now_ms());
     }
     current_scan=NULL; auth_strict_exchange=0;
+#if defined(OPENHC_BTSTACK_TEST) || defined(OPENHC_FE35_SIMULATOR_TEST)
+    cleanup_end = now_ms();
+    if (incoming_start >= 0) {
+        printf("BTSTACK_FE35_INCOMING_BOUNDARY=%lld,%lld,%lld,%d,%lld,%lld,%d,%d\n",
+            (long long)incoming_start,(long long)incoming_deadline,(long long)incoming_end,
+            incoming_received,(long long)cleanup_start,(long long)cleanup_end,
+            result,incoming_confirmed);
+    }
+#endif
     memset(peer,0,sizeof(peer));
     printf("BTSTACK_FE35_INBOUND_PRIMARY_STAGE=%s\n", primary_failure_stage);
     printf("BTSTACK_FE35_INBOUND_CLEANUP_FACTS=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",

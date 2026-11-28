@@ -90,7 +90,13 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
                         int mode=[name isEqualToString:@"wrong_pin"]?1:([name isEqualToString:@"forged_signature"]?2:0);
                         NSData *expected=openhc_fe36_transport_phone(event,fd,mode);
                         [secretLock lock];expectedKey=expected;[secretLock unlock];
-                    } @catch(__unused NSException *e) { CID_CHECK(NO,"phone_real_crypto_exchange"); }
+                    } @catch(NSException *e) {
+                        BOOL known=[e.name isEqualToString:@"AuthFixture"];
+                        fprintf(trace,"CID_PHONE_EXCEPTION name=%s reason=%s\n",
+                            known?"AuthFixture":"redacted-external",
+                            known?"static-assertion":"redacted-external");fflush(trace);
+                        CID_CHECK(NO,"phone_real_crypto_exchange");
+                    }
                     @finally { if(fd>=0) close(fd);dispatch_semaphore_signal(phoneDone); }
                 }});
             }

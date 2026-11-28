@@ -29,13 +29,16 @@
 /* Test-only raw-JSON relay to the host fake daemon. Four-byte length belongs
  * solely to this synthetic proxy, never to FE36 or the production adapter. */
 static _Thread_local int transportPhoneFD=-1;
+static _Thread_local int transportPhoneScenario=0;
+static _Thread_local unsigned transportPhoneExchange=0;
+static _Thread_local const char *transportPhonePhase="idle";
 @interface OHCPhoneWireAction : NSObject
 @property(nonatomic,copy) NSString *kind;
 @property(nonatomic,strong) OHCBKotlinByteArray *bytes;
 @end
 @implementation OHCPhoneWireAction
 @end
-#define A(c,label) do { if(!(c)) { fprintf(stderr,"AUTH_FIXTURE_ASSERT=%s\n",label); @throw [NSException exceptionWithName:@"AuthFixture" reason:@"static assertion" userInfo:nil]; } } while(0)
+#define A(c,label) do { if(!(c)) { fprintf(stderr,"AUTH_FIXTURE_ASSERT=%s exchange=%u phase=%s\n",label,transportPhoneExchange,transportPhonePhase);fflush(stderr); @throw [NSException exceptionWithName:@"AuthFixture" reason:@"static assertion" userInfo:nil]; } } while(0)
 static NSData *cat(NSData *a,NSData *b) { NSMutableData *d=[a mutableCopy];[d appendData:b];return d; }
 static NSData *utf(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
 static NSString *text(NSData *d) { return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]; }
@@ -48,6 +51,11 @@ static NSData *unhex(NSString *s) {
 }
 static NSDictionary *object(NSData *data) { id o=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];A([o isKindOfClass:NSDictionary.class],"json-object");return o; }
 static NSData *json(NSDictionary *o) { NSData *d=[NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];A(d!=nil,"json-encode");return d; }
+static BOOL integerEquals(id value,int expected) {
+    return [value isKindOfClass:NSNumber.class] &&
+        CFGetTypeID((__bridge CFTypeRef)value)!=CFBooleanGetTypeID() &&
+        !CFNumberIsFloatType((__bridge CFNumberRef)value) && [value longLongValue]==expected;
+}
 static NSData *envelope(int op,NSString *data) { return json(@{@"oper_type":@(op),@"data":data,@"version":@"SYNTHETIC_PHONE_VERSION"}); }
 static NSData *crypto(int op,NSData *key,NSData *a,NSData *b,NSData *c,int size) {
     static const uint8_t zero=0;NSMutableData *out=[NSMutableData dataWithLength:MAX(size,1)];
@@ -72,12 +80,14 @@ static void transfer(int writer,int reader,const uint8_t *bytes,size_t n,uint8_t
  * fixture, not to a deployed parser. Arbitrary fragments reach the real framer. */
 static NSArray<OHCBFe36AuthAction *> *ingress(OHCBFe36AuthSessionBridge *bridge,OHCBScanReceiverEvent *e,NSData *data) {
     if(transportPhoneFD>=0) {
+        transportPhoneExchange++;transportPhonePhase="request-write";
+        fprintf(stderr,"AUTH_PHONE_PHASE exchange=%u phase=%s\n",transportPhoneExchange,transportPhonePhase);
         uint32_t n=htonl((uint32_t)data.length);
         A(data.length>0&&data.length<=4096,"transport-phone-request-bound");
         A(write(transportPhoneFD,&n,4)==4,"transport-phone-length-write");
         const uint8_t *p=data.bytes;size_t left=data.length;
         while(left) { ssize_t wrote=write(transportPhoneFD,p,left);A(wrote>0,"transport-phone-write");p+=wrote;left-=(size_t)wrote; }
-        uint8_t header[4];size_t at=0;
+        transportPhonePhase="reply-header";uint8_t header[4];size_t at=0;
         while(at<4) { ssize_t got=read(transportPhoneFD,header+at,4-at);A(got>0,"transport-phone-reply-header");at+=(size_t)got; }
         memcpy(&n,header,4);n=ntohl(n);A(n<=4096,"transport-phone-reply-bound");
         NSMutableArray *actions=[NSMutableArray array];
@@ -87,7 +97,27 @@ static NSArray<OHCBFe36AuthAction *> *ingress(OHCBFe36AuthSessionBridge *bridge,
             NSMutableData *reply=[NSMutableData dataWithLength:n];at=0;
             while(at<n) { ssize_t got=read(transportPhoneFD,(uint8_t *)reply.mutableBytes+at,n-at);A(got>0,"transport-phone-reply");at+=(size_t)got; }
             OHCPhoneWireAction *a=[OHCPhoneWireAction new];a.kind=@"SEND";a.bytes=kb(reply);[actions addObject:a];
-        } return (NSArray *)actions;
+            /* Reference local rejection sends INFORM before Failed. Preserve
+             * that order rather than interpreting a nonempty reply as success. */
+            transportPhonePhase="reply-classify";
+            NSDictionary *outer=object(reply);
+            if([outer[@"oper_type"] isEqual:@3]) {
+                A(integerEquals(outer[@"oper_type"],3),"transport-auth-oper-type");
+                A([outer[@"data"] isKindOfClass:NSString.class],"transport-auth-data-type");
+                NSDictionary *inner=object(utf(outer[@"data"]));
+                if([inner[@"message"] isEqual:@0x8080]) {
+                    int expected=transportPhoneScenario==1?17:(transportPhoneScenario==2?29:0);
+                    NSDictionary *payload=inner[@"payload"];
+                    A(expected && integerEquals(inner[@"message"],0x8080) &&
+                        [payload isKindOfClass:NSDictionary.class] &&
+                        integerEquals(payload[@"errorCode"],expected),"transport-expected-inform-error");
+                    for(NSString *kind in @[@"FAILED",@"CLOSE"]) {
+                        OHCPhoneWireAction *terminal=[OHCPhoneWireAction new];terminal.kind=kind;[actions addObject:terminal];
+                    }
+                    fprintf(stderr,"AUTH_PHONE_INFORM exchange=%u terminal=SEND_FAILED_CLOSE\n",transportPhoneExchange);
+                }
+            }
+        } transportPhonePhase="reply-complete";return (NSArray *)actions;
     }
     int fd[2];A(!socketpair(AF_UNIX,SOCK_STREAM,0,fd),"ingress-socketpair");
     NSMutableArray *events=[NSMutableArray array];
@@ -110,8 +140,12 @@ static NSDictionary *payload(NSArray<OHCBFe36AuthAction *> *actions,int expected
     NSArray *messages=sends(actions);A(messages.count==1,"single-auth-reply");NSDictionary *outer=object(messages[0]);A([outer[@"oper_type"] intValue]==3,"auth-envelope-oper");
     NSDictionary *inner=object(utf(outer[@"data"]));A([inner[@"message"] intValue]==expected,"auth-message-code");return inner[@"payload"];
 }
-static void rejected(NSArray<OHCBFe36AuthAction *> *actions,OHCBInMemoryTrustStore *store) {
+static void rejected(NSArray<OHCBFe36AuthAction *> *actions,OHCBInMemoryTrustStore *store,int expectedError) {
     A(!has(actions,@"AUTHENTICATED")&&has(actions,@"FAILED")&&has(actions,@"CLOSE"),"negative-auth-terminal");
+    A(actions.count==3 && [actions[0].kind isEqualToString:@"SEND"] &&
+        [actions[1].kind isEqualToString:@"FAILED"] && [actions[2].kind isEqualToString:@"CLOSE"],"negative-auth-action-order");
+    NSDictionary *error=payload(actions,0x8080);
+    A([error[@"errorCode"] isEqual:@(expectedError)],"negative-auth-reference-error");
     if(transportPhoneFD<0) A(store.snapshot.peers.count==0&&store.snapshot.identities.count==0,"failed-auth-no-commit");
 }
 static NSData *exchange(OHCBScanReceiverEvent *e,NSData *prime,int scenario) {
@@ -137,7 +171,7 @@ static NSData *exchange(OHCBScanReceiverEvent *e,NSData *prime,int scenario) {
     NSMutableData *proofKey=[NSMutableData dataWithLength:32];memcpy(proofKey.mutableBytes,(const uint8_t *)okm.bytes+16,16);
     NSData *proof=hmac(proofKey,cat(challenge,serverChallenge));
     step=ingress(bridge,e,envelope(3,text(json(@{@"message":@2,@"payload":@{@"kcfData":hex(proof),@"challenge":hex(challenge),@"epk":hex(epk)}}))));
-    if(scenario==1) { rejected(step,store);A(![bridge takeSessionKeyGeneration:e.generation connection:7 nowMillis:13],"wrong-pin-no-key");return nil; }
+    if(scenario==1) { rejected(step,store,17);A(![bridge takeSessionKeyGeneration:e.generation connection:7 nowMillis:13],"wrong-pin-no-key");return nil; }
     p=payload(step,0x8002);A([unhex(p[@"kcfData"]) isEqual:hmac(proofKey,cat(serverChallenge,challenge))],"verified-server-pake-proof");
     NSData *seed=pattern(32,0x80),*pk=crypto(5,seed,nil,nil,nil,32);
     NSString *phoneId=scenario==3?@"CHANGED_SYNTHETIC_PHONE":@"SYNTHETIC_PHONE";
@@ -146,7 +180,7 @@ static NSData *exchange(OHCBScanReceiverEvent *e,NSData *prime,int scenario) {
     if(scenario==2)((uint8_t *)signature.mutableBytes)[0]^=1;
     NSData *nonce=pattern(12,0x60),*cipher=cat(nonce,crypto(3,key,nonce,utf(@"hichain_exchange_request"),cat(info,signature),(int)(info.length+signature.length+16)));
     step=ingress(bridge,e,envelope(3,text(json(@{@"message":@3,@"payload":@{@"exAuthInfo":hex(cipher)}}))));
-    if(scenario==2||scenario==3) { rejected(step,store);return nil; }
+    if(scenario==2||scenario==3) { rejected(step,store,29);return nil; }
     p=payload(step,0x8003);NSData *response=unhex(p[@"exAuthInfo"]);A(response.length>28,"exchange-response-size");
     NSData *plain=crypto(4,key,[response subdataWithRange:NSMakeRange(0,12)],utf(@"hichain_exchange_response"),[response subdataWithRange:NSMakeRange(12,response.length-12)],(int)response.length-28);
     A(plain.length>64,"exchange-plain-size");NSData *carInfo=[plain subdataWithRange:NSMakeRange(0,plain.length-64)],*carSig=[plain subdataWithRange:NSMakeRange(plain.length-64,64)];NSDictionary *car=object(carInfo);
@@ -172,7 +206,15 @@ int openhc_fe36_auth_fixture(OHCBScanReceiverEvent *handoff) {
 }
 
 NSData *openhc_fe36_transport_phone(OHCBScanReceiverEvent *event,int fd,int scenario) {
-    transportPhoneFD=fd;
-    @try { return exchange(event,phonePrime(),scenario); }
-    @finally { transportPhoneFD=-1; }
+    transportPhoneFD=fd;transportPhoneScenario=scenario;transportPhoneExchange=0;
+    @try { NSData *key=exchange(event,phonePrime(),scenario);
+        A(!scenario || key==nil,"negative-phone-no-key");return key;
+    } @catch(NSException *error) {
+        /* Only our static exception name/reason are safe to record. Framework
+         * exception text may embed inputs, so replace it with fixed tokens. */
+        BOOL known=[error.name isEqualToString:@"AuthFixture"];
+        fprintf(stderr,"AUTH_PHONE_EXCEPTION name=%s reason=%s exchange=%u phase=%s\n",
+            known?"AuthFixture":"redacted-external",known?"static-assertion":"redacted-external",
+            transportPhoneExchange,transportPhonePhase);fflush(stderr);@throw;
+    } @finally { transportPhoneFD=-1;transportPhoneScenario=0;transportPhonePhase="idle"; }
 }

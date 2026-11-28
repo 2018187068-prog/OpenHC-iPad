@@ -30,6 +30,33 @@ def consume_negative_auth_close(kind, channel, body, auth_cid):
     return kind == 1 and channel == 0 and body == expected
 
 
+def negative_inform(response, case):
+    outer = json.loads(response)
+    if not isinstance(outer, dict):
+        raise AssertionError('auth envelope object required')
+    if outer.get('oper_type') != 3:
+        return False
+    inner = json.loads(outer['data'])
+    if not isinstance(inner, dict):
+        raise AssertionError('auth message object required')
+    if inner.get('message') != 0x8080:
+        return False
+    expected = {'wrong_pin': 17, 'forged_signature': 29}.get(case)
+    payload = inner.get('payload')
+    if (expected is None or type(inner['message']) is not int or
+            type(outer['oper_type']) is not int or not isinstance(payload, dict) or
+            type(payload.get('errorCode')) is not int or payload['errorCode'] != expected):
+        raise AssertionError('unexpected auth INFORM terminal')
+    return True
+
+
+def acknowledge_negative_close(packet, auth_cid, send_ack, already_closed=False):
+    if already_closed or not consume_negative_auth_close(*packet, auth_cid):
+        raise AssertionError('exact one-shot auth close required')
+    send_ack()
+    return True
+
+
 def run_case(args, h, case):
     documents = Path(args.data_dir) / 'Documents'
     guard = documents / ('auth-cid-' + case)
@@ -49,6 +76,13 @@ def run_case(args, h, case):
     phone.settimeout(6)
     (guard / 'phone-port').write_text(str(phone.getsockname()[1]), encoding='ascii')
     errors, step = [], ['accept']
+    diagnostics = []
+    def phase(label):
+        step[0] = label
+        if diagnostics and diagnostics[-1] == label:
+            return
+        diagnostics.append(label)
+        (guard / 'proxy-phases.log').write_text('\n'.join(diagnostics) + '\n', encoding='ascii')
     pending = []
     auth_cid, control_cid = 0x3456, 0x2345
     peer = bytes.fromhex('a1a2a3a4a5a6')
@@ -57,7 +91,11 @@ def run_case(args, h, case):
         return pending.pop(0) if pending else h.read_packet(conn)
 
     def command(conn, ocf, params):
+        phase('cleanup-command-' + hex(ocf))
         kind, channel, body = packet(conn)
+        if kind == 1 and len(body) >= 3:
+            opcode, length = struct.unpack('<HB', body[:3])
+            phase('received-command-' + hex(opcode) + '-length-' + str(length))
         h.check((kind, channel, body) == (1, 0, struct.pack('<HB', 0xf400 | ocf, len(params)) + params),
                 'CID cleanup command component=' + hex(ocf))
 
@@ -140,15 +178,17 @@ def run_case(args, h, case):
                 h.send_packet(conn, 7, auth_cid, request[at:at + 37])
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
             return  # Actual reset; send/read/cleanup must fail without key.
-        step[0] = 'same_pin_real_crypto_proxy'
+        phase('phone-accept')
         terminal_auth_closed = False
         with phone.accept()[0] as peer_socket:
             peer_socket.settimeout(6)
             for exchange in range(4):
+                phase('exchange-' + str(exchange) + '-phone-header-read')
                 size, = struct.unpack('!I', h.exact(peer_socket, 4))
                 h.check(0 < size <= 4096, 'bounded synthetic phone request')
                 request = h.exact(peer_socket, size)
                 at = 0
+                phase('exchange-' + str(exchange) + '-auth-input-write')
                 while at < size:
                     n = min(1 + at % 37, size - at)
                     h.send_packet(conn, 7, auth_cid, request[at:at + n])
@@ -156,6 +196,7 @@ def run_case(args, h, case):
                 response = bytearray()
                 failed = False
                 while True:
+                    phase('exchange-' + str(exchange) + '-auth-output-read')
                     kind, channel, body = h.read_packet(conn)
                     if kind == 1:
                         # A negative authenticator result is followed by the
@@ -166,13 +207,16 @@ def run_case(args, h, case):
                         # a misleading EOF. Preserve unrelated commands for
                         # the normal cleanup parser.
                         if consume_negative_auth_close(kind, channel, body, auth_cid):
-                            terminal_auth_closed = True
                             # The transport waits for the remote close event
                             # before releasing the listener/control CIDs.
                             # Acknowledging it here preserves the real cleanup
                             # sequence; merely consuming the command would
                             # make the daemon close the connection as unknown.
-                            h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
+                            terminal_auth_closed = acknowledge_negative_close(
+                                (kind, channel, body), auth_cid,
+                                lambda: h.send_event(conn, 0x81, struct.pack('<H', auth_cid)),
+                                terminal_auth_closed)
+                            phase('auth-close-ack-0x81-sent')
                         else:
                             pending.append((kind, channel, body))
                         failed = True
@@ -186,11 +230,25 @@ def run_case(args, h, case):
                         break
                     except (ValueError, UnicodeError):
                         continue
+                terminal_inform = not failed and negative_inform(response, case)
+                if terminal_inform:
+                    phase('exchange-' + str(exchange) + '-validated-inform')
+                phase('exchange-' + str(exchange) + '-phone-response-write')
                 peer_socket.sendall(struct.pack('!I', 0 if failed else len(response)))
                 if not failed:
                     peer_socket.sendall(response)
                 if failed:
                     h.check(case in ('wrong_pin', 'forged_signature'), 'positive pairing cannot terminate before reply')
+                    break
+                if terminal_inform:
+                    # INFORM is a real ordered SEND followed by local failure.
+                    # Phone consumes it as failure and sends no further request.
+                    phase('negative-inform-delivered-auth-close-read')
+                    terminal_auth_closed = acknowledge_negative_close(
+                        h.read_packet(conn), auth_cid,
+                        lambda: h.send_event(conn, 0x81, struct.pack('<H', auth_cid)),
+                        terminal_auth_closed)
+                    phase('auth-close-ack-0x81-sent')
                     break
             h.check(case != 'success' or exchange == 3, 'complete handshake PAKE1 PAKE2 signed exchange')
         if case in ('wrong_pin', 'forged_signature'):
@@ -205,21 +263,29 @@ def run_case(args, h, case):
                 h.drive_peer(conn, 'success', lambda s: step.__setitem__(0, s), auth_flow=flow)
         except Exception as error:
             errors.append((step[0], type(error).__name__))
+            phase('exception-' + type(error).__name__)
+        finally:
+            phase('daemon-finished')
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    launch = subprocess.run(['xcrun', 'simctl', 'launch', args.udid, args.bundle_id,
+    try:
+        launch = subprocess.run(['xcrun', 'simctl', 'launch', args.udid, args.bundle_id,
                              'tcp:' + str(daemon.getsockname()[1]), 'Documents/' + guard.name,
                              'auth_' + case], capture_output=True, text=True, timeout=30)
-    h.check(launch.returncode == 0, 'CID fixture launch')
-    for _ in range(80):
-        if result.exists():
-            break
-        time.sleep(.25)
-    thread.join(8)
-    daemon.close()
-    phone.close()
-    h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
+        h.check(launch.returncode == 0, 'CID fixture launch')
+        for _ in range(80):
+            if result.exists():
+                break
+            time.sleep(.25)
+        thread.join(8)
+    finally:
+        daemon.close()
+        phone.close()
+        h.preserve_case_evidence(documents, guard, 'fe36-cid-' + case)
+        destination = h.ROOT / 'artifacts/scan-owner/simulator-cases' / ('fe36-cid-' + case)
+        if (guard / 'proxy-phases.log').is_file():
+            shutil.copyfile(guard / 'proxy-phases.log', destination / 'proxy-phases.log')
     h.check(not thread.is_alive() and not errors, 'CID daemon completed: ' + repr(errors))
     h.check(result.exists() and result.read_text().strip() == '0', 'CID production-code assertions ' + case)
     trace = (guard / 'scan-events').read_text()

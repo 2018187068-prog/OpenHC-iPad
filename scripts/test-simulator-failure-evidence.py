@@ -10,6 +10,9 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('sim', Path(__file__).with_name('test-fe35-cli-inbound-simulator.py'))
 sim = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sim)
+cid_spec = importlib.util.spec_from_file_location('cid', Path(__file__).with_name('test-fe36-cid-simulator.py'))
+cid = importlib.util.module_from_spec(cid_spec)
+cid_spec.loader.exec_module(cid)
 
 
 class Socket:
@@ -27,6 +30,28 @@ class Thread:
 
 
 class EvidenceTests(unittest.TestCase):
+    def cid_failure(self, exception):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = SimpleNamespace(data_dir=str(root), udid='synthetic', bundle_id='synthetic')
+            def launch(*_, **__):
+                guard = root / 'Documents/auth-cid-wrong_pin'
+                (guard / 'scan-events').write_text('CID_PHONE_EXCEPTION name=AuthFixture reason=static-assertion\n')
+                (guard / 'proxy-phases.log').write_text('exchange-2-phone-response-write\n')
+                if exception:
+                    raise subprocess.TimeoutExpired('synthetic', 30)
+                return subprocess.CompletedProcess([], 1)
+            with patch.object(sim, 'ROOT', root), patch.object(cid.socket, 'socket', return_value=Socket()), \
+                 patch.object(cid.threading, 'Thread', Thread), patch.object(cid.subprocess, 'run', side_effect=launch):
+                with self.assertRaises(subprocess.TimeoutExpired if exception else AssertionError):
+                    cid.run_case(args, sim, 'wrong_pin')
+            evidence = root / 'artifacts/scan-owner/simulator-cases/fe36-cid-wrong_pin'
+            self.assertIn('AuthFixture', (evidence / 'scan-events').read_text())
+            self.assertEqual((evidence / 'proxy-phases.log').read_text(), 'exchange-2-phone-response-write\n')
+
+    def test_cid_launch_failure(self): self.cid_failure(False)
+    def test_cid_launch_exception(self): self.cid_failure(True)
+
     def check_failure(self, process, launch_failure):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

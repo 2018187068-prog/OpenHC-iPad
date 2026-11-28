@@ -46,3 +46,17 @@ Regression boundaries:
 Production remains deny-all with injected network effects. This remains a borrowed
 bounded TCP boundary, not a live ControlLink/ReceiverSession or HiCar/device proof.
 No device action is required for this software gate.
+
+Follow-up test timing correction (audited `ecbf252e24e39e9a40354924ed3e64dd99e1ad5f`,
+run `46124629009`): Darwin's accepted nonblocking socket returned EAGAIN at the
+Python test's immediate receive. This occurred before the production C helper
+runtime and Simulator31; it establishes a test readiness assumption, not a
+production listener result. Both listener tests now use bounded readiness with
+monotonic deadlines, explicitly nonblocking accepted sockets, and exact reads.
+They force accept EAGAIN before connecting and receive EAGAIN before each of two
+one-byte fragments, then check exact `XY`, EOF, unchanged port, nonblocking
+ownership and connected-socket rejection. No sleeps or production timeout changes.
+Unready accept/read tests also exercise bounded failure. Subsequent socket suites
+already set bounded listener/accepted-socket timeouts and loop over framed reads;
+their single-byte reads check one-byte data or EOF. The C helper runtime remains
+an Apple CI gate; Windows Python is real local socket evidence only.

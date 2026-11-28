@@ -4,12 +4,45 @@ No radio configuration. Real local sockets validate idempotent listen and reject
 of connected/datagram descriptors. This is not ObjC/Native or Darwin runtime proof.
 """
 import socket
+import select
+import time
 import unittest
 import importlib.util
 import os
 from pathlib import Path
 import shutil
 from unittest.mock import patch
+
+
+def ready_read(sock, operation, on_wait=None, timeout=2):
+    """Retry nonblocking test I/O against one absolute monotonic deadline."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('listener test read deadline')
+        try:
+            return operation()
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            if on_wait is not None:
+                on_wait()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([sock], [], [], remaining)[0]:
+                raise TimeoutError('listener test read deadline')
+
+
+def receive_exact(sock, size, on_wait=None, timeout=2):
+    # One budget for the entire fragmented read, never a new budget per byte.
+    deadline = time.monotonic() + timeout
+    result = bytearray()
+    while len(result) < size:
+        chunk = ready_read(sock, lambda: sock.recv(size-len(result)), on_wait,
+                           max(0, deadline-time.monotonic()))
+        if not chunk:
+            raise EOFError('listener test unexpected EOF')
+        result.extend(chunk)
+    return bytes(result)
 
 
 class ListenerOperations(unittest.TestCase):
@@ -45,14 +78,43 @@ class ListenerOperations(unittest.TestCase):
         self.assertFalse(s.getblocking())
         s.listen(1);self.assertEqual(address,s.getsockname())
         with socket.create_connection(address,timeout=2) as client:
-            peer,_=s.accept()
+            peer,_=ready_read(s,s.accept)
             with peer:
-                client.sendall(b'X');self.assertEqual(peer.recv(1),b'X')
+                peer.setblocking(False)  # Never rely on platform accept inheritance.
+                fragments=iter((b'X',b'Y'));waits=[]
+                def deliver_after_eagain():
+                    # No data exists until recv actually observes EAGAIN. Each
+                    # fragment is consumed before the next one is sent.
+                    waits.append(True);client.sendall(next(fragments))
+                self.assertEqual(receive_exact(peer,2,deliver_after_eagain),b'XY')
+                self.assertEqual(len(waits),2)
+                self.assertFalse(s.getblocking());self.assertFalse(peer.getblocking())
+                self.assertEqual(address,s.getsockname())
+                client.shutdown(socket.SHUT_WR)
+                with self.assertRaises(EOFError):receive_exact(peer,1)
+
+    def test_accept_retries_only_after_actual_eagain(self):
+        s=self.listener();client=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.addCleanup(client.close);client.settimeout(2);waits=[]
+        def connect_after_eagain():
+            waits.append(True);client.connect(s.getsockname())
+        peer,_=ready_read(s,s.accept,connect_after_eagain)
+        with peer:self.assertEqual(len(waits),1)
+        self.assertFalse(s.getblocking())
+
+    def test_unready_accept_and_receive_have_bounded_deadline(self):
+        s=self.listener()
+        with self.assertRaises(TimeoutError):ready_read(s,s.accept,timeout=0.01)
+        with socket.create_connection(s.getsockname(),timeout=2):
+            peer,_=ready_read(s,s.accept)
+            with peer:
+                peer.setblocking(False)
+                with self.assertRaises(TimeoutError):receive_exact(peer,1,timeout=0.01)
 
     def test_kernel_rejects_listen_on_connected_stream(self):
         s=self.listener()
         with socket.create_connection(s.getsockname(),timeout=2) as client:
-            peer,_=s.accept()
+            peer,_=ready_read(s,s.accept)
             with peer:
                 peer.setblocking(False)
                 with self.assertRaises(OSError):peer.listen(1)

@@ -59,16 +59,21 @@ static bool receive_fragmented(int fd, int sender, char out[2], unsigned *waits)
     }
     return used==2;
 }
-static int bound(int type, bool nonblocking) {
+static int bound(int type, bool nonblocking, uint32_t address) {
     int fd=socket(AF_INET,type,0);if(fd<0)return -1;
-    struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_addr.s_addr=address;
     if(bind(fd,(struct sockaddr *)&a,sizeof(a)) ||
        (nonblocking && fcntl(fd,F_SETFL,O_NONBLOCK)<0)) {close(fd);return -1;}
     return fd;
 }
 int main(void) {
-    uint32_t loopback=htonl(INADDR_LOOPBACK);uint16_t port=0;
-    int fd=bound(SOCK_STREAM,true);CHECK(fd>=0);CHECK(listen(fd,1)==0);
+    /* INADDR_LOOPBACK is a Darwin extension hidden by _POSIX_C_SOURCE.
+     * Parse the fixed local test address using the strict POSIX interface. */
+    struct in_addr parsed={0};CHECK(inet_pton(AF_INET,"127.0.0.1",&parsed)==1);
+    uint32_t loopback=parsed.s_addr;uint16_t port=0;
+    const unsigned char expected[4]={127,0,0,1};
+    CHECK(ntohl(loopback)==UINT32_C(0x7f000001) && !memcmp(&loopback,expected,4));
+    int fd=bound(SOCK_STREAM,true,loopback);CHECK(fd>=0);CHECK(listen(fd,1)==0);
     CHECK(ohc_nearby_prepare_listener(fd,loopback,&port) && port>0);
     uint16_t original=port;CHECK(ohc_nearby_prepare_listener(fd,loopback,&port) && port==original);
     CHECK(accept(fd,NULL,NULL)<0 && (errno==EAGAIN || errno==EWOULDBLOCK));
@@ -87,11 +92,11 @@ int main(void) {
     CHECK(recv(accepted,data,1,0)==0); /* EOF is distinct from EAGAIN. */
     port=777;CHECK(!ohc_nearby_prepare_listener(accepted,loopback,&port) && port==777);
     CHECK(close(accepted)==0 && close(client)==0 && close(fd)==0);
-    fd=bound(SOCK_STREAM,true);CHECK(fd>=0);
+    fd=bound(SOCK_STREAM,true,loopback);CHECK(fd>=0);
     CHECK(!ohc_nearby_prepare_listener(fd,htonl(0xc0000263),&port));CHECK(close(fd)==0);
-    fd=bound(SOCK_STREAM,false);CHECK(fd>=0);
+    fd=bound(SOCK_STREAM,false,loopback);CHECK(fd>=0);
     CHECK(!ohc_nearby_prepare_listener(fd,loopback,&port));CHECK(close(fd)==0);
-    fd=bound(SOCK_DGRAM,true);CHECK(fd>=0);
+    fd=bound(SOCK_DGRAM,true,loopback);CHECK(fd>=0);
     CHECK(!ohc_nearby_prepare_listener(fd,loopback,&port));CHECK(close(fd)==0);
     fd=socket(AF_INET,SOCK_STREAM,0);CHECK(fd>=0);CHECK(fcntl(fd,F_SETFL,O_NONBLOCK)==0);
     CHECK(!ohc_nearby_prepare_listener(fd,loopback,&port));CHECK(close(fd)==0);

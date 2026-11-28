@@ -60,3 +60,17 @@ Unready accept/read tests also exercise bounded failure. Subsequent socket suite
 already set bounded listener/accepted-socket timeouts and loop over framed reads;
 their single-byte reads check one-byte data or EOF. The C helper runtime remains
 an Apple CI gate; Windows Python is real local socket evidence only.
+
+Strict-C portability preflight (audited run `46127594253`, SHA `2bb9eff`):
+Python listener8 passed, then the C test failed to compile because its explicit
+`_POSIX_C_SOURCE=200809L` hides Darwin's `INADDR_LOOPBACK` extension. The test now
+checks `inet_pton(AF_INET,"127.0.0.1",...) == 1`, asserts host value `0x7f000001`
+and network bytes `{127,0,0,1}`, and passes that same address to every bind. The
+feature macro, strict warning flags, production helper and negative checks remain.
+Existing Zig 0.17.0 with bundled Darwin headers reproduces the original failure
+and compiles the corrected complete C test for macOS arm64/x86_64 and Linux musl;
+the standalone actual production header and the next five Darwin C gate inputs
+also compile under C11/Wall/Wextra/Werror. This is cross-compile-only evidence,
+using bundled headers rather than Xcode16.4's SDK. Actual Apple linking/runtime,
+Simulator31 and later UI/package acceptance remain pending. This follow-up is
+local and unstaged for coordinator review; it does not authorize another CI run.

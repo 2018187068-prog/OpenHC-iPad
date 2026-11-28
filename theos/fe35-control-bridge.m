@@ -7,6 +7,7 @@
 #import "Fe36AuthTransport.h"
 #import "NearbyWifiTransport.h"
 #include "NearbyWifiListener.h"
+#include "NearbyReceiverSockets.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -176,13 +177,25 @@ int fe35_scan_notify(void *context, int64_t generation, const char *kind,
     uint8_t _key[16];
     OHCBNearbyTcpControlBridge *_tcpControl;
     BOOL _tcpStarted;
+    ohc_receiver_sockets _receiverSockets;
+    BOOL _receiverConfigured, _receiverInitialized;
 }
 - (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
     now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer;
 - (fe35_bridge_batch)tcpStep:(int)fd bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now;
+- (NSArray<OHCBFe35ControlBridgeEvent *> *)receiverEvents:(NSArray<OHCBFe35ControlBridgeEvent *> *)events now:(int64_t)now;
+- (NSArray<OHCBFe35ControlBridgeEvent *> *)driveReceiver:(int)fd now:(int64_t)now;
 @end
 static void wipeSessionKey(uint8_t *bytes) {
     volatile uint8_t *p=bytes;for(size_t i=0;i<16;i++)p[i]=0;
+}
+static BOOL receiverTerminal(NSArray<OHCBFe35ControlBridgeEvent *> *events) {
+    for(OHCBFe35ControlBridgeEvent *event in events)
+        if([event.kind isEqualToString:@"TCP_REJECTED"] ||
+           [event.kind isEqualToString:@"TCP_DISCONNECT"] ||
+           [event.kind isEqualToString:@"TCP_CLOSED"] ||
+           [event.kind isEqualToString:@"DMSDP_CAPABILITY_REQUIRED"]) return YES;
+    return NO;
 }
 static fe35_bridge_batch wifiStep(void *p,enum fe35_wifi_io e,fe35_bridge_handle b,int64_t n,
                                   int fd,int *listener,uint32_t *peer) {
@@ -198,6 +211,7 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
     if(!network || !accept) return nil;
     if((self=[super init])) {
         _network=network; _accept=[accept copy]; _stateLock=[NSLock new]; _networkLock=[NSLock new];
+        ohc_receiver_init(&_receiverSockets);_receiverInitialized=YES;
     } return self;
 }
 - (BOOL)handoffGeneration:(int64_t)g deadline:(int64_t)d {
@@ -239,27 +253,103 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
 }
 - (fe35_bridge_batch)tcpStep:(int)fd bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now {
     @autoreleasepool {
-    if(!_tcpControl || fd<0 || size>65536 || (!bytes && size) || !_accept(self,fd,now)) return NULL;
+    BOOL eof=!bytes && size==SIZE_MAX;
+    if(!_tcpControl || fd<0 || (!eof && (size>65536 || (!bytes && size))) || !_accept(self,fd,now)) return NULL;
+    NSMutableArray<OHCBFe35ControlBridgeEvent *> *result=[NSMutableArray array];
     [_stateLock lock];
     @try {
         if(_cancelled || !_keyStored || now<0 || now>=_deadline) return NULL;
         NSArray<OHCBFe35ControlBridgeEvent *> *events=nil;
         if(!_tcpStarted) {
             if(bytes || size || _keyTaken) return NULL;
+            struct sockaddr_in local={0},peer={0};socklen_t length=sizeof(local);
+            if(getsockname(fd,(struct sockaddr *)&local,&length) || length!=sizeof(local) || local.sin_family!=AF_INET) return NULL;
+            length=sizeof(peer);
+            if(getpeername(fd,(struct sockaddr *)&peer,&length) || length!=sizeof(peer) || peer.sin_family!=AF_INET) return NULL;
+            _receiverSockets.local=local.sin_addr.s_addr;_receiverSockets.peer=peer.sin_addr.s_addr;_receiverConfigured=YES;
             OHCBKotlinByteArray *key=kotlinBytes(_key,16);
             _keyTaken=YES;wipeSessionKey(_key);
             @try { events=[_tcpControl startGeneration:_generation connection:1 deadlineMillis:_deadline nowMillis:now sessionKey:key]; }
             @finally { wipeKotlinBytes(key); }
             _tcpStarted=YES;
-        } else if(size) {
+        } else if(eof) events=[_tcpControl controlClosedGeneration:_generation connection:1 nowMillis:now];
+        else if(size) {
             OHCBKotlinByteArray *data=kotlinBytes(bytes,size);
             @try { events=[_tcpControl feedGeneration:_generation connection:1 data:data nowMillis:now]; }
             @finally { wipeKotlinBytes(data); }
         } else events=[_tcpControl tickGeneration:_generation connection:1 nowMillis:now];
-        return retainEvents(events);
+        NSArray *processed=[self receiverEvents:events now:now];
+        if(!processed) return NULL;[result addObjectsFromArray:processed];
+        if(receiverTerminal(processed))return retainEvents(result);
     } @catch(__unused NSException *e) { return NULL; }
     @finally { [_stateLock unlock]; }
+    NSArray *more=[self driveReceiver:fd now:now];
+    if(!more)return NULL;[result addObjectsFromArray:more];return retainEvents(result);
     }
+}
+/* Called with _stateLock, after original-owner admission. No callback obtains
+ * another owner lease; listener readiness is based on actual bound sockets. */
+- (NSArray<OHCBFe35ControlBridgeEvent *> *)receiverEvents:(NSArray<OHCBFe35ControlBridgeEvent *> *)events now:(int64_t)now {
+    if(!events || !_receiverConfigured || _cancelled) return nil;
+    NSMutableArray *todo=[events mutableCopy],*out=[NSMutableArray array];
+    for(NSUInteger at=0;at<todo.count;at++) {
+        if(todo.count>FE35_BRIDGE_MAX_EVENTS) return nil;
+        OHCBFe35ControlBridgeEvent *event=todo[at];
+        if([event.kind isEqualToString:@"DMSDP_LISTEN"]) {
+            int port=ohc_receiver_listen(&_receiverSockets,event.channel);if(port<=0)return nil;
+            [todo addObjectsFromArray:[_tcpControl listenerReadyGeneration:_generation connection:1
+                endpoint:event.channel port:port nowMillis:now]];
+        } else if([event.kind isEqualToString:@"DMSDP_WRITE"]) {
+            OHCBKotlinByteArray *data=event.frame;
+            if(!data || data.size<=0 || data.size>65538) return nil;
+            NSMutableData *copy=[NSMutableData dataWithLength:(NSUInteger)data.size];uint8_t *p=copy.mutableBytes;
+            for(int32_t i=0;i<data.size;i++)p[i]=(uint8_t)[data getIndex:i];
+            BOOL ok=ohc_receiver_queue(&_receiverSockets,event.channel,p,copy.length);
+            memset(p,0,copy.length);wipeKotlinBytes(data);if(!ok)return nil;
+        } else if(![event.kind isEqualToString:@"DMSDP_ENCRYPTED"]) {
+            [out addObject:event];if(receiverTerminal(@[event]))return out;
+        }
+    }
+    return out;
+}
+- (NSArray<OHCBFe35ControlBridgeEvent *> *)driveReceiver:(int)fd now:(int64_t)now {
+    NSMutableArray *out=[NSMutableArray array];
+    for(int endpoint=1;endpoint<=2;endpoint++) {
+        // No synchronous owner callback while holding the state lock: revocation
+        // on that executor takes the same lock. Each bounded I/O turn revalidates.
+        if(!_accept(self,fd,now))return nil;
+        [_stateLock lock];
+        @try {
+            if(_cancelled || now>=_deadline)return nil;
+            int accepted=ohc_receiver_accept(&_receiverSockets,endpoint);if(accepted<0)return nil;
+            if(accepted) {
+                NSArray *events=[self receiverEvents:[_tcpControl endpointConnectedGeneration:_generation connection:1
+                    endpoint:endpoint nowMillis:now] now:now];
+                if(!events)return nil;[out addObjectsFromArray:events];
+                if(receiverTerminal(events))return out;
+            }
+            if(!ohc_receiver_flush(&_receiverSockets,endpoint))return nil;
+            int i=endpoint-1,socketFD=_receiverSockets.connection[i];if(socketFD<0)continue;
+            uint8_t bytes[4096];ssize_t n=recv(socketFD,bytes,sizeof(bytes),0);
+            if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK || errno==EINTR))continue;
+            if(n<0)return nil;
+            NSArray *events=nil;
+            if(!n) {
+                // All queued output must settle before allowing session EOF.
+                if(_receiverSockets.count[i]!=_receiverSockets.at[i])return nil;
+                if(!ohc_receiver_close_fd(&_receiverSockets,&_receiverSockets.connection[i]))return nil;
+                events=[_tcpControl endpointClosedGeneration:_generation connection:1 endpoint:endpoint nowMillis:now];
+            } else {
+                OHCBKotlinByteArray *data=kotlinBytes(bytes,(size_t)n);
+                @try { events=[_tcpControl endpointDataGeneration:_generation connection:1 endpoint:endpoint data:data nowMillis:now]; }
+                @finally { wipeKotlinBytes(data);memset(bytes,0,sizeof(bytes)); }
+            }
+            events=[self receiverEvents:events now:now];if(!events)return nil;[out addObjectsFromArray:events];
+            if(receiverTerminal(events))return out;
+        } @catch(__unused NSException *e) { return nil; }
+        @finally { [_stateLock unlock]; }
+    }
+    return out;
 }
 - (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
     now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer {
@@ -305,9 +395,10 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
 }
 - (BOOL)cancel {
     [self revoke];_networkConfig=nil;
+    [_stateLock lock];BOOL socketsClosed=ohc_receiver_close(&_receiverSockets);[_stateLock unlock];
     [_networkLock lock]; BOOL closed=NO;
     @try { closed=[_network close]; } @catch(__unused NSException *e) { closed=NO; }
-    @finally { [_networkLock unlock]; } return closed;
+    @finally { [_networkLock unlock]; } return closed && socketsClosed;
 }
 - (void)revoke {
     [_stateLock lock];
@@ -316,6 +407,7 @@ static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t 
 }
 - (void)dealloc {
     wipeSessionKey(_key);
+    if(_receiverInitialized)ohc_receiver_close(&_receiverSockets);
     @try { [_tcpControl close]; } @catch(__unused NSException *e) { }
 }
 @end

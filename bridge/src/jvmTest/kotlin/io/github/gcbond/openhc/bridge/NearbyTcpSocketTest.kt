@@ -33,6 +33,70 @@ class NearbyTcpSocketTest {
     @Test fun peerEofClosesOwnedSocketAndRevokesKey() { exercise("eof") }
     @Test fun independentPythonOpenSslPeerRunsActualJvmEncryptedSocket() { exercise("independent") }
 
+    @Test fun independentPeerUsesRealSessionAndControlListenersUnderSameBridgeAndKey() {
+        val link=NearbyTcpControlBridge("CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F",root,a,b)
+        val listener=ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));listener.soTimeout=3000
+        val listeners=linkedMapOf<Int,ServerSocket>();val sockets=linkedMapOf<Int,Socket>()
+        var failure:Throwable?=null;val cancel=AtomicBoolean(false)
+        val start=System.nanoTime();fun now()=(System.nanoTime()-start)/1_000_000
+        val worker=thread(name="owned-receiver-test") {
+            try {listener.accept().use { main ->
+                main.soTimeout=5;var detached=false;var running=true
+                fun events(batch:List<Fe35ControlBridgeEvent>) {
+                    for(event in batch) when(event.kind) {
+                        "SEND_FRAME" -> {main.getOutputStream().write(assertNotNull(event.frame));main.getOutputStream().flush()}
+                        "DMSDP_LISTEN" -> {
+                            check(event.channel !in listeners)
+                            val opened=ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));opened.soTimeout=1
+                            listeners[event.channel]=opened
+                            events(link.listenerReady(1,1,event.channel,opened.localPort,now()))
+                        }
+                        "DMSDP_WRITE" -> {
+                            val owned=checkNotNull(sockets[event.channel]);owned.getOutputStream().write(assertNotNull(event.frame));owned.getOutputStream().flush()
+                        }
+                        "TCP_CONTROL_DETACHED" -> detached=true
+                        "TCP_REJECTED","TCP_DISCONNECT","DMSDP_CAPABILITY_REQUIRED" -> running=false
+                    }
+                }
+                val key=ByteArray(16){0x41}
+                try{events(link.start(1,1,8000,now(),key))}finally{key.fill(0)}
+                val data=ByteArray(4096)
+                while(running && !cancel.get()) {
+                    events(link.tick(1,1,now()));if(!running)break
+                    if(!detached) {
+                        val n=try{main.getInputStream().read(data)}catch(_:SocketTimeoutException){-2}
+                        if(n==-1) events(link.controlClosed(1,1,now()))
+                        else if(n>0) events(link.feed(1,1,data.copyOf(n),now()))
+                    }
+                    for((endpoint,opened) in listeners.toList()) {
+                        if(endpoint !in sockets) {
+                            val accepted=try{opened.accept()}catch(_:SocketTimeoutException){null}
+                            if(accepted!=null) {accepted.soTimeout=1;sockets[endpoint]=accepted;events(link.endpointConnected(1,1,endpoint,now()))}
+                        }
+                        val owned=sockets[endpoint]?:continue
+                        if(owned.isClosed)continue
+                        val n=try{owned.getInputStream().read(data)}catch(_:SocketTimeoutException){-2}
+                        if(n==-1) {owned.close();events(link.endpointClosed(1,1,endpoint,now()))}
+                        else if(n>0)events(link.endpointData(1,1,endpoint,data.copyOf(n),now()))
+                    }
+                }
+            }}catch(t:Throwable){failure=t}
+            finally{link.close();sockets.values.forEach{it.close()};listeners.values.forEach{it.close()};listener.close()}
+        }
+        try {
+            val script=listOf(File("scripts/nearby-tcp-test-phone.py"),File("../scripts/nearby-tcp-test-phone.py")).first{it.isFile}.absolutePath
+            val phone=ProcessBuilder("python",script,listener.localPort.toString(),"dmsdp").redirectErrorStream(true).start()
+            try {
+                assertTrue(phone.waitFor(12,TimeUnit.SECONDS),"bounded independent DMSDP peer")
+                val result=phone.inputStream.bufferedReader().readText();assertEquals(0,phone.exitValue(),result)
+                assertTrue(result.contains("NEARBY_PYTHON_OPENSSL_JVM_SOCKET_OK"))
+            }finally{if(phone.isAlive){phone.destroyForcibly();phone.waitFor(2,TimeUnit.SECONDS)}}
+        }finally{
+            cancel.set(true);worker.join(3500);assertFalse(worker.isAlive);assertFalse(link.hasPrivateKey)
+            failure?.let{throw AssertionError("owned receiver worker failed",it)}
+        }
+    }
+
     private fun exercise(end:String) {
         val link=NearbyTcpControlBridge("CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F",root,a,b)
         val cancel=AtomicBoolean(false)

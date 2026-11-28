@@ -12,6 +12,7 @@ kotlin {
         compilations.getByName("main").cinterops.create("openhcCrypto") {
             definitionFile.set(project.file("src/nativeInterop/cinterop/openhc_crypto.def"))
             includeDirs(rootProject.file("native/crypto"))
+            includeDirs(rootProject.file("native/dmsdp"))
             extraOpts("-libraryPath", rootProject.file("artifacts/crypto/$cryptoTargetName").absolutePath)
         }
         binaries.framework {

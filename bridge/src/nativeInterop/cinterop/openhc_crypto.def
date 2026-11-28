@@ -1,3 +1,3 @@
-headers = openhc_crypto.h
+headers = openhc_crypto.h openhc_dmsdp.h
 package = openhc.crypto
-staticLibraries = libopenhc_crypto.a libcrypto.a
+staticLibraries = libopenhc_crypto.a libcrypto.a libopenhc_dmsdp.a

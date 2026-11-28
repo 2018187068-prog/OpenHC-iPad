@@ -114,9 +114,25 @@ static void rejected_batch_and_closed_peer(void) {
     assert(tcp_control_batch(sockets[0],set_event("SEND_FRAME",&byte,1,NULL,0,0),&ended)==-1);
     close(sockets[0]);
 }
+static fe35_bridge_batch detached_step(void *context,int tcp,const uint8_t *bytes,size_t size,int64_t now) {
+    (void)tcp;(void)now;int *eof=context;assert(!bytes);memset(&batch,0,sizeof(batch));
+    if(size==SIZE_MAX) {(*eof)++;return set_event("TCP_CONTROL_DETACHED",NULL,0,NULL,0,0);}
+    assert(size==0);return &batch;
+}
+static void nearby_eof_retains_original_owner_until_expiry(void) {
+    int sockets[2],daemon[2];pair(sockets);assert(!socketpair(AF_UNIX,SOCK_STREAM,0,daemon));
+    assert(!shutdown(sockets[1],SHUT_WR));
+    int64_t expiry=now_ms()+80;fe35_scan_transport scan={&expiry,1,-1,notify};
+    current_scan=&scan;scan_ended=0;int eof=0,disconnected=0,settled=0,uncertain=0;
+    fe35_wifi_transport wifi={0};wifi.context=&eof;wifi.tcp_step=detached_step;
+    assert(tcp_control_stream(daemon[0],sockets[0],NULL,&wifi,0x2345,&disconnected,&settled,&uncertain)==-1);
+    assert(eof==1 && now_ms()>=expiry && !uncertain && !disconnected);
+    current_scan=NULL;scan_ended=0;close(sockets[0]);close(sockets[1]);close(daemon[0]);close(daemon[1]);
+}
 int main(void) {
     alarm(10);assert(signal(SIGPIPE,SIG_DFL)!=SIG_ERR);
     backpressure_and_cancel();settled_fe35_and_ack();rejected_batch_and_closed_peer();
-    puts("NEARBY_PRODUCTION_TCP_PUMP_OK=3;BOUNDARY=real-loopback-injected-common-batches-not-device");
+    nearby_eof_retains_original_owner_until_expiry();
+    puts("NEARBY_PRODUCTION_TCP_PUMP_OK=4;BOUNDARY=real-loopback-injected-common-batches-not-device");
     return 0;
 }

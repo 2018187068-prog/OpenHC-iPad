@@ -66,7 +66,9 @@ jobs:
           gradle-version: '8.13'
       - name: Build candidate static crypto backend
         shell: bash
-        run: bash scripts/build-crypto-backend.sh
+        run: |
+          bash scripts/build-crypto-backend.sh
+          bash scripts/build-dmsdp-adapter.sh
       - name: Build static iOS framework
         shell: bash
         run: |

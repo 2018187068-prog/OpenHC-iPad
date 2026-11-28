@@ -28,7 +28,8 @@ WIFI_CASES = ('wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_stop', 'wi
               'wifi_cleanup_failure')
 LIVE_CASES = ('wifi_live_disconnect', 'wifi_live_remote_close', 'wifi_live_peer_eof',
               'wifi_live_stop', 'wifi_live_background', 'wifi_live_owner_eof',
-              'wifi_live_expiry', 'wifi_live_malformed')
+              'wifi_live_expiry', 'wifi_live_malformed', 'wifi_live_dmsdp_setup',
+              'wifi_live_dmsdp_stop', 'wifi_live_dmsdp_malformed', 'wifi_live_dmsdp_duplicate')
 
 
 def safe_label(value):
@@ -101,6 +102,13 @@ def safe_label(value):
         'live TCP encrypted business rejection': 'tcp-business-rejection',
         'live TCP encrypted disconnect ACK': 'tcp-disconnect-ack',
         'live TCP owned socket closed after terminal': 'tcp-terminal-close',
+        'DMSDP resource response': 'dmsdp-resource-response',
+        'DMSDP session negotiation response': 'dmsdp-session-response',
+        'DMSDP plaintext OPTIONS': 'dmsdp-options',
+        'DMSDP plaintext crypto ACK': 'dmsdp-crypto-ack',
+        'DMSDP encrypted TCP keepalive': 'dmsdp-tcp-keepalive',
+        'DMSDP owned endpoints close': 'dmsdp-endpoints-close',
+        'DMSDP frame bound': 'dmsdp-frame-bound',
     }
     # Dynamic assertion families emit only fixed tokens, never their suffix.
     if value.startswith('CID daemon completed: '):
@@ -376,7 +384,7 @@ def read_tcp_frame(tcp, h):
     return h.decode_frame(bytes(raw))
 
 
-def live_control(tcp, daemon, h, guard, case, control_cid, phase):
+def live_control(tcp, daemon, h, guard, case, control_cid, phase, receiver_key=None):
     tlv = lambda tag, value=b'': h.ea(tag)+h.ea(len(value))+value
     first = read_tcp_frame(tcp, h)
     h.check(first[:2] == (0, 0) and first[2].startswith(tlv(15)[:1]), 'live TCP pinned connectId')
@@ -397,6 +405,11 @@ def live_control(tcp, daemon, h, guard, case, control_cid, phase):
         expected=tlv(4,h.ea(1)+h.ea(0)+h.ea(3)+h.ea(business)+h.ea(len(tag))+tag+h.ea(0))
         h.check(read_tcp_frame(tcp,h)==(2,1,expected),'live TCP encrypted business rejection')
     phase('live-tcp-handshake-and-encrypted-rejection-validated')
+    if case.startswith('wifi_live_dmsdp_'):
+        dmsdp_control(tcp,h,guard,case,phase,key=receiver_key)
+        h.check(tcp.recv(1)==b'','live TCP owned socket closed after terminal')
+        phase('live-dmsdp-terminal-closed')
+        return
     if case == 'wifi_live_remote_close':
         h.send_event(daemon,0x81,struct.pack('<H',control_cid))
     if case in ('wifi_live_stop','wifi_live_background','wifi_live_owner_eof'):
@@ -410,6 +423,64 @@ def live_control(tcp, daemon, h, guard, case, control_cid, phase):
         h.check(read_tcp_frame(tcp,h)==(33,1,tlv(6)),'live TCP encrypted disconnect ACK')
     h.check(tcp.recv(1)==b'','live TCP owned socket closed after terminal')
     phase('live-tcp-terminal-closed')
+
+
+def dmsdp_control(tcp,h,guard,case,phase,key=None):
+    tlv=lambda tag,value=b'':h.ea(tag)+h.ea(len(value))+value
+    request=tlv(3,h.ea(3)+h.ea(20)+h.ea(5)+b'DMSDP'+h.ea(1))
+    tcp.sendall(h.encrypted_frame(4,request,bytes.fromhex('a1a2a3a4a5a6a7a8')))
+    outer,encrypted,response=read_tcp_frame(tcp,h)
+    tag,at=h.read_ea(response,0);size,at=h.read_ea(response,at)
+    status,at=h.read_ea(response,at);port,at=h.read_ea(response,at)
+    expected=tlv(4,h.ea(0)+h.ea(port)+h.ea(3)+h.ea(20)+h.ea(5)+b'DMSDP'+h.ea(1))
+    h.check((outer,encrypted,tag,status)==(4,1,4,0) and 0<port<=65535 and response==expected,'DMSDP resource response')
+    # Closing Nearby must retain actual DMSDP listeners and the same original owner.
+    tcp.shutdown(socket.SHUT_WR)
+    with socket.create_connection(('127.0.0.1',port),timeout=4) as session:
+        session.settimeout(4)
+        body=b'\x7f\x81\x90'+bytes(16);crc=h.crc16_arc(body)
+        frame=body+struct.pack('<H',crc)
+        if case=='wifi_live_dmsdp_malformed':
+            session.sendall(frame[:-1]+bytes([frame[-1]^1]))
+            h.check(session.recv(1)==b'','DMSDP owned endpoints close');return
+        session.sendall(frame[:5]);session.sendall(frame[5:])
+        reply=h.exact(session,21)
+        control_port=struct.unpack('!H',reply[4:6])[0]
+        expected=b'\x7f\x81\x90\x00'+struct.pack('!H',control_port)+bytes(13)
+        h.check(0<control_port<=65535 and reply==expected+struct.pack('<H',h.crc16_arc(expected)),'DMSDP session negotiation response')
+        if case=='wifi_live_dmsdp_duplicate':
+            with socket.create_connection(('127.0.0.1',port),timeout=4) as duplicate:
+                h.check(duplicate.recv(1)==b'','DMSDP owned endpoints close')
+            h.check(session.recv(1)==b'','DMSDP owned endpoints close');return
+        session.shutdown(socket.SHUT_WR)
+        def read_control(control):
+            head=h.exact(control,3);size=struct.unpack('!H',head[1:])[0]
+            h.check(0<size<=65535,'DMSDP frame bound')
+            return head[0],h.exact(control,size)
+        with socket.create_connection(('127.0.0.1',control_port),timeout=4) as control:
+            control.settimeout(4)
+            options=b'OPTIONS * DMSDP/1.0\r\nCryptoVer: 1\r\nCryptoAbility: 222\r\nCryptoAlg: aes128-ctr\r\nUdpKA: 0\r\nKaRetry: 160\r\nLowDelay: 1\r\nCSeq: 1\r\n\r\n'
+            h.check(read_control(control)==(0,options),'DMSDP plaintext OPTIONS')
+            if case=='wifi_live_dmsdp_stop':
+                (guard/'stop').write_text('STOP\n',encoding='ascii')
+            else:
+                selection=b'SET_PARAMETER * DMSDP/1.0\r\nCSeq: 2\r\nCryptoVer: 1\r\nCryptoSwitch: 222\r\nCryptoAlg: aes128-ctr\r\nUdpKA: 0\r\n\r\n'
+                control.sendall(b'\x00'+struct.pack('!H',len(selection))+selection)
+                ack=b'DMSDP/1.0 200 OK\r\nCSeq: 2\r\nCryptoVer: 1\r\nCryptoSwitch: 222\r\nCryptoAlg: aes128-ctr\r\nPlatform: 0\r\n\r\n'
+                h.check(read_control(control)==(0,ack),'DMSDP plaintext crypto ACK')
+                if key is not None:
+                    # Independent OpenSSL peer; synthetic JVM key only, no Native key export.
+                    iv=bytes(range(16));text=b'GET_PARAMETER * DMSDP/1.0\r\nCSeq: 3\r\n\r\n'
+                    def ctr(data,nonce):
+                        result=subprocess.run(['openssl','enc','-aes-128-ctr','-K',key.hex(),'-iv',nonce.hex()],input=data,capture_output=True,check=True)
+                        return result.stdout
+                    sealed=iv+ctr(text,iv);control.sendall(b'\xab'+struct.pack('!H',len(sealed))+sealed)
+                    flag,payload=read_control(control)
+                    h.check(flag==0xab and ctr(payload[16:],payload[:16])==b'GET_PARAMETER * DMSDP/1.0\r\nCSeq: 2\r\n\r\n','DMSDP encrypted TCP keepalive')
+                control.shutdown(socket.SHUT_WR)
+            h.check(control.recv(1)==b'','DMSDP owned endpoints close')
+        h.check(session.recv(1)==b'','DMSDP owned endpoints close')
+    phase('dmsdp-listener-session-control-lifecycle-validated')
 
 
 def consume_negative_auth_close(kind, channel, body, auth_cid):

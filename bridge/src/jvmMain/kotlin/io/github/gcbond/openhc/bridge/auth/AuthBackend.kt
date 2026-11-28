@@ -27,10 +27,10 @@ internal actual object AuthBackend {
             ByteArray(size).also { out -> unsigned.copyInto(out,size-unsigned.size) }
         }
         11 -> if (key.size <= c.size && BigInteger(1,key) > BigInteger.ONE && BigInteger(1,key) < BigInteger(1,c)-BigInteger.ONE) byteArrayOf(1) else null
-        12, 13 -> {
+        12, 13, 14 -> {
             if (key.size != 16 || a.size != 16 || c.size != size) null else try {
-                Cipher.getInstance("AES/CFB/NoPadding").run {
-                    init(if (op == 12) Cipher.ENCRYPT_MODE else Cipher.DECRYPT_MODE,
+                Cipher.getInstance(if (op == 14) "AES/CTR/NoPadding" else "AES/CFB/NoPadding").run {
+                    init(if (op != 13) Cipher.ENCRYPT_MODE else Cipher.DECRYPT_MODE,
                         SecretKeySpec(key, "AES"), IvParameterSpec(a))
                     doFinal(c)
                 }

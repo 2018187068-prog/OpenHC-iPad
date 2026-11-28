@@ -17,7 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 /* Borrowed TCP/key boundary on owner executor. No ownership/lease escapes. Return YES only if
  * the boundary was consumed synchronously. The C worker closes TCP at the end of this slice.
- * Encrypted ReceiverSession and durable live TCP handoff remain a subsequent dependency. */
+ * This borrowed boundary never enables the live ReceiverSession setup slice. */
 typedef BOOL (^OHCWifiBoundary)(uint64_t, int64_t, int64_t, int, const uint8_t key[_Nonnull 16]);
 @interface OHCNearbyWifiTransport : NSObject
 - (instancetype)initWithNetwork:(id<OHCNearbyNetwork>)network
@@ -25,7 +25,9 @@ typedef BOOL (^OHCWifiBoundary)(uint64_t, int64_t, int64_t, int, const uint8_t k
 - (BOOL)handoffGeneration:(int64_t)generation deadline:(int64_t)deadline;
 - (BOOL)storeKey:(const uint8_t [_Nonnull 16])key;
 /* Before handoff only. Live mode denies deliverTo and consumes key privately;
- * each tcp_step revalidates through the original serialized owner accept block. */
+ * each tcp_step revalidates through the original serialized owner accept block.
+ * Exact DMSDP business20/channel3 requests may open worker-owned session/control
+ * listeners. No service/media capability or production network provider is supplied. */
 - (BOOL)enableLiveControl:(const fe35_bridge_input *)input;
 - (BOOL)deliverTo:(OHCWifiBoundary)sink owner:(uint64_t)owner descriptor:(int)fd;
 - (fe35_wifi_transport)binding;

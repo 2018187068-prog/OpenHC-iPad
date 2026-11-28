@@ -41,11 +41,11 @@ class MatrixTests(unittest.TestCase):
             visited.append(case);return True
         data,output=self.matrix(run,False)
         self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES+cid.LIVE_CASES))
-        self.assertEqual(len(data),43)
+        self.assertEqual(len(data),47)
         self.assertTrue(all(e['outcome']=='passed' for e in data))
         self.assertIn('FE36_CID_TRANSPORT_AUTH_CASES_OK=25',output)
         self.assertIn('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=10',output)
-        self.assertIn('FE36_LIVE_TCP_CONTROL_CASES_OK=8',output)
+        self.assertIn('FE36_LIVE_TCP_CONTROL_CASES_OK=12',output)
 
     def test_early_and_late_isolated_failures_reach_every_later_target(self):
         visited=[]
@@ -204,7 +204,7 @@ class MatrixTests(unittest.TestCase):
         selected={
             'test-fe35-cli-inbound-simulator.py': {'drive_peer','decode_frame','read_ea','read_command','assert_service_record'},
             'test-fe36-cid-simulator.py': {'wifi_negotiate','require_cleanup_command','negative_inform',
-                                        'acknowledge_negative_close','_run_case','read_tcp_frame','live_control'},
+                                        'acknowledge_negative_close','_run_case','read_tcp_frame','live_control','dmsdp_control'},
         }
         checked=0
         for name,functions in selected.items():

@@ -115,6 +115,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          bash scripts/build-dmsdp-adapter.sh 2>&1 | tee artifacts/logs/focused-dmsdp-adapter.log
           gradle :bridge:linkReleaseFrameworkIosSimulatorArm64 --no-daemon --stacktrace 2>&1 | tee artifacts/logs/focused-simulator-framework.log
       - name: Install App packaging tools
         if: ${{ !cancelled() }}

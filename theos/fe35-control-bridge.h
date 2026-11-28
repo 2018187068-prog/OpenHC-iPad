@@ -116,7 +116,9 @@ typedef struct {
                               int accepted_fd, int *listener_fd, uint32_t *peer_ipv4);
     bool (*cancel)(void *);
     /* Optional live mode. C retains the accepted socket and original scan/lease until
-     * terminal/Stop/EOF/deadline. NULL preserves the borrowed bounded boundary. */
+     * terminal/Stop/deadline. EOF is one callback with NULL bytes and SIZE_MAX size:
+     * only TCP_CONTROL_DETACHED authorizes retaining DMSDP under the same lease.
+     * NULL preserves the borrowed bounded boundary. */
     fe35_bridge_batch (*tcp_step)(void *, int fd, const uint8_t *, size_t, int64_t now_ms);
 } fe35_wifi_transport;
 fe35_scan_completion openhc_btstack_scan_wifi_inbound(

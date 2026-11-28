@@ -23,7 +23,10 @@ if __name__ == '__main__':
     try:
         with tempfile.TemporaryDirectory(prefix='nearby-test-phone-') as folder:
             with socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=4) as tcp:
-                cid.live_control(tcp,None,wire,Path(folder),'wifi_live_disconnect',0,lambda _:None)
+                receiver=len(sys.argv)>2 and sys.argv[2]=='dmsdp'
+                cid.live_control(tcp,None,wire,Path(folder),
+                    'wifi_live_dmsdp_setup' if receiver else 'wifi_live_disconnect',0,lambda _:None,
+                    receiver_key=bytes([0x41])*16 if receiver else None)
         print('NEARBY_PYTHON_OPENSSL_JVM_SOCKET_OK;SYNTHETIC_PHONE_NOT_DEVICE')
     except Exception as error:
         print('NEARBY_PYTHON_PHONE_FAIL='+cid.safe_exception_name(error)+':'+cid.safe_label(str(error)))

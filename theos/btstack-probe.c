@@ -811,6 +811,7 @@ static int tcp_control_batch(int tcp,fe35_bridge_batch batch,int *ended) {
                 at+=(size_t)n;
             }
         } else if(!strcmp(e.kind,"TCP_DISCONNECT")) *ended=1;
+        else if(!strcmp(e.kind,"TCP_CONTROL_DETACHED")) *ended=2;
         else if(strcmp(e.kind,"HANDSHAKE_COMPLETED") && strcmp(e.kind,"SOCKET_REQUEST_REJECTED") &&
                 strcmp(e.kind,"IGNORED_FRAME")) failed=1;
         memset(&e,0,sizeof(e));
@@ -819,7 +820,7 @@ static int tcp_control_batch(int tcp,fe35_bridge_batch batch,int *ended) {
 }
 static int tcp_control_stream(int fd,int tcp,const char *dir,fe35_wifi_transport *wifi,
                               uint16_t cid,int *disconnected,int *settled,int *uncertain) {
-    int ended=0;
+    int ended=0,control_detached=0;
     if(scan_poll() || tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,NULL,0,now_ms()),&ended)) return -1;
 #ifdef OPENHC_FE35_SIMULATOR_TEST
     puts("BTSTACK_WIFI_LIVE_CONTROL_STARTED");fflush(stdout);
@@ -827,7 +828,12 @@ static int tcp_control_stream(int fd,int tcp,const char *dir,fe35_wifi_transport
     for(;;) {
         if(scan_poll()) return -1;
         if(tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,NULL,0,now_ms()),&ended)) return -1;
-        struct pollfd p[2]={{fd,POLLIN,0},{tcp,POLLIN,0}};
+        if(ended==1)return 0;
+        if(ended==2) {
+            if(shutdown(tcp,SHUT_RDWR) && errno!=ENOTCONN)return -1;
+            control_detached=1;ended=0;
+        }
+        struct pollfd p[2]={{fd,POLLIN,0},{control_detached?-1:tcp,POLLIN,0}};
         int ready=poll(p,2,20);if(ready<0) {if(errno==EINTR)continue;return -1;}
         /* The daemon and original owner still have priority over simultaneous TCP input. */
         if(p[0].revents) {
@@ -846,11 +852,24 @@ static int tcp_control_stream(int fd,int tcp,const char *dir,fe35_wifi_transport
             if(scan_poll()) return -1;
             uint8_t body[4096];ssize_t n=recv(tcp,body,sizeof(body),0);
             if(n<0 && (errno==EINTR || errno==EAGAIN || errno==EWOULDBLOCK)) continue;
-            if(n<=0) return -1; /* TCP peer death is terminal, not protocol success. */
+            if(n<0) return -1;
+            if(!n) {
+                /* EOF may retire Nearby only after the authenticated business20
+                 * listener has actually answered. The common session decides;
+                 * absent/legacy implementations fail closed on this sentinel. */
+                ended=0;
+                if(tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,NULL,SIZE_MAX,now_ms()),&ended) || ended!=2) return -1;
+                if(shutdown(tcp,SHUT_RDWR) && errno!=ENOTCONN)return -1;
+                control_detached=1;ended=0;continue;
+            }
             int failed=tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,body,(size_t)n,now_ms()),&ended);
             memset(body,0,sizeof(body));
             if(failed || scan_poll()) return -1;
-            if(ended) return 0; /* ACK written before final close and typed cleanup. */
+            if(ended==1) return 0; /* ACK written before final close and typed cleanup. */
+            if(ended==2) {
+                if(shutdown(tcp,SHUT_RDWR) && errno!=ENOTCONN)return -1;
+                control_detached=1;ended=0;
+            }
         }
     }
 }

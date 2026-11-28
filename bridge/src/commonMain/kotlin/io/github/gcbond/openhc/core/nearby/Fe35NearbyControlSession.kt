@@ -45,6 +45,10 @@ class Fe35NearbyControlSession internal constructor(
     private var seen = 0
     private var handshakeDeadline: Long? = null
     private var wifi: NearbyWifiJoin? = null
+    internal var wifiSocketRequest: ((Int, SocketMessages.Request) -> List<Fe35SessionEvent>)? = null
+    internal fun answerWifiSocket(outer: Int, request: SocketMessages.Request, port: Int): Fe35SessionEvent =
+        sendFrame(outer, SocketMessages.responsePayload(if (port > 0) 0 else 1, port,
+            request.channel, request.businessId, request.tag, if (port > 0) 1 else 0))
 
     /** Trusted internal continuation, called only after real authentication and auth-CID cleanup.
      * Uses the captured original owner/common absolute deadline; never starts another budget. */
@@ -65,6 +69,7 @@ class Fe35NearbyControlSession internal constructor(
     }
 
     val isHandshakeComplete: Boolean get() = seen == SEEN_ALL && !closed
+    internal val hasBufferedInput: Boolean get() = decoder.buffered > 0
     val nextTickAtMillis: Long? get() = handshakeDeadline
 
     /** Emits the pinned upstream connectId frame and arms its five-second handshake deadline. */
@@ -160,15 +165,13 @@ class Fe35NearbyControlSession internal constructor(
             return when (frame.outerType) {
                 ChannelManagement.OUTER_TYPE -> handleHandshake(payload)
                 SocketMessages.OUTER_TYPE_MESSAGE, SocketMessages.OUTER_TYPE_RESOURCE -> {
-                    // Preauthenticated WiFi never opens another auth channel. DMSDP is not
-                    // implemented here: upstream only accepts after its real listener exists.
+                    require(isHandshakeComplete && encrypted && frame.isEncrypted)
                     val requests = Tlv.parseAll(payload).map {
                         require(it.tag == SocketMessages.CMD_CREATE_REQUEST)
                         SocketMessages.parseRequest(it.valueView())
                     }
-                    requests.flatMap { r -> listOf(sendFrame(frame.outerType,
-                        SocketMessages.responsePayload(1, 0, r.channel, r.businessId, r.tag, 0)),
-                        Fe35SessionEvent("SOCKET_REQUEST_REJECTED")) }
+                    requests.flatMap { r -> wifiSocketRequest?.invoke(frame.outerType, r) ?:
+                        listOf(answerWifiSocket(frame.outerType, r, 0), Fe35SessionEvent("SOCKET_REQUEST_REJECTED")) }
                 }
                 33 -> {
                     val items = Tlv.parseAll(payload)

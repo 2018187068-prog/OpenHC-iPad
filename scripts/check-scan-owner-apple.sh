@@ -13,7 +13,7 @@ python3 - <<'PY'
 from pathlib import Path
 import hashlib
 paths = set()
-for directory in ('theos/scan-owner', 'bridge/src', 'native/crypto'):
+for directory in ('theos/scan-owner', 'bridge/src', 'native/crypto', 'native/dmsdp'):
     paths.update(p for p in Path(directory).rglob('*')
                  if p.is_file() and not {'.theos', 'packages', 'build'}.intersection(p.parts))
 for directory in ('theos/scan-ui',):
@@ -28,7 +28,7 @@ for name in (
     'theos/main.m', 'theos/fe35-bridge-smoke.m',
     'theos/session-owner-probe.c', 'theos/scan-supervisor/ScanHelperClient.h',
     'theos/scan-supervisor/ScanHelperClient.m',
-    'scripts/check-scan-owner-apple.sh', 'scripts/prepare-scan-owner-crypto.py',
+    'scripts/check-scan-owner-apple.sh', 'scripts/prepare-scan-owner-crypto.py', 'scripts/build-dmsdp-adapter.sh',
     'scripts/test-scan-owner.py', 'scripts/scan-owner-tests.c',
     'scripts/test-scan-owner-process.py', 'scripts/scan-owner-process-tests.c',
     'scripts/scan-owner-process-fixture.c', 'scripts/check-scan-owner-package.py',
@@ -45,7 +45,8 @@ for name in (
     'docs/FE36-CONSOLIDATED-DIAGNOSTIC-MATRIX.md',
     'scripts/test-fe36-negative-terminal.py',
     'theos/Fe36AuthTransport.h',
-    'theos/NearbyWifiTransport.h', 'theos/NearbyWifiListener.h',
+    'theos/NearbyWifiTransport.h', 'theos/NearbyWifiListener.h', 'theos/NearbyReceiverSockets.h',
+    'scripts/nearby-receiver-sockets-test.c', 'docs/FE36-RECEIVER-SETUP-LIFECYCLE.md',
     'scripts/test-nearby-wifi-harness.py', 'scripts/test-nearby-wifi-listener.py',
     'scripts/nearby-wifi-listener-test.c', 'docs/FE36-NEARBY-LISTENER-CORRECTION.md',
     'scripts/nearby-tcp-test-phone.py', 'docs/FE36-LIVE-TCP-CONTROL.md',
@@ -64,6 +65,7 @@ PY
 }
 source_manifest > artifacts/scan-owner/source-inputs.sha256
 python3 scripts/prepare-scan-owner-crypto.py "$1" 2>&1 | tee artifacts/logs/owner-crypto-source.log
+bash scripts/build-dmsdp-adapter.sh 2>&1 | tee artifacts/logs/owner-dmsdp-adapter.log
 # Gradle tracks current inputs. NEVER copy an old framework from the ZIP.
 # Full JVM validation belongs to focused-host; do not duplicate it on macOS.
 gradle :bridge:linkReleaseFrameworkIosArm64 \
@@ -84,6 +86,8 @@ clang -std=c11 -Wall -Wextra -Werror scripts/nearby-wifi-listener-test.c -o "$RU
 "$RUNNER_TEMP/nearby-wifi-listener-test" 2>&1 | tee artifacts/logs/owner-nearby-production-listener.log
 clang -std=c11 -Wall -Wextra -Werror scripts/nearby-tcp-pump-test.c -o "$RUNNER_TEMP/nearby-tcp-pump-test"
 "$RUNNER_TEMP/nearby-tcp-pump-test" 2>&1 | tee artifacts/logs/owner-nearby-production-tcp-pump.log
+clang -std=c11 -Wall -Wextra -Werror scripts/nearby-receiver-sockets-test.c -o "$RUNNER_TEMP/nearby-receiver-sockets-test"
+"$RUNNER_TEMP/nearby-receiver-sockets-test" 2>&1 | tee artifacts/logs/owner-nearby-receiver-sockets.log
 for suite in btstack-probe btstack-transport-socket session-owner-probe; do
   python3 "scripts/test-$suite.py" 2>&1 | tee "artifacts/logs/owner-darwin-$suite.log"
 done

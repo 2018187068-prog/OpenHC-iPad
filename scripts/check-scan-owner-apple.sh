@@ -37,6 +37,7 @@ for name in (
     'scripts/fe35-cli-smoke-runner.m', 'scripts/scan-transport-sim-fixture.m',
     'scripts/hicar-auth-sim-fixture.m',
     'scripts/fe36-cid-sim-fixture.m', 'scripts/test-fe36-cid-simulator.py',
+    'scripts/test-fe36-negative-terminal.py',
     'theos/Fe36AuthTransport.h',
     'scripts/fe35-inbound-sim-probe-stubs.c', 'scripts/test-fe35-cli-smoke-simulator.sh',
     'scripts/fe35-control-bridge-test-stub.c', 'scripts/btstack-sigpipe-test.c',
@@ -61,6 +62,7 @@ export OPENHC_BRIDGE_FRAMEWORK_DIR="$PWD/bridge/build/bin/iosArm64/releaseFramew
 bash scripts/verify-apple-artifact.sh "$OPENHC_BRIDGE_FRAMEWORK_DIR/OpenHCBridge.framework" 2>&1 | tee artifacts/logs/owner-framework-audit.log
 python3 scripts/test-scan-owner.py 2>&1 | tee artifacts/logs/owner-darwin-core.log
 python3 scripts/test-scan-owner-process.py --output artifacts/scan-owner/process 2>&1 | tee artifacts/logs/owner-darwin-process.log
+python3 scripts/test-fe36-negative-terminal.py 2>&1 | tee artifacts/logs/owner-fe36-negative-terminal.log
 for suite in btstack-probe btstack-transport-socket session-owner-probe; do
   python3 "scripts/test-$suite.py" 2>&1 | tee "artifacts/logs/owner-darwin-$suite.log"
 done

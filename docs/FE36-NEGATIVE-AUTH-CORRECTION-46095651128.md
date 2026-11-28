@@ -7,3 +7,7 @@ scripts/test-fe36-cid-simulator.py now consumes and validates the exact auth-CID
 Local evidence: Python syntax compilation passes for the corrected harness; no Apple SDK or Simulator runtime is available on this Windows host. The prior run's ready_stop diagnostic ordering remains observational evidence only; this correction does not claim that intermittent cause is resolved. A new owner macOS run is required to determine whether the full FE36 case matrix, UI, and package gates are reached.
 
 Production admission remains deny-all. The synthetic phone, daemon, lease, clock and config are test effects; this does not establish Honor phone interoperability or the later WiFi/TCP/DMSDP/media session.
+
+## Follow-up exact-command correction
+
+The owner proxy must parse the complete command body returned by `read_packet()`, including the three-byte command header. The negative terminal is exactly `struct.pack('<HBHB', 0xf441, 3, auth_cid, 0)` (six bytes): the CID is at offsets 3..4 and status at offset 5. The fixture consumes this command once only on channel 0, emits the required `0x81` auth-CID close acknowledgement, and starts listener/control cleanup with the auth CID already closed. Wrong CID, status, length, extra bytes, channel, or packet kind remain available to strict cleanup parsing and cannot promote trust or a key. `scripts/test-fe36-negative-terminal.py` adds a portable seven-case regression and the owner source manifest executes it.

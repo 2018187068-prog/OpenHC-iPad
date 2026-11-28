@@ -19,6 +19,17 @@ CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_p
          'late_cleanup_data')
 
 
+def consume_negative_auth_close(kind, channel, body, auth_cid):
+    """Recognize exactly one production auth-CID close command.
+
+    read_packet returns the complete command body: opcode (u16), parameter
+    length (u8), then CID (u16) and status (u8). Malformed or unrelated
+    commands stay in the pending queue for strict cleanup parsing.
+    """
+    expected = struct.pack('<HBHB', 0xf441, 3, auth_cid, 0)
+    return kind == 1 and channel == 0 and body == expected
+
+
 def run_case(args, h, case):
     documents = Path(args.data_dir) / 'Documents'
     guard = documents / ('auth-cid-' + case)
@@ -154,11 +165,14 @@ def run_case(args, h, case):
                         # which would wait for a second close and then report
                         # a misleading EOF. Preserve unrelated commands for
                         # the normal cleanup parser.
-                        if (len(body) >= 5 and
-                                body[:2] == struct.pack('<H', 0xf441) and
-                                body[2:4] == struct.pack('<H', auth_cid) and
-                                body[4] == 0):
+                        if consume_negative_auth_close(kind, channel, body, auth_cid):
                             terminal_auth_closed = True
+                            # The transport waits for the remote close event
+                            # before releasing the listener/control CIDs.
+                            # Acknowledging it here preserves the real cleanup
+                            # sequence; merely consuming the command would
+                            # make the daemon close the connection as unknown.
+                            h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
                         else:
                             pending.append((kind, channel, body))
                         failed = True

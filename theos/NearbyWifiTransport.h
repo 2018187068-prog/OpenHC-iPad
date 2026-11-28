@@ -24,6 +24,9 @@ typedef BOOL (^OHCWifiBoundary)(uint64_t, int64_t, int64_t, int, const uint8_t k
     accept:(BOOL (^)(OHCNearbyWifiTransport *,int,int64_t))accept;
 - (BOOL)handoffGeneration:(int64_t)generation deadline:(int64_t)deadline;
 - (BOOL)storeKey:(const uint8_t [_Nonnull 16])key;
+/* Before handoff only. Live mode denies deliverTo and consumes key privately;
+ * each tcp_step revalidates through the original serialized owner accept block. */
+- (BOOL)enableLiveControl:(const fe35_bridge_input *)input;
 - (BOOL)deliverTo:(OHCWifiBoundary)sink owner:(uint64_t)owner descriptor:(int)fd;
 - (fe35_wifi_transport)binding;
 - (void)revoke;

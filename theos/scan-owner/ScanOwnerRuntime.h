@@ -34,6 +34,11 @@ typedef void (^OHCScanOwnerKeySink)(uint64_t ownerGeneration, int64_t commonGene
  * boundary is borrowed synchronous inspection, NOT a transferred live-session lease. */
 - (BOOL)configureContinuingAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
     network:(id<OHCNearbyNetwork>)network boundary:(OHCWifiBoundary)boundary;
+/* Internal opt-in: accepted TCP remains on the same worker/owner/lease until Stop,
+ * peer death, original expiry or protocol disconnect. No detached callback/key.
+ * Nearby encrypted control only; DMSDP socket requests are explicitly rejected. */
+- (BOOL)configureLiveAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    network:(id<OHCNearbyNetwork>)network;
 /* Ownership of accepted fd transfers here. Nonblocking read, fresh kernel and
  * endpoint sampling each tick, fixed bounded grammar. No claimed identity. */
 - (void)acceptConnectedDescriptor:(int)fd;

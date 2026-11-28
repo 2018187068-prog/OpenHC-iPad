@@ -174,9 +174,12 @@ int fe35_scan_notify(void *context, int64_t generation, const char *kind,
     BOOL _cancelled, _keyStored, _keyTaken, _ready, _begun;
     OHCBWifiNetworkConfig *_networkConfig;
     uint8_t _key[16];
+    OHCBNearbyTcpControlBridge *_tcpControl;
+    BOOL _tcpStarted;
 }
 - (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
     now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer;
+- (fe35_bridge_batch)tcpStep:(int)fd bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now;
 @end
 static void wipeSessionKey(uint8_t *bytes) {
     volatile uint8_t *p=bytes;for(size_t i=0;i<16;i++)p[i]=0;
@@ -186,6 +189,9 @@ static fe35_bridge_batch wifiStep(void *p,enum fe35_wifi_io e,fe35_bridge_handle
     return [(__bridge OHCNearbyWifiTransport *)p step:e bridge:b now:n descriptor:fd listener:listener peer:peer];
 }
 static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p cancel]; }
+static fe35_bridge_batch wifiTcpStep(void *p,int fd,const uint8_t *bytes,size_t size,int64_t now) {
+    return [(__bridge OHCNearbyWifiTransport *)p tcpStep:fd bytes:bytes size:size now:now];
+}
 @implementation OHCNearbyWifiTransport
 - (instancetype)initWithNetwork:(id<OHCNearbyNetwork>)network
     accept:(BOOL (^)(OHCNearbyWifiTransport *,int,int64_t))accept {
@@ -207,7 +213,7 @@ static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p c
 }
 - (BOOL)deliverTo:(OHCWifiBoundary)sink owner:(uint64_t)owner descriptor:(int)fd {
     uint8_t copy[16]={0};
-    [_stateLock lock]; BOOL valid=!_cancelled && _keyStored && !_keyTaken && sink && fd>=0;
+    [_stateLock lock]; BOOL valid=!_cancelled && !_tcpControl && _keyStored && !_keyTaken && sink && fd>=0;
     if(valid) { memcpy(copy,_key,16);wipeSessionKey(_key);_keyTaken=YES; }
     [_stateLock unlock];
     BOOL accepted=NO;
@@ -215,7 +221,46 @@ static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p c
     @finally { wipeSessionKey(copy); }
     return accepted;
 }
-- (fe35_wifi_transport)binding { return (fe35_wifi_transport){(__bridge void *)self,wifiStep,wifiCancel}; }
+- (BOOL)enableLiveControl:(const fe35_bridge_input *)input {
+    if(!input || _tcpControl || _generation || !memchr(input->device_id,0,sizeof(input->device_id)) ||
+        !input->root_key_size || input->root_key_size>64 || !input->const_a_size || input->const_a_size>64 ||
+        !input->const_b_size || input->const_b_size>64) return NO;
+    OHCBKotlinByteArray *root=kotlinBytes(input->root_key,input->root_key_size);
+    OHCBKotlinByteArray *a=kotlinBytes(input->const_a,input->const_a_size),*b=kotlinBytes(input->const_b,input->const_b_size);
+    @try {
+        _tcpControl=[[OHCBNearbyTcpControlBridge alloc] initWithDeviceIdText:[NSString stringWithUTF8String:input->device_id]
+            rootKey:root constA:a constB:b];
+    } @catch(__unused NSException *e) { return NO; }
+    @finally { wipeKotlinBytes(root);wipeKotlinBytes(a);wipeKotlinBytes(b); }
+    return _tcpControl!=nil;
+}
+- (fe35_wifi_transport)binding {
+    return (fe35_wifi_transport){(__bridge void *)self,wifiStep,wifiCancel,_tcpControl?wifiTcpStep:NULL};
+}
+- (fe35_bridge_batch)tcpStep:(int)fd bytes:(const uint8_t *)bytes size:(size_t)size now:(int64_t)now {
+    @autoreleasepool {
+    if(!_tcpControl || fd<0 || size>65536 || (!bytes && size) || !_accept(self,fd,now)) return NULL;
+    [_stateLock lock];
+    @try {
+        if(_cancelled || !_keyStored || now<0 || now>=_deadline) return NULL;
+        NSArray<OHCBFe35ControlBridgeEvent *> *events=nil;
+        if(!_tcpStarted) {
+            if(bytes || size || _keyTaken) return NULL;
+            OHCBKotlinByteArray *key=kotlinBytes(_key,16);
+            _keyTaken=YES;wipeSessionKey(_key);
+            @try { events=[_tcpControl startGeneration:_generation connection:1 deadlineMillis:_deadline nowMillis:now sessionKey:key]; }
+            @finally { wipeKotlinBytes(key); }
+            _tcpStarted=YES;
+        } else if(size) {
+            OHCBKotlinByteArray *data=kotlinBytes(bytes,size);
+            @try { events=[_tcpControl feedGeneration:_generation connection:1 data:data nowMillis:now]; }
+            @finally { wipeKotlinBytes(data); }
+        } else events=[_tcpControl tickGeneration:_generation connection:1 nowMillis:now];
+        return retainEvents(events);
+    } @catch(__unused NSException *e) { return NULL; }
+    @finally { [_stateLock unlock]; }
+    }
+}
 - (fe35_bridge_batch)step:(enum fe35_wifi_io)event bridge:(fe35_bridge_handle)bridge
     now:(int64_t)now descriptor:(int)fd listener:(int *)listener peer:(uint32_t *)peer {
     @autoreleasepool {
@@ -264,8 +309,15 @@ static bool wifiCancel(void *p) { return [(__bridge OHCNearbyWifiTransport *)p c
     @try { closed=[_network close]; } @catch(__unused NSException *e) { closed=NO; }
     @finally { [_networkLock unlock]; } return closed;
 }
-- (void)revoke { [_stateLock lock];_cancelled=YES;wipeSessionKey(_key);[_stateLock unlock]; }
-- (void)dealloc { wipeSessionKey(_key); }
+- (void)revoke {
+    [_stateLock lock];
+    @try { _cancelled=YES;wipeSessionKey(_key);[_tcpControl close]; }
+    @finally { [_stateLock unlock]; }
+}
+- (void)dealloc {
+    wipeSessionKey(_key);
+    @try { [_tcpControl close]; } @catch(__unused NSException *e) { }
+}
 @end
 static int authStep(void *p, enum fe36_io_event event, int64_t incarnation,
                     const uint8_t *bytes, size_t size, int64_t now, fe36_io_send send, void *context) {

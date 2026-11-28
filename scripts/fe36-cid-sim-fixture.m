@@ -71,6 +71,7 @@ static int rejectSend(void *context,const uint8_t *bytes,size_t size) {
 int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     NSString *name=[NSString stringWithUTF8String:scenario],*directory=[NSString stringWithUTF8String:run_dir];
     BOOL wifiCase=[name hasPrefix:@"wifi_"];
+    BOOL liveCase=[name hasPrefix:@"wifi_live_"];
     BOOL boundaryCase=[@[@"wifi_success",@"wifi_pending",@"wifi_duplicate",@"wifi_cleanup_failure"] containsObject:name];
     BOOL cryptoCase=wifiCase || [@[@"success",@"wrong_pin",@"forged_signature",@"cleanup_failure",@"pending_stop",@"late_cleanup_data"] containsObject:name];
     __block _Atomic int invalid=0;
@@ -101,7 +102,9 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     };
     if(wifiCase) {
         OHCCIDNetwork *network=[OHCCIDNetwork new];network.directory=directory;network.scenario=name;
-        CID_CHECK([runtime configureContinuingAuthentication:auth trust:trust network:network
+        if(liveCase) {
+            CID_CHECK([runtime configureLiveAuthentication:auth trust:trust network:network],"explicit_live_configuration");
+        } else CID_CHECK([runtime configureContinuingAuthentication:auth trust:trust network:network
             boundary:^BOOL(uint64_t ownerGeneration,int64_t generation,int64_t incarnation,int fd,const uint8_t key[16]) {
                 struct sockaddr_in address={0};socklen_t size=sizeof(address);
                 CID_CHECK(!getpeername(fd,(struct sockaddr *)&address,&size) && address.sin_family==AF_INET,
@@ -178,7 +181,7 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     };
     runtime.finished=^(fe35_scan_completion c,BOOL delegated) {
         BOOL success=[name isEqualToString:@"success"] ||
-            [@[@"wifi_success",@"wifi_pending",@"wifi_duplicate"] containsObject:name];
+            [@[@"wifi_success",@"wifi_pending",@"wifi_duplicate",@"wifi_live_disconnect",@"wifi_live_remote_close"] containsObject:name];
         BOOL uncertain=[@[@"send_failure",@"cleanup_failure",@"pending_stop",@"late_cleanup_data",@"wrong_peer",
             @"wrong_cid",@"control_cid_reuse",@"extra_connection",@"wrong_listener",@"wrong_data_cid",@"reopened_cid",
             @"wifi_cleanup_failure"] containsObject:name];
@@ -198,7 +201,9 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     NSString *stop=[directory stringByAppendingPathComponent:@"stop"];BOOL stopped=NO;
     while(dispatch_semaphore_wait(done,DISPATCH_TIME_NOW) && limit.timeIntervalSinceNow>0) {
         if(!stopped && !access(stop.fileSystemRepresentation,F_OK)) {
-            if([name isEqualToString:@"background"]) [foreground background]; else [foreground stop];
+            if([name isEqualToString:@"background"] || [name isEqualToString:@"wifi_live_background"]) [foreground background];
+            else if([name isEqualToString:@"wifi_live_owner_eof"]) shutdown(fds[1],SHUT_RDWR);
+            else [foreground stop];
             stopped=YES;
         }
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.005]];
@@ -211,8 +216,9 @@ int openhc_fe36_cid_fixture(const char *run_dir,const char *scenario) {
     CID_CHECK(keys==(success?1:0),"key_once_only_on_verified_current_success");
     if(success) CID_CHECK(expectedKey.length==16 && [expectedKey isEqual:receivedKey],"actual_transport_same_pin_key_matches_phone");
     else CID_CHECK(receivedKey==nil,"cancelled_no_key");
+    if(liveCase) CID_CHECK(expectedKey.length==16 && keys==0,"live_auth_key_private_no_detached_callback");
     receivedKey=nil;expectedKey=nil;[secretLock unlock];
-    if(success) CID_CHECK(trust.snapshot.peers.count==1 && trust.snapshot.identities.count==1,"verified_pairing_trust_commit");
+    if(success || liveCase) CID_CHECK(trust.snapshot.peers.count==1 && trust.snapshot.identities.count==1,"verified_pairing_trust_commit");
     if([@[@"wrong_pin",@"forged_signature"] containsObject:name])
         CID_CHECK(trust.snapshot.peers.count==0 && trust.snapshot.identities.count==0,"rejected_peer_not_trusted");
     runtime.events=nil;runtime.finished=nil;[foreground stop];

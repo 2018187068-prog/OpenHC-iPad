@@ -40,11 +40,12 @@ class MatrixTests(unittest.TestCase):
         def run(_args, _h, case):
             visited.append(case);return True
         data,output=self.matrix(run,False)
-        self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES))
-        self.assertEqual(len(data),31)
+        self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES+cid.LIVE_CASES))
+        self.assertEqual(len(data),39)
         self.assertTrue(all(e['outcome']=='passed' for e in data))
         self.assertIn('FE36_CID_TRANSPORT_AUTH_CASES_OK=21',output)
         self.assertIn('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=10',output)
+        self.assertIn('FE36_LIVE_TCP_CONTROL_CASES_OK=8',output)
 
     def test_early_and_late_isolated_failures_reach_every_later_target(self):
         visited=[]
@@ -54,7 +55,7 @@ class MatrixTests(unittest.TestCase):
                 raise cid.IsolatedCaseFailure('handshake-transport-shape')
             return True
         data,output=self.matrix(run)
-        self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES))
+        self.assertEqual(visited,list(cid.CASES+cid.WIFI_CASES+cid.LIVE_CASES))
         self.assertEqual([e['case'] for e in data if e['outcome']=='failed'],['background','wifi_malformed'])
         self.assertNotIn('CASES_OK=',output)
         self.assertEqual(data[-1]['outcome'],'passed')
@@ -203,7 +204,7 @@ class MatrixTests(unittest.TestCase):
         selected={
             'test-fe35-cli-inbound-simulator.py': {'drive_peer','decode_frame','read_ea','read_command','assert_service_record'},
             'test-fe36-cid-simulator.py': {'wifi_negotiate','require_cleanup_command','negative_inform',
-                                        'acknowledge_negative_close','_run_case'},
+                                        'acknowledge_negative_close','_run_case','read_tcp_frame','live_control'},
         }
         checked=0
         for name,functions in selected.items():
@@ -221,7 +222,7 @@ class MatrixTests(unittest.TestCase):
                     if isinstance(label,ast.Constant) and isinstance(label.value,str):
                         self.assertNotEqual(cid.safe_label(label.value),'unclassified',label.value);checked+=1
         self.assertGreater(checked,40)
-        for case in cid.CASES+cid.WIFI_CASES:
+        for case in cid.CASES+cid.WIFI_CASES+cid.LIVE_CASES:
             self.assertEqual(cid.safe_label('CID production-code assertions '+case),'fixture-result')
         self.assertEqual(cid.safe_label('CID daemon completed: DO_NOT_LOG'),'daemon-failure')
         self.assertEqual(cid.safe_label('command header expected_ocf=PRIVATE'),'command-header')

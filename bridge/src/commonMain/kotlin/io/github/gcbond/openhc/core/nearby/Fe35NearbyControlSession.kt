@@ -30,6 +30,7 @@ class Fe35NearbyControlSession internal constructor(
     constA: ByteArray,
     constB: ByteArray,
     private val random: Fe35RandomSource,
+    private val wifiControl: Boolean = false,
 ) {
     constructor(deviceIdText: String, rootKey: ByteArray, constA: ByteArray, constB: ByteArray) :
         this(deviceIdText, rootKey, constA, constB, Fe35RandomSource(::nearbySecureRandomBytes))
@@ -76,7 +77,12 @@ class Fe35NearbyControlSession internal constructor(
         val connectId = (CONNECT_ID_MIN + ByteReader(raw).u32Be() % span).toInt()
         raw.fill(0)
         val payload = ByteWriter().tlv(ChannelManagement.TAG_CONNECT_ID, ChannelManagement.connectIdValue(connectId)).toByteArray()
-        return listOf(sendFrame(ChannelManagement.OUTER_TYPE, payload))
+        val out = arrayListOf(sendFrame(ChannelManagement.OUTER_TYPE, payload))
+        if (wifiControl) out += sendFrame(ChannelManagement.OUTER_TYPE, ByteWriter()
+            .tlv(ChannelManagement.TAG_VERSION_REQUEST, byteArrayOf(2))
+            .tlv(ChannelManagement.TAG_SUMMARY_REQUEST, deviceId)
+            .tlv(ChannelManagement.TAG_ENCRYPTION_REQUEST, byteArrayOf(1)).toByteArray())
+        return out
     }
 
     /** Feeds a bounded stream chunk; fragments and coalesced frames follow NearbyFrameDecoder semantics. */
@@ -149,6 +155,29 @@ class Fe35NearbyControlSession internal constructor(
         "Fe35NearbyControlSession(handshake=$isHandshakeComplete, encrypted=$encrypted, closed=$closed)"
 
     private fun process(frame: NearbyFrame): List<Fe35SessionEvent> {
+        if (wifiControl) {
+            val payload = cipher.open(frame)
+            return when (frame.outerType) {
+                ChannelManagement.OUTER_TYPE -> handleHandshake(payload)
+                SocketMessages.OUTER_TYPE_MESSAGE, SocketMessages.OUTER_TYPE_RESOURCE -> {
+                    // Preauthenticated WiFi never opens another auth channel. DMSDP is not
+                    // implemented here: upstream only accepts after its real listener exists.
+                    val requests = Tlv.parseAll(payload).map {
+                        require(it.tag == SocketMessages.CMD_CREATE_REQUEST)
+                        SocketMessages.parseRequest(it.valueView())
+                    }
+                    requests.flatMap { r -> listOf(sendFrame(frame.outerType,
+                        SocketMessages.responsePayload(1, 0, r.channel, r.businessId, r.tag, 0)),
+                        Fe35SessionEvent("SOCKET_REQUEST_REJECTED")) }
+                }
+                33 -> {
+                    val items = Tlv.parseAll(payload)
+                    require(isHandshakeComplete && items.size == 1 && items[0].tag == 5 && items[0].valueView().isEmpty())
+                    listOf(sendFrame(33, encodeTlv(6)), Fe35SessionEvent("TCP_DISCONNECT"))
+                }
+                else -> listOf(Fe35SessionEvent("IGNORED_FRAME"))
+            }
+        }
         if (wifi != null && (frame.outerType == ChannelManagement.OUTER_TYPE ||
                 frame.outerType == SocketMessages.OUTER_TYPE_MESSAGE)) {
             close()

@@ -778,8 +778,74 @@ static int wifi_batch(int fd,uint16_t cid,uint16_t mtu,fe35_bridge_batch batch,
     }
     fe35_bridge_release_batch(batch);return failed?-1:0;
 }
+/* Owned TCP stays on this worker and uses the existing owner poll, not a fresh lease.
+ * Batches are fully bounded; all writes handle partial progress/EAGAIN and cancellation. */
+static int tcp_control_batch(int tcp,fe35_bridge_batch batch,int *ended) {
+    if(!batch) return -1;
+    int failed=0;size_t count=fe35_bridge_event_count(batch);
+    if(count>FE35_BRIDGE_MAX_EVENTS) failed=1;
+    for(size_t i=0;!failed && i<count;i++) {
+        fe35_bridge_event e;
+        if(fe35_bridge_copy_event(batch,i,&e)) {failed=1;break;}
+        if(!strcmp(e.kind,"SEND_FRAME")) {
+            if(!e.frame_size || e.frame_size>FE35_BRIDGE_MAX_FRAME) failed=1;
+            for(size_t at=0;!failed && at<e.frame_size;) {
+                if(scan_poll()) {failed=1;break;}
+                struct pollfd p={tcp,POLLOUT,0};int ready=poll(&p,1,20);
+                if(ready<0) {if(errno==EINTR)continue;failed=1;break;}
+                if(!ready) continue;
+                if(!(p.revents&POLLOUT) || (p.revents&(POLLERR|POLLHUP|POLLNVAL))) {failed=1;break;}
+                ssize_t n=send_without_sigpipe(tcp,e.frame+at,e.frame_size-at);
+                if(n<0 && (errno==EINTR || errno==EAGAIN || errno==EWOULDBLOCK)) continue;
+                if(n<=0) {failed=1;break;}
+                at+=(size_t)n;
+            }
+        } else if(!strcmp(e.kind,"TCP_DISCONNECT")) *ended=1;
+        else if(strcmp(e.kind,"HANDSHAKE_COMPLETED") && strcmp(e.kind,"SOCKET_REQUEST_REJECTED") &&
+                strcmp(e.kind,"IGNORED_FRAME")) failed=1;
+        memset(&e,0,sizeof(e));
+    }
+    fe35_bridge_release_batch(batch);return failed?-1:0;
+}
+static int tcp_control_stream(int fd,int tcp,const char *dir,fe35_wifi_transport *wifi,
+                              uint16_t cid,int *disconnected,int *settled,int *uncertain) {
+    int ended=0;
+    if(scan_poll() || tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,NULL,0,now_ms()),&ended)) return -1;
+#ifdef OPENHC_FE35_SIMULATOR_TEST
+    puts("BTSTACK_WIFI_LIVE_CONTROL_STARTED");fflush(stdout);
+#endif
+    for(;;) {
+        if(scan_poll()) return -1;
+        if(tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,NULL,0,now_ms()),&ended)) return -1;
+        struct pollfd p[2]={{fd,POLLIN,0},{tcp,POLLIN,0}};
+        int ready=poll(p,2,20);if(ready<0) {if(errno==EINTR)continue;return -1;}
+        /* The daemon and original owner still have priority over simultaneous TCP input. */
+        if(p[0].revents) {
+            uint8_t body[1024];uint16_t type,channel;size_t size;
+            if(receive_transport_packet(fd,UINT16_MAX,&type,&channel,body,&size,now_ms()+4000,dir)) {
+                *uncertain=1;return -1;
+            }
+            /* Pinned WirelessReceiverSession: remote FE35 close after phoneOnWifi is
+             * settled. Keep TCP and lease; do not proactively close FE35 on join. */
+            if(type==4 && channel==0 && size==4 && body[0]==0x81 && le16(body+2)==cid && !*disconnected) {
+                *disconnected=1;*settled=1;continue;
+            }
+            memset(body,0,sizeof(body));*uncertain=1;return -1;
+        }
+        if(p[1].revents) {
+            if(scan_poll()) return -1;
+            uint8_t body[4096];ssize_t n=recv(tcp,body,sizeof(body),0);
+            if(n<0 && (errno==EINTR || errno==EAGAIN || errno==EWOULDBLOCK)) continue;
+            if(n<=0) return -1; /* TCP peer death is terminal, not protocol success. */
+            int failed=tcp_control_batch(tcp,wifi->tcp_step(wifi->context,tcp,body,(size_t)n,now_ms()),&ended);
+            memset(body,0,sizeof(body));
+            if(failed || scan_poll()) return -1;
+            if(ended) return 0; /* ACK written before final close and typed cleanup. */
+        }
+    }
+}
 static int wifi_stream(int fd,const char *dir,fe35_bridge_handle bridge,fe35_wifi_transport *wifi,
-                         uint16_t cid,uint16_t mtu,int *tcp,int *disconnected,int *uncertain) {
+                         uint16_t cid,uint16_t mtu,int *tcp,int *disconnected,int *settled,int *uncertain) {
     int listener=-1,wants_listen=0,wait_tcp=0,accepted=0,reported_listen=0;
     uint32_t peer=0;
     int64_t last=now_ms();
@@ -821,9 +887,10 @@ static int wifi_stream(int fd,const char *dir,fe35_bridge_handle bridge,fe35_wif
             if(*tcp<0 || size!=sizeof(address) || address.sin_family!=AF_INET ||
                address.sin_addr.s_addr!=peer || fcntl(*tcp,F_SETFD,FD_CLOEXEC) ||
                fcntl(*tcp,F_SETFL,O_NONBLOCK) || scan_poll()) return -1;
+            if(protect_socket_sigpipe(*tcp)) return -1;
             if(wifi_batch(fd,cid,mtu,wifi->step(wifi->context,FE35_WIFI_ACCEPT,bridge,now_ms(),*tcp,&listener,&peer),
                 &wants_listen,&wait_tcp,&accepted,now+4000,dir) || !accepted || scan_poll()) return -1;
-            return 0;
+            return wifi->tcp_step ? tcp_control_stream(fd,*tcp,dir,wifi,cid,disconnected,settled,uncertain) : 0;
         }
     }
     return -1;
@@ -841,6 +908,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
     size_t size = 0;
     int fd = -1, result = 1, accepted = 0, opened = 0, disconnected = 0;
     int tcp=-1;
+    int tcp_control_settled=0;
     int listener_ready = 0, session_started = 0;
     int registration_pending = 0, cleanup_uncertain = 0;
     if (cleanup_confirmed) *cleanup_confirmed = false;
@@ -1031,7 +1099,7 @@ static int transport_inbound(const char *path, const char *run_dir, fe35_bridge_
         /* This is private one-shot transfer into the continuing owner, not final success. */
         if(scan_poll() || auth->commit(auth->context,1,now_ms()) || scan_poll()) {result=1;goto done;}
         stage="WIFI_NEGOTIATION_TCP";
-        if(wifi_stream(fd,run_dir,bridge,wifi,cid,control_mtu,&tcp,&disconnected,&cleanup_uncertain)) result=1;
+        if(wifi_stream(fd,run_dir,bridge,wifi,cid,control_mtu,&tcp,&disconnected,&tcp_control_settled,&cleanup_uncertain)) result=1;
     }
 done:
     if(tcp>=0 && close(tcp)) {result=1;cleanup_uncertain=1;stage="WIFI_TCP_CLOSE_UNCONFIRMED";}
@@ -1070,7 +1138,7 @@ done:
             auth_channel = 0;
             auth_handle = 0;
         }
-        if (opened && cid) {
+        if (opened && cid && !tcp_control_settled) {
             uint8_t params[] = {(uint8_t)cid, (uint8_t)(cid >> 8), 0};
             if (command(fd, 0x41, params, sizeof(params), deadline)) cleanup_ok = 0;
             else {

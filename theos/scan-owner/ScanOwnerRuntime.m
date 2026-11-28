@@ -38,6 +38,7 @@ typedef struct { void *runtime; uint64_t owner_generation; } OHCScanWorkerContex
     OHCFe36AuthTransport *_authTransport;
     id<OHCNearbyNetwork> _network;
     OHCWifiBoundary _wifiBoundary;
+    BOOL _liveControl;
     OHCNearbyWifiTransport *_wifiTransport;
 }
 - (void)effect:(ohc_owner_effect)e generation:(uint64_t)g;
@@ -123,6 +124,16 @@ static bool testAdmission(const ohc_owner_peer *p) { return p->policy_epoch == 0
         if(self->_owner.state!=OHC_IDLE || self->_authConfig || self->_client>=0) return;
         self->_authConfig=config;self->_authTrust=trust;self->_network=network;
         self->_wifiBoundary=[boundary copy];configured=YES;
+    });return configured;
+}
+- (BOOL)configureLiveAuthentication:(OHCBFe36AuthConfig *)config trust:(id<OHCBTrustStore>)trust
+    network:(id<OHCNearbyNetwork>)network {
+    if(!config || !trust || !network) return NO;
+    __block BOOL configured=NO;
+    dispatch_sync(_executor,^{
+        if(self->_owner.state!=OHC_IDLE || self->_authConfig || self->_client>=0) return;
+        self->_authConfig=config;self->_authTrust=trust;self->_network=network;
+        self->_liveControl=YES;configured=YES;
     });return configured;
 }
 #ifdef OPENHC_SCAN_OWNER_TEST
@@ -271,10 +282,12 @@ disconnect:
                             strong->_owner.cancelled || strong->_wifiTransport!=adapter) return;
                         [strong consume:[strong->_session tickGeneration:strong->_commonGeneration nowMillis:current]];
                         if(strong->_owner.state==OHC_RUNNING && !strong->_owner.cancelled)
-                            accepted=[adapter deliverTo:strong->_wifiBoundary owner:ownerGeneration descriptor:fd];
+                            accepted=strong->_liveControl ||
+                                [adapter deliverTo:strong->_wifiBoundary owner:ownerGeneration descriptor:fd];
                     });return accepted;
                 }];
             if(!_wifiTransport) {[self failedLaunch:93];return;}
+            if(_liveControl && ![_wifiTransport enableLiveControl:&_input]) {[self failedLaunch:93];return;}
         }
         _authTransport=[[OHCFe36AuthTransport alloc] initWithConfig:_authConfig trust:_authTrust
             commit:^BOOL(OHCFe36AuthTransport *adapter,int64_t incarnation,int64_t now) {

@@ -115,6 +115,9 @@ typedef struct {
     fe35_bridge_batch (*step)(void *, enum fe35_wifi_io, fe35_bridge_handle, int64_t now_ms,
                               int accepted_fd, int *listener_fd, uint32_t *peer_ipv4);
     bool (*cancel)(void *);
+    /* Optional live mode. C retains the accepted socket and original scan/lease until
+     * terminal/Stop/EOF/deadline. NULL preserves the borrowed bounded boundary. */
+    fe35_bridge_batch (*tcp_step)(void *, int fd, const uint8_t *, size_t, int64_t now_ms);
 } fe35_wifi_transport;
 fe35_scan_completion openhc_btstack_scan_wifi_inbound(
     const char *run_dir, fe35_bridge_handle control_bridge,

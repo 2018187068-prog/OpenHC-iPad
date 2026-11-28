@@ -24,6 +24,9 @@ CASES = ('success', 'wrong_pin', 'forged_signature', 'wrong_peer', 'wrong_open_p
 WIFI_CASES = ('wifi_success', 'wifi_pending', 'wifi_duplicate', 'wifi_stop', 'wifi_expiry',
               'wifi_malformed', 'wifi_unsupported', 'wifi_tcp_failure', 'wifi_disconnect',
               'wifi_cleanup_failure')
+LIVE_CASES = ('wifi_live_disconnect', 'wifi_live_remote_close', 'wifi_live_peer_eof',
+              'wifi_live_stop', 'wifi_live_background', 'wifi_live_owner_eof',
+              'wifi_live_expiry', 'wifi_live_malformed')
 
 
 def safe_label(value):
@@ -80,13 +83,21 @@ def safe_label(value):
         'auth message object required': 'auth-message-object',
         'unexpected auth INFORM terminal': 'auth-unexpected-inform',
         'exact one-shot auth close required': 'auth-close-one-shot',
+        'live TCP frame header': 'tcp-header',
+        'live TCP EA bound': 'tcp-ea-bound',
+        'live TCP frame bound': 'tcp-frame-bound',
+        'live TCP pinned connectId': 'tcp-connect-id',
+        'live TCP pinned initiator': 'tcp-initiator',
+        'live TCP encrypted business rejection': 'tcp-business-rejection',
+        'live TCP encrypted disconnect ACK': 'tcp-disconnect-ack',
+        'live TCP owned socket closed after terminal': 'tcp-terminal-close',
     }
     # Dynamic assertion families emit only fixed tokens, never their suffix.
     if value.startswith('CID daemon completed: '):
         return 'daemon-failure'
     if value.startswith('command header expected_ocf='):
         return 'command-header'
-    if value in {'CID production-code assertions ' + c for c in CASES + WIFI_CASES}:
+    if value in {'CID production-code assertions ' + c for c in CASES + WIFI_CASES + LIVE_CASES}:
         return 'fixture-result'
     if value in {'CID cleanup command component=' + hex(c) for c in (1, 0x31, 0x41, 0x43)}:
         return 'cleanup-command'
@@ -302,7 +313,66 @@ def wifi_negotiate(conn, h, guard, case, phase):
         tcp.bind(('127.0.0.1', 0))
         tcp.connect(('127.0.0.1', port))
         phase('wifi-actual-tcp-connect')
+        if case in LIVE_CASES:
+            live_control(tcp, conn, h, guard, case, cid, phase)
+            return
         check(tcp.recv(1) == b'', 'owned TCP boundary is closed at bounded slice completion')
+
+
+def read_tcp_frame(tcp, h):
+    """Bounded actual Nearby stream framing; never render received bytes."""
+    raw = bytearray(h.exact(tcp, 1))
+    h.check(raw == b'\x7f', 'live TCP frame header')
+    def ea():
+        value = 0
+        for i in range(4):
+            byte = h.exact(tcp, 1)[0]; raw.append(byte)
+            value |= (byte & 0x7f) << (7*i)
+            if byte & 0x80:
+                return value
+        raise AssertionError('live TCP EA bound')
+    ea(); ea(); flag_size = ea()
+    h.check(flag_size <= 64, 'live TCP frame bound')
+    raw.extend(h.exact(tcp, flag_size))
+    size = ea(); h.check(size <= 65536, 'live TCP frame bound')
+    raw.extend(h.exact(tcp, size+2))
+    return h.decode_frame(bytes(raw))
+
+
+def live_control(tcp, daemon, h, guard, case, control_cid, phase):
+    tlv = lambda tag, value=b'': h.ea(tag)+h.ea(len(value))+value
+    first = read_tcp_frame(tcp, h)
+    h.check(first[:2] == (0, 0) and first[2].startswith(tlv(15)[:1]), 'live TCP pinned connectId')
+    device = b'CD1C73F369C5FE0B80808D3D0335EAF7D99B2AB9FE15403DC621C166FBADCB6F'
+    h.check(read_tcp_frame(tcp, h) == (0, 0, tlv(1,b'\x02')+tlv(3,device)+tlv(5,b'\x01')),
+            'live TCP pinned initiator')
+    # Actual upstream framing/cipher, deliberately fragmented then coalesced.
+    def send(outer, payload):
+        tcp.sendall(h.encrypted_frame(outer, payload, bytes.fromhex('e1e2e3e4e5e6e7e8')))
+    handshake = tlv(2,b'\x02')+tlv(4,b'SYNTHETIC_PHONE')+tlv(6,b'\x01')
+    raw = h.encrypted_frame(0, handshake, bytes.fromhex('f1f2f3f4f5f6f7f8'))
+    tcp.sendall(raw[:3]);tcp.sendall(raw[3:])
+    tag = b'SYNTHETIC'
+    requests = b''.join(h.encrypted_frame(2, tlv(3,h.ea(3)+h.ea(b)+h.ea(len(tag))+tag+h.ea(1)),
+        bytes.fromhex('c1c2c3c4c5c6c7c8')) for b in (19,20))
+    tcp.sendall(requests)
+    for business in (19,20):
+        expected=tlv(4,h.ea(1)+h.ea(0)+h.ea(3)+h.ea(business)+h.ea(len(tag))+tag+h.ea(0))
+        h.check(read_tcp_frame(tcp,h)==(2,1,expected),'live TCP encrypted business rejection')
+    phase('live-tcp-handshake-and-encrypted-rejection-validated')
+    if case == 'wifi_live_remote_close':
+        h.send_event(daemon,0x81,struct.pack('<H',control_cid))
+    if case in ('wifi_live_stop','wifi_live_background','wifi_live_owner_eof'):
+        (guard / 'stop').write_text('STOP\n',encoding='ascii')
+    elif case == 'wifi_live_peer_eof':
+        tcp.shutdown(socket.SHUT_WR)
+    elif case == 'wifi_live_malformed':
+        raw = bytearray(h.encrypted_frame(2,tlv(3),bytes(8)));raw[-1]^=1;tcp.sendall(raw)
+    elif case != 'wifi_live_expiry':
+        send(33,tlv(5))
+        h.check(read_tcp_frame(tcp,h)==(33,1,tlv(6)),'live TCP encrypted disconnect ACK')
+    h.check(tcp.recv(1)==b'','live TCP owned socket closed after terminal')
+    phase('live-tcp-terminal-closed')
 
 
 def consume_negative_auth_close(kind, channel, body, auth_cid):
@@ -420,12 +490,14 @@ def _run_case(args, h, case, isolation):
             command(conn, 0x43, bytes([17, 0]))
             command(conn, 1, b'')
             h.send_event(conn, 0x60, bytes([2]))
-        command(conn, 0x41, struct.pack('<HB', control_cid, 0))
+        if case != 'wifi_live_remote_close':
+            command(conn, 0x41, struct.pack('<HB', control_cid, 0))
         if case == 'late_cleanup_data':
             # A real crypto candidate exists; this unexpected FE35 payload
             # before the close ACK must revoke it, never be silently skipped.
             h.send_packet(conn, 7, control_cid, b'{}')
-        h.send_event(conn, 0x81, struct.pack('<H', control_cid))
+        if case != 'wifi_live_remote_close':
+            h.send_event(conn, 0x81, struct.pack('<H', control_cid))
         command(conn, 0x31, struct.pack('<I', 0x10001))
         command(conn, 0x43, bytes([16, 0]))
         command(conn, 1, b'')
@@ -560,11 +632,11 @@ def _run_case(args, h, case, isolation):
                         terminal_auth_closed)
                     phase('auth-close-ack-0x81-sent')
                     break
-            h.check(case not in ('success',) + WIFI_CASES or exchange == 3,
+            h.check(case not in ('success',) + WIFI_CASES + LIVE_CASES or exchange == 3,
                     'complete handshake PAKE1 PAKE2 signed exchange')
         if case in ('wrong_pin', 'forged_signature'):
             h.check(terminal_auth_closed, 'negative auth terminal close acknowledged')
-        if case in WIFI_CASES:
+        if case in WIFI_CASES + LIVE_CASES:
             phase('wifi-auth-cid-confirmed-release')
             command(conn, 0x41, struct.pack('<HB', auth_cid, 0))
             h.send_event(conn, 0x81, struct.pack('<H', auth_cid))
@@ -687,7 +759,7 @@ def run_case(args, h, case):
 def run_all(args, harness, runner=None):
     runner = run_case if runner is None else runner
     matrix = [{'case': case, 'outcome': 'unrun', 'label': 'not-started'}
-              for case in CASES + WIFI_CASES]
+              for case in CASES + WIFI_CASES + LIVE_CASES]
     destination = harness.ROOT / 'artifacts/scan-owner/simulator-cases'
     destination.mkdir(parents=True, exist_ok=True)
     try:
@@ -710,3 +782,4 @@ def run_all(args, harness, runner=None):
         raise AssertionError('FE36 matrix incomplete or failed; see fe36-matrix.json')
     print('FE36_CID_TRANSPORT_AUTH_CASES_OK=' + str(len(CASES)))
     print('FE36_NEARBY_TCP_TRANSPORT_CASES_OK=' + str(len(WIFI_CASES)))
+    print('FE36_LIVE_TCP_CONTROL_CASES_OK=' + str(len(LIVE_CASES)))
